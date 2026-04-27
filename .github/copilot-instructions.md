@@ -43,8 +43,24 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装。
 ### Coding Rules
 
 - コーディング中の TEMP ディレクトリは .gitignore された `tmp/` を使用
+- フォルダ命名は Swift 慣例: `Tests/` `Documentation/` `JiraAPI/` `JiraFSCore/` は PascalCase、製品名そのものの `jirafs/` `jirafs-extension/` は lowercase
+- 新規 Swift ソースを追加したら `xcodegen generate` を実行 (`project.yml` がソース・オブ・トゥルース、`jirafs.xcodeproj` は gitignore 済)
+- ビルド・テストは Xcode 16.4+ / `DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer` 必須
+- `xcodebuild` は常に `CODE_SIGNING_ALLOWED=NO` を付与 (FSKit entitlement のため)
+- ホスト/拡張は `MACOSX_DEPLOYMENT_TARGET=15.4`、`JiraAPI` / `JiraFSCore` / Tests は `14.0` を維持
+- Swift 6 strict concurrency 準拠。FSKit reply handler を `Task` でキャプチャするときは `SendableBox(reply)` でラップ
+- `actor` 内の `while` ループで mutable var をクロージャに渡す前に `let` で不変コピーを取る
+
+### CI / GitHub Actions
+
+- PR で `.github/workflows/build.yml` が走る (macos-15 / Xcode 16.4)
+- ビルド対象判定は `srz-zumix/gh-pr-ls-files` で `Documentation/**` `**/*.md` `LICENSE` を exclude し変更ファイル数で分岐
+- `build-result` ジョブ (status check job) は `if: failure() || cancelled()` で `build` が失敗/キャンセル時のみ実行・fail (skip 時は GitHub の skip-satisfies-required により required check を満たす) → Rulesets の required check に指定
+- Workflow の third-party action は SHA で pin (`pinact run` で更新)、`actions/*` のみタグ可 (`.pinact.yaml`)
+- Workflow 編集後は `zizmor` で security 監査して findings 0 を確認
+- 既存 workflow: `build.yml` / `labeler.yml` / `release.yml` / `release-drafter.yml` / `zizmor.yml`
 
 ### Specs & Instructions
 
-- 技術仕様: docs/SPEC.md
-- 開発手順: docs/INSTRUCTIONS.md
+- 技術仕様: Documentation/SPEC.md
+- 開発手順: Documentation/INSTRUCTIONS.md

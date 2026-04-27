@@ -57,8 +57,8 @@ umount ~/jirafs
 
 ## ドキュメント
 
-- [技術仕様](docs/SPEC.md)
-- [開発手順](docs/INSTRUCTIONS.md)
+- [技術仕様](Documentation/SPEC.md)
+- [開発手順](Documentation/INSTRUCTIONS.md)
 
 ## ライセンス
 

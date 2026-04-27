@@ -5,7 +5,7 @@ import JiraAPI
 /// Server) to Markdown.
 ///
 /// The implementation is intentionally pragmatic — it covers the most common
-/// nodes called out in `docs/SPEC.md`. Anything unhandled falls back to the
+/// nodes called out in `Documentation/SPEC.md`. Anything unhandled falls back to the
 /// raw payload with a `<!-- jirafs: raw fallback -->` marker so a curious user
 /// can still read the content.
 public enum ContentRenderer {

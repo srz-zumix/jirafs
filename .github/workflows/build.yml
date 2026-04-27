@@ -1,0 +1,111 @@
+name: Build and Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    timeout-minutes: 5
+    outputs:
+      should_build: ${{ steps.filter.outputs.count != '0' }}
+    steps:
+      - name: List changed source files
+        id: filter
+        uses: srz-zumix/gh-pr-ls-files@74f884868217e7873798e7606dba5b3a426bf2de # v1.1.0
+        with:
+          added: true
+          modified: true
+          renamed: true
+          exclude: '^(Documentation/|LICENSE$|.*\.md$)'
+
+  build:
+    name: Build & Test (Xcode 16.4 / macOS 15)
+    needs: changes
+    if: needs.changes.outputs.should_build == 'true'
+    runs-on: macos-15
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project jirafs.xcodeproj \
+            -scheme jirafs \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log
+
+      - name: Test
+        run: |
+          xcodebuild \
+            -project jirafs.xcodeproj \
+            -scheme jirafs \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            -resultBundlePath TestResults.xcresult \
+            test | tee test.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults.xcresult
+          retention-days: 7
+
+  # Stable status check for branch protection / Rulesets.
+  # Runs only when `build` failed or was cancelled, then fails. When `build`
+  # succeeds or is skipped (docs-only PR), this job is skipped — and skipped
+  # required checks satisfy GitHub Rulesets.
+  build-result:
+    name: Build Result
+    needs: [changes, build]
+    if: failure() || cancelled()
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 1
+    steps:
+      - name: Report build failure
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          echo "build job result: $BUILD_RESULT"
+          exit 1
+

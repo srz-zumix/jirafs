@@ -6,7 +6,7 @@ import JiraFSCore
 /// system-extensions settings pane.
 ///
 /// Programmatic mounting via `FSFileSystemKit.FSMountManager` is documented
-/// for reference in `docs/INSTRUCTIONS.md` but is not invoked here directly to
+/// for reference in `Documentation/INSTRUCTIONS.md` but is not invoked here directly to
 /// keep Phase 1 self-contained.
 struct MountControlView: View {
     let entry: Configuration.InstanceEntry

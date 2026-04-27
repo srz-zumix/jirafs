@@ -63,7 +63,7 @@ jirafs/
 ├── Tests/
 │   ├── JiraAPITests/                  # AuthTests / JiraRESTClientTests (URLProtocol stub)
 │   └── JiraFSCoreTests/               # FileNameSanitizer / PathResolver / ContentRenderer / CacheManager
-└── docs/
+└── Documentation/
     ├── SPEC.md
     └── INSTRUCTIONS.md
 ```
