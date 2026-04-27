@@ -112,6 +112,8 @@ mount -F -t jirafs jira://jira.internal.example.com ~/jirafs/internal
 └── .jirafs/
 ```
 
+> **注**: `.jirafs/` ディレクトリはマウント内に表示されるが、設定ファイル本体 (`config.json`) はホストアプリと Extension の両方からアクセス可能にするため、**実際は `~/Library/Application Support/jirafs/config.json` に保存される**。マウント内の `.jirafs/config.json` は読み取り専用ビュー (Phase 1 では空オブジェクトを返すスタブ)。
+
 ## 動作モード (read-only / read-write)
 
 MVP では **2 つのモード**を切り替え可能とする。マウント時のオプションまたは設定 (`config.json`) で選択する。
@@ -376,7 +378,9 @@ class JiraFSItem: FSItem {
 `Info.plist` の `FSMatchingURLSchemes` には `jira` と `https` を登録するが、`https` は他のシステムと競合する可能性があるため、ホストアプリ側で **`jira://` への正規化を推奨**する。Finder からのドラッグ & ドロップによる利便性のため `https` も許容する。
 
 
-## 設定ファイル (.jirafs/config.json)
+## 設定ファイル (config.json)
+
+設定ファイルは **`~/Library/Application Support/jirafs/config.json`** に保存される。ホストアプリと Extension の両方が同じファイルを読み書きするため、Sandbox 共有のために App Group ではなく User Domain の Application Support を使用する (Keychain 認証情報のみ Access Group 経由で共有)。
 
 ```json
 {
@@ -442,16 +446,20 @@ umount ~/jirafs
 ### Phase 1 (MVP) — 読み取り専用 Issues ビュー
 
 - [x] FSKit App Extension スキャフォールド
-- [ ] JIRA API クライアント (Cloud + Server)
-- [ ] 認証 (API Token + PAT)
-- [ ] プロジェクト一覧 → ディレクトリ
-- [ ] イシュー一覧 → ディレクトリ
-- [ ] イシュー詳細 → ファイル群 (summary.txt, description.md, metadata.json)
-- [ ] コメント → ファイル群
-- [ ] 添付ファイル → ファイル (遅延ダウンロード)
-- [ ] In-Memory キャッシュ
-- [ ] Keychain 認証情報管理
-- [ ] エラーハンドリング・ロギング
+- [x] JIRA API クライアント (Cloud + Server) — `JiraRESTClient` (REST API v2/v3 共通実装、edition で切替)
+- [x] 認証 (API Token + PAT) — `APITokenAuth` / `PATAuth`
+- [x] プロジェクト一覧 → ディレクトリ
+- [x] イシュー一覧 → ディレクトリ (ページネーション対応)
+- [x] イシュー詳細 → ファイル群 (summary.txt, description.md, metadata.json)
+- [x] コメント → ファイル群 (`NNN_author_YYYY-MM-DD.md`)
+- [x] 添付ファイル → ファイル (遅延ダウンロード、Range リクエスト対応)
+- [x] In-Memory キャッシュ (TTL ベース actor)
+- [x] Keychain 認証情報管理 (Access Group 共有)
+- [x] エラーハンドリング (`JiraAPIError` → POSIX 変換) ・ロギング (`os.Logger` subsystem `com.zumix.jirafs`)
+- [x] ADF / wiki markup → Markdown レンダラ (主要ノード対応)
+- [x] `RateLimiter` (429 + Retry-After / 5xx 指数バックオフ、最大 3 回)
+- [ ] 実機 (Xcode 16.4+ / macOS 15.4+) での FSKit マウント検証
+- [ ] 大量イシュー (数千件) のページネーション perf 検証
 
 ### Phase 2 — 書き込み対応
 
@@ -471,8 +479,10 @@ umount ~/jirafs
 ## 既知の制約・検討事項
 
 - FSKit は現在 `FSUnaryFileSystem` のみサポート
+- **FSKit は macOS 15.4 SDK / Xcode 16.4+ が必要**。それ未満の環境ではビルド時に `FSKIT_AVAILABLE` フラグを未定義にして Stub 実装にフォールバック (`jirafs-extension/UnsupportedStub.swift`)
 - JIRA API のレート制限によるスループット制約
 - 大量イシュー (数万件) の場合、ページネーションと遅延読み込みが必要
-- 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい
-- JIRA Cloud の ADF (Atlassian Document Format) → Markdown 変換は完全でない場合がある
-- Server 版の wiki markup → Markdown 変換の互換性
+- 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (現状は全件 In-Memory キャッシュ)
+- JIRA Cloud の ADF (Atlassian Document Format) → Markdown 変換は完全でない場合がある (主要ノードのみ対応、それ以外は raw fallback)
+- Server 版の wiki markup → Markdown 変換の互換性 (見出し / リスト / リンク / 強調 / `{code}` / `{panel}` / `{quote}` のみ)
+- `searchIssues` は JIRA Cloud v3 で `/rest/api/3/search` を使用しているが、2024 年以降の Cloud では `/search/jql` への移行が推奨されている (将来対応)

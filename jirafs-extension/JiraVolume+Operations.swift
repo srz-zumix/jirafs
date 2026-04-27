@@ -1,8 +1,17 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
 import JiraFSCore
+
+@available(macOS 15.4, *)
+extension JiraVolume: FSVolume.PathConfOperations {
+    var maximumLinkCount: Int { 1 }
+    var maximumNameLength: Int { 255 }
+    var restrictsOwnershipChanges: Bool { true }
+    var truncatesLongNames: Bool { false }
+    var maximumXattrSize: Int { 0 }
+    var maximumFileSize: UInt64 { UInt64.max }
+}
 
 @available(macOS 15.4, *)
 extension JiraVolume: FSVolume.Operations {
@@ -38,10 +47,11 @@ extension JiraVolume: FSVolume.Operations {
         reply()
     }
 
-    func synchronize(flags: FSVolume.SyncFlags, replyHandler reply: @escaping (Error?) -> Void) {
+    func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping (Error?) -> Void) {
+        let r = SendableBox(reply)
         Task {
             await self.dataSource.synchronize()
-            reply(nil)
+            r.value(nil)
         }
     }
 
@@ -75,16 +85,18 @@ extension JiraVolume: FSVolume.Operations {
             reply(nil, nil, FSKitError.notFound); return
         }
         let lookupName = name.string ?? ""
+        let r = SendableBox(reply)
+        let n = SendableBox(name)
         Task {
             do {
                 if let kind = try await self.resolveChild(parent: parent.kind, name: lookupName) {
                     let child = self.item(for: kind)
-                    reply(child, name, nil)
+                    r.value(child, n.value, nil)
                 } else {
-                    reply(nil, nil, FSKitError.notFound)
+                    r.value(nil, nil, FSKitError.notFound)
                 }
             } catch {
-                reply(nil, nil, FSKitError.from(error))
+                r.value(nil, nil, FSKitError.from(error))
             }
         }
     }
@@ -96,15 +108,17 @@ extension JiraVolume: FSVolume.Operations {
 
     func enumerateDirectory(
         _ directory: FSItem,
-        startingAtCookie cookie: FSDirectoryCookie,
+        startingAt cookie: FSDirectoryCookie,
         verifier: FSDirectoryVerifier,
         attributes: FSItem.GetAttributesRequest?,
-        packer: @escaping (FSFileName, FSItem.ItemType, FSItem.Identifier, FSDirectoryCookie, FSItem.Attributes?) -> Bool,
+        packer: FSDirectoryEntryPacker,
         replyHandler reply: @escaping (FSDirectoryVerifier, Error?) -> Void
     ) {
         guard let parent = directory as? JiraFSItem else {
             reply(verifier, FSKitError.notFound); return
         }
+        let r = SendableBox(reply)
+        let p = SendableBox(packer)
         Task {
             do {
                 let entries = try await self.children(of: parent.kind)
@@ -114,14 +128,14 @@ extension JiraVolume: FSVolume.Operations {
                     if index <= cookie.rawValue { continue }
                     let child = self.item(for: kind)
                     let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
-                    let nextCookie = FSDirectoryCookie(rawValue: index)!
+                    let nextCookie = FSDirectoryCookie(rawValue: index)
                     let attrs = self.makeAttributes(for: child)
-                    let cont = packer(FSFileName(string: name), itemType, child.identifier, nextCookie, attrs)
+                    let cont = p.value.packEntry(name: FSFileName(string: name), itemType: itemType, itemID: child.identifier, nextCookie: nextCookie, attributes: attrs)
                     if !cont { break }
                 }
-                reply(verifier, nil)
+                r.value(verifier, nil)
             } catch {
-                reply(verifier, FSKitError.from(error))
+                r.value(verifier, FSKitError.from(error))
             }
         }
     }
@@ -136,7 +150,7 @@ extension JiraVolume: FSVolume.Operations {
         reply(FSKitError.readOnly)
     }
 
-    func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, toDirectory destinationDirectory: FSItem, named destinationName: FSFileName, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
+    func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, to destinationName: FSFileName, inDirectory destinationDirectory: FSItem, overItem: FSItem?, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
         reply(nil, FSKitError.readOnly)
     }
 
@@ -222,4 +236,3 @@ private extension Date {
         return ts
     }
 }
-#endif

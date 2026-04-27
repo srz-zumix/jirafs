@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
@@ -13,22 +12,15 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     let logger = JiraLog.logger("filesystem")
 
     func loadResource(
-        _ resource: FSResource,
+        resource: FSResource,
         options: FSTaskOptions,
         replyHandler reply: @escaping (FSVolume?, Error?) -> Void
     ) {
-        guard let urlResource = resource as? FSGenericURLResource else {
-            reply(nil, FSKitError.notFound); return
-        }
-        let url = urlResource.url
-        guard let normalized = JiraFileSystem.normalize(url: url) else {
-            reply(nil, FSKitError.notFound); return
-        }
         do {
-            let (instanceName, config, auth) = try JiraFileSystem.lookupInstance(for: normalized)
+            let (instanceName, config, auth) = try JiraFileSystem.lookupInstance()
             let client = JiraRESTClient(config: config, auth: auth)
             let dataSource = IssueDataSource(client: client)
-            let isReadOnly = options.taskOptions.contains("ro") || !options.taskOptions.contains("rw")
+            let isReadOnly = true
             let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
             reply(volume, nil)
@@ -37,50 +29,43 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         }
     }
 
-    func unloadResource(_ resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
+    func unloadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         reply(nil)
     }
 
-    func probeResource(_ resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
-        guard let urlResource = resource as? FSGenericURLResource,
-              JiraFileSystem.normalize(url: urlResource.url) != nil else {
+    func probeResource(resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
+        guard let entry = JiraFileSystem.firstInstance() else {
             reply(.notRecognized, nil); return
         }
-        reply(.usable(name: "jirafs", containerID: nil), nil)
+        let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: entry.name))
+        reply(.usable(name: entry.name, containerID: containerID), nil)
     }
 
     func didFinishLoading() {
         logger.info("JiraFileSystem loaded")
     }
 
-    // MARK: - URL handling
+    // MARK: - Configuration lookup
 
-    /// Convert `jira://host` or `https://host` into a normalized
-    /// `https://host` JIRA base URL.
-    static func normalize(url: URL) -> URL? {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return nil
-        }
-        if components.scheme == "jira" {
-            components.scheme = "https"
-        }
-        guard components.scheme == "https", components.host != nil else { return nil }
-        components.path = ""
-        return components.url
-    }
-
-    /// Resolve a normalized base URL into instance config + auth provider by
-    /// reading the host app's configuration file and Keychain.
-    static func lookupInstance(for url: URL) throws -> (String, JiraInstanceConfig, AuthProvider) {
+    static func firstInstance() -> Configuration.InstanceEntry? {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
-        guard let entry = config.instances.first(where: { entry in
-            entry.url.host == url.host
-        }) else {
+        return config.instances.first
+    }
+
+    static func deterministicUUID(for name: String) -> UUID {
+        var bytes = Array<UInt8>(repeating: 0, count: 16)
+        for (i, b) in Array(name.utf8).enumerated() { bytes[i % 16] ^= b }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    /// Resolve the first configured instance into config + auth provider.
+    static func lookupInstance() throws -> (String, JiraInstanceConfig, AuthProvider) {
+        guard let entry = firstInstance() else {
             throw JiraAPIError.missingCredentials
         }
         let keychain = KeychainManager()
-        let cfg = JiraInstanceConfig(name: entry.name, baseURL: url, edition: entry.type)
+        let cfg = JiraInstanceConfig(name: entry.name, baseURL: entry.url, edition: entry.type)
         let auth: AuthProvider
         switch entry.auth.method {
         case .apiToken:
@@ -101,4 +86,3 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         return appSupport.appendingPathComponent("jirafs/config.json")
     }
 }
-#endif

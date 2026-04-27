@@ -55,9 +55,8 @@ public actor JiraRESTClient: JiraClient {
     }
 
     public func listAttachments(issueKey: String) async throws -> [JiraAttachment] {
-        let issue: JiraIssue = try await get("issue/\(issueKey)?fields=attachment")
-        // attachments live under fields.attachment which is not in JiraIssueFields;
-        // re-decode the raw response to extract them
+        // attachments live under `fields.attachment`, which we don't model in
+        // `JiraIssueFields`. Decode a focused response struct directly.
         struct AttachmentResponse: Decodable {
             struct Fields: Decodable { let attachment: [JiraAttachment]? }
             let fields: Fields
@@ -67,7 +66,6 @@ public actor JiraRESTClient: JiraClient {
         let (data, http) = try await transport.data(for: request)
         try validate(http: http, data: data)
         let decoded = try decoder.decode(AttachmentResponse.self, from: data)
-        _ = issue
         return decoded.fields.attachment ?? []
     }
 

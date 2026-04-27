@@ -2,7 +2,7 @@ name: jirafs
 options:
   bundleIdPrefix: com.zumix
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "15.4"
   developmentLanguage: en
   createIntermediateGroups: true
   generateEmptyDirectories: true
@@ -13,7 +13,7 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
-    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.4"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ""

@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 
@@ -8,4 +7,3 @@ import FSKit
 struct JiraFSExtension: UnaryFileSystemExtension {
     var fileSystem: JiraFileSystem { JiraFileSystem() }
 }
-#endif

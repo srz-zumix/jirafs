@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
@@ -33,4 +32,3 @@ enum FSKitError {
     static let notFound = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXError.ENOENT.rawValue))
     static let readOnly = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXError.EROFS.rawValue))
 }
-#endif

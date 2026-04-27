@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
@@ -6,23 +5,24 @@ import JiraFSCore
 
 @available(macOS 15.4, *)
 extension JiraVolume: FSVolume.OpenCloseOperations {
-    func open(_ item: FSItem, withMode mode: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
+    func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
         guard let node = item as? JiraFSItem else { reply(FSKitError.notFound); return }
-        if mode.contains(.write) {
+        if modes.contains(.write) {
             reply(FSKitError.readOnly); return
         }
+        let r = SendableBox(reply)
         Task {
             do {
                 try await self.loadPayload(for: node)
-                reply(nil)
+                r.value(nil)
             } catch {
-                reply(FSKitError.from(error))
+                r.value(FSKitError.from(error))
             }
         }
     }
 
-    func close(_ item: FSItem, keepAlive: Bool, replyHandler reply: @escaping (Error?) -> Void) {
-        if let node = item as? JiraFSItem, !keepAlive {
+    func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
+        if let node = item as? JiraFSItem, modes.isEmpty {
             // Drop binary payload but keep metadata if cheap to keep.
             switch node.kind {
             case .attachment:
@@ -72,4 +72,3 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
         node.cachedSize = UInt64(data.count)
     }
 }
-#endif

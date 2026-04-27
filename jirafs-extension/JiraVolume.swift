@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
@@ -24,7 +23,8 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
         self.dataSource = dataSource
         self.instanceName = name
         self.isReadOnly = isReadOnly
-        super.init(volumeID: .init(rawValue: Data(name.utf8)),
+        let uuid = JiraFileSystem.deterministicUUID(for: name)
+        super.init(volumeID: FSVolume.Identifier(uuid: uuid),
                    volumeName: FSFileName(string: "jirafs-\(name)"))
     }
 
@@ -42,4 +42,3 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
         items.removeValue(forKey: item.identifier.rawValue)
     }
 }
-#endif

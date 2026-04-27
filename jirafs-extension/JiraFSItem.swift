@@ -1,4 +1,3 @@
-#if canImport(FSKit)
 import Foundation
 import FSKit
 import JiraAPI
@@ -35,4 +34,3 @@ final class JiraFSItem: FSItem, @unchecked Sendable {
         }
     }
 }
-#endif
