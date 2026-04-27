@@ -1,0 +1,225 @@
+#if canImport(FSKit)
+import Foundation
+import FSKit
+import JiraAPI
+import JiraFSCore
+
+@available(macOS 15.4, *)
+extension JiraVolume: FSVolume.Operations {
+
+    var supportedVolumeCapabilities: FSVolume.SupportedCapabilities {
+        let caps = FSVolume.SupportedCapabilities()
+        caps.supportsHardLinks = false
+        caps.supportsSymbolicLinks = false
+        caps.supportsPersistentObjectIDs = true
+        caps.doesNotSupportVolumeSizes = true
+        return caps
+    }
+
+    var volumeStatistics: FSStatFSResult {
+        let result = FSStatFSResult(fileSystemTypeName: "jirafs")
+        result.blockSize = 4096
+        result.ioSize = 4096
+        result.totalBlocks = 0
+        result.availableBlocks = 0
+        result.freeBlocks = 0
+        result.totalFiles = 0
+        result.freeFiles = 0
+        return result
+    }
+
+    func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
+        logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
+        reply(nil)
+    }
+
+    func unmount(replyHandler reply: @escaping () -> Void) {
+        logger.info("unmount \(self.instanceName, privacy: .public)")
+        reply()
+    }
+
+    func synchronize(flags: FSVolume.SyncFlags, replyHandler reply: @escaping (Error?) -> Void) {
+        Task {
+            await self.dataSource.synchronize()
+            reply(nil)
+        }
+    }
+
+    func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, Error?) -> Void) {
+        let root = item(for: .root)
+        reply(root, nil)
+    }
+
+    func deactivate(options: FSDeactivateOptions = [], replyHandler reply: @escaping (Error?) -> Void) {
+        reply(nil)
+    }
+
+    func getAttributes(
+        _ desiredAttributes: FSItem.GetAttributesRequest,
+        of item: FSItem,
+        replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void
+    ) {
+        guard let node = item as? JiraFSItem else {
+            reply(nil, FSKitError.notFound); return
+        }
+        let attrs = makeAttributes(for: node)
+        reply(attrs, nil)
+    }
+
+    func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
+        reply(nil, FSKitError.readOnly)
+    }
+
+    func lookupItem(named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
+        guard let parent = directory as? JiraFSItem else {
+            reply(nil, nil, FSKitError.notFound); return
+        }
+        let lookupName = name.string ?? ""
+        Task {
+            do {
+                if let kind = try await self.resolveChild(parent: parent.kind, name: lookupName) {
+                    let child = self.item(for: kind)
+                    reply(child, name, nil)
+                } else {
+                    reply(nil, nil, FSKitError.notFound)
+                }
+            } catch {
+                reply(nil, nil, FSKitError.from(error))
+            }
+        }
+    }
+
+    func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
+        if let node = item as? JiraFSItem { release(item: node) }
+        reply(nil)
+    }
+
+    func enumerateDirectory(
+        _ directory: FSItem,
+        startingAtCookie cookie: FSDirectoryCookie,
+        verifier: FSDirectoryVerifier,
+        attributes: FSItem.GetAttributesRequest?,
+        packer: @escaping (FSFileName, FSItem.ItemType, FSItem.Identifier, FSDirectoryCookie, FSItem.Attributes?) -> Bool,
+        replyHandler reply: @escaping (FSDirectoryVerifier, Error?) -> Void
+    ) {
+        guard let parent = directory as? JiraFSItem else {
+            reply(verifier, FSKitError.notFound); return
+        }
+        Task {
+            do {
+                let entries = try await self.children(of: parent.kind)
+                var index: UInt64 = 0
+                for (name, kind) in entries {
+                    index += 1
+                    if index <= cookie.rawValue { continue }
+                    let child = self.item(for: kind)
+                    let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
+                    let nextCookie = FSDirectoryCookie(rawValue: index)!
+                    let attrs = self.makeAttributes(for: child)
+                    let cont = packer(FSFileName(string: name), itemType, child.identifier, nextCookie, attrs)
+                    if !cont { break }
+                }
+                reply(verifier, nil)
+            } catch {
+                reply(verifier, FSKitError.from(error))
+            }
+        }
+    }
+
+    // MARK: - Read-only stubs for write operations
+
+    func createItem(named name: FSFileName, type: FSItem.ItemType, inDirectory directory: FSItem, attributes: FSItem.SetAttributesRequest, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
+        reply(nil, nil, FSKitError.readOnly)
+    }
+
+    func removeItem(_ item: FSItem, named name: FSFileName, fromDirectory directory: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
+        reply(FSKitError.readOnly)
+    }
+
+    func renameItem(_ item: FSItem, inDirectory sourceDirectory: FSItem, named sourceName: FSFileName, toDirectory destinationDirectory: FSItem, named destinationName: FSFileName, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
+        reply(nil, FSKitError.readOnly)
+    }
+
+    func createSymbolicLink(named name: FSFileName, inDirectory directory: FSItem, attributes: FSItem.SetAttributesRequest, linkContents contents: FSFileName, replyHandler reply: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
+        reply(nil, nil, FSKitError.notSupported)
+    }
+
+    func createLink(to item: FSItem, named name: FSFileName, inDirectory directory: FSItem, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
+        reply(nil, FSKitError.notSupported)
+    }
+
+    func readSymbolicLink(_ item: FSItem, replyHandler reply: @escaping (FSFileName?, Error?) -> Void) {
+        reply(nil, FSKitError.notSupported)
+    }
+
+    // MARK: - Helpers
+
+    private func resolveChild(parent: FSNodeKind, name: String) async throws -> FSNodeKind? {
+        let kids = try await children(of: parent)
+        return kids.first(where: { $0.0 == name })?.1
+    }
+
+    private func children(of kind: FSNodeKind) async throws -> [(String, FSNodeKind)] {
+        switch kind {
+        case .root, .configDir:
+            return PathResolver.childKinds(of: kind)
+        case .projectsDir:
+            let projects = try await dataSource.projects()
+            return projects.map { ($0.key, FSNodeKind.project(key: $0.key)) }
+        case .project:
+            return PathResolver.childKinds(of: kind)
+        case .issuesDir(let project):
+            let keys = try await dataSource.issueKeys(forProject: project)
+            return keys.map { ($0, FSNodeKind.issue(key: $0)) }
+        case .issue(let key):
+            var kids = PathResolver.childKinds(of: .issue(key: key))
+            return kids
+        case .commentsDir(let issueKey):
+            let comments = try await dataSource.comments(issueKey: issueKey)
+            var taken = Set<String>()
+            return comments.enumerated().map { (i, c) in
+                let raw = IssueFileBuilder.commentFileName(index: i + 1, comment: c)
+                let name = FileNameSanitizer.deduplicate(raw, taken: &taken)
+                return (name, FSNodeKind.comment(issueKey: issueKey, fileName: name))
+            }
+        case .attachmentsDir(let issueKey):
+            let atts = try await dataSource.attachments(issueKey: issueKey)
+            var taken = Set<String>()
+            return atts.map { a in
+                let cleaned = FileNameSanitizer.sanitize(a.filename)
+                let name = FileNameSanitizer.deduplicate(cleaned, taken: &taken)
+                return (name, FSNodeKind.attachment(issueKey: issueKey, fileName: name))
+            }
+        default:
+            return []
+        }
+    }
+
+    func makeAttributes(for node: JiraFSItem) -> FSItem.Attributes {
+        let attrs = FSItem.Attributes()
+        attrs.fileID = node.identifier
+        attrs.parentID = .invalid
+        attrs.linkCount = 1
+        attrs.size = node.cachedSize
+        attrs.allocSize = node.cachedSize
+        attrs.modifyTime = node.cachedMTime.timespec
+        attrs.changeTime = node.cachedMTime.timespec
+        attrs.accessTime = node.cachedMTime.timespec
+        attrs.birthTime = node.cachedMTime.timespec
+        attrs.mode = node.kind.isDirectory ? 0o040555 : 0o100444
+        attrs.type = node.kind.isDirectory ? .directory : .file
+        return attrs
+    }
+}
+
+@available(macOS 15.4, *)
+private extension Date {
+    var timespec: timespec {
+        let interval = timeIntervalSince1970
+        var ts = Foundation.timespec()
+        ts.tv_sec = Int(interval)
+        ts.tv_nsec = Int((interval - Double(Int(interval))) * 1_000_000_000)
+        return ts
+    }
+}
+#endif
