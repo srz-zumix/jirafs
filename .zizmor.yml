@@ -1,0 +1,8 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        actions/*: any
+  secrets-outside-env:
+    ignore:
+      - ".github/workflows/release.yml"

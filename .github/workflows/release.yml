@@ -16,15 +16,59 @@ permissions: {}
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     permissions:
       contents: write
       id-token: write
       attestations: write
     env:
-      RELEASE_TAG: ${{ inputs.ref || github.ref }}
       GH_TOKEN: ${{ github.token }}
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      TAG: ${{ inputs.ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Import Code-Signing Certificates
+        uses: Apple-Actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v3
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build and Archive
+        run: |
+          xcodebuild -project jirafs.xcodeproj -scheme jirafs -configuration Release -archivePath build/jirafs.xcarchive archive
+
+      - name: Prepare Export Options
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          sed "s/TEAM_ID_PLACEHOLDER/$TEAM_ID/g" exportOptions.plist > exportOptions_modified.plist
+
+      - name: Export Archive
+        run: |
+          xcodebuild -exportArchive -archivePath build/jirafs.xcarchive -exportPath build/jirafs -exportOptionsPlist exportOptions_modified.plist
+
+      - name: Notarize App
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          xcrun notarytool submit build/jirafs/jirafs.app --apple-id $APPLE_ID --password $APPLE_APP_SPECIFIC_PASSWORD --team-id $TEAM_ID --wait
+
+      - name: Staple Notarization
+        run: |
+          xcrun stapler staple build/jirafs/jirafs.app
+
+      - name: Create DMG
+        run: |
+          create-dmg --volname "jirafs" --volicon "jirafs/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png" --window-pos 200 120 --window-size 800 400 --icon-size 100 --icon "jirafs.app" 200 190 --hide-extension "jirafs.app" --app-drop-link 600 185 "jirafs-$TAG.dmg" "build/jirafs/"
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "$TAG" --title "Release $TAG" --notes "Release notes for $TAG" jirafs-$TAG.dmg

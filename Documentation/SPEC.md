@@ -255,10 +255,12 @@ GET /rest/api/{ver}/attachment/content/{id}        # 添付ファイルダウン
 
 | メソッド | 実装内容 |
 |---|---|
-| `loadResource(resource:options:replyHandler:)` | `FSGenericURLResource` からJIRA URL を受け取り、JiraVolume を生成 |
+| `loadResource(resource:options:replyHandler:)` | リソースから JiraVolume を生成 (現状は `config.json` 先頭インスタンスを使用) |
 | `unloadResource(resource:options:replyHandler:)` | リソース解放・キャッシュクリア |
-| `probeResource(resource:replyHandler:)` | URL が有効な JIRA インスタンスか検証 |
+| `probeResource(resource:replyHandler:)` | リソースが有効な JIRA 設定を持つか検証 (deterministic UUID で `FSContainerIdentifier` 返却) |
 | `didFinishLoading()` | 初期化完了処理 |
+
+> **Phase 1 注意**: FSKit 15.4 SDK に URL ベース `FSResource` サブクラスが未公開のため、`loadResource` は渡された URL を使わずホストアプリの `config.json` の先頭インスタンスを使用する。複数インスタンス選択は将来拡張。
 
 ### FSVolume (JiraVolume)
 
@@ -458,8 +460,8 @@ umount ~/jirafs
 - [x] エラーハンドリング (`JiraAPIError` → POSIX 変換) ・ロギング (`os.Logger` subsystem `com.zumix.jirafs`)
 - [x] ADF / wiki markup → Markdown レンダラ (主要ノード対応)
 - [x] `RateLimiter` (429 + Retry-After / 5xx 指数バックオフ、最大 3 回)
+- [x] 大量イシュー (数千件) のページネーション perf 検証 (`IssueDataSourcePaginationTests`)
 - [ ] 実機 (Xcode 16.4+ / macOS 15.4+) での FSKit マウント検証
-- [ ] 大量イシュー (数千件) のページネーション perf 検証
 
 ### Phase 2 — 書き込み対応
 
@@ -479,7 +481,7 @@ umount ~/jirafs
 ## 既知の制約・検討事項
 
 - FSKit は現在 `FSUnaryFileSystem` のみサポート
-- **FSKit は macOS 15.4 SDK / Xcode 16.4+ が必要**。それ未満の環境ではビルド時に `FSKIT_AVAILABLE` フラグを未定義にして Stub 実装にフォールバック (`jirafs-extension/UnsupportedStub.swift`)
+- **FSKit は macOS 15.4 SDK / Xcode 16.4+ が必須**。それ未満では拡張のビルド/動作不可 (フレームワーク `JiraAPI` / `JiraFSCore` とテストは macOS 14.0 を維持)
 - JIRA API のレート制限によるスループット制約
 - 大量イシュー (数万件) の場合、ページネーションと遅延読み込みが必要
 - 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (現状は全件 In-Memory キャッシュ)
