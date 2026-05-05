@@ -39,6 +39,7 @@ targets:
         DYLIB_INSTALL_NAME_BASE: "@rpath"
         SKIP_INSTALL: YES
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
 
   JiraFSCore:
     type: framework
@@ -56,6 +57,7 @@ targets:
         DYLIB_INSTALL_NAME_BASE: "@rpath"
         SKIP_INSTALL: YES
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
 
   jirafs-extension:
     type: extensionkit-extension

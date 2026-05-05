@@ -30,6 +30,12 @@ final class InstanceListModel: ObservableObject {
         save()
     }
 
+    func update(original: Configuration.InstanceEntry, updated: Configuration.InstanceEntry) {
+        configuration.instances.removeAll { $0.id == original.id }
+        configuration.instances.append(updated)
+        save()
+    }
+
     func remove(name: String) {
         configuration.instances.removeAll { $0.name == name }
         save()
@@ -38,7 +44,7 @@ final class InstanceListModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var model = InstanceListModel()
-    @State private var showingEditor = false
+    @State private var showingAddEditor = false
     @State private var editingInstance: Configuration.InstanceEntry?
 
     var body: some View {
@@ -57,8 +63,7 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        editingInstance = nil
-                        showingEditor = true
+                        showingAddEditor = true
                     } label: {
                         Label("Add", systemImage: "plus")
                     }
@@ -72,7 +77,6 @@ struct ContentView: View {
                 InstanceDetailView(entry: entry,
                                    onEdit: {
                     editingInstance = entry
-                    showingEditor = true
                 },
                                    onDelete: {
                     model.remove(name: entry.name)
@@ -84,12 +88,20 @@ struct ContentView: View {
                                        description: Text("Add a JIRA instance to get started."))
             }
         }
-        .sheet(isPresented: $showingEditor) {
-            InstanceEditorView(initial: editingInstance) { entry in
+        .sheet(isPresented: $showingAddEditor) {
+            InstanceEditorView(initial: nil) { entry in
                 model.add(entry)
-                showingEditor = false
+                showingAddEditor = false
             } onCancel: {
-                showingEditor = false
+                showingAddEditor = false
+            }
+        }
+        .sheet(item: $editingInstance) { entry in
+            InstanceEditorView(initial: entry) { updated in
+                model.update(original: entry, updated: updated)
+                editingInstance = nil
+            } onCancel: {
+                editingInstance = nil
             }
         }
     }

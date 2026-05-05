@@ -62,17 +62,19 @@ struct InstanceEditorView: View {
     }
 
     private var isValid: Bool {
-        !name.isEmpty && URL(string: urlString) != nil && !token.isEmpty
+        !name.isEmpty && URL(string: urlString) != nil && (!token.isEmpty || originalName != nil)
     }
 
     private func save() {
         guard let url = URL(string: urlString) else { return }
-        do {
-            let account = method == .apiToken ? email : "pat"
-            try KeychainManager().setPassword(token, instanceName: name, account: account)
-        } catch {
-            print("Keychain save failed: \(error)")
-            return
+        if !token.isEmpty {
+            do {
+                let account = method == .apiToken ? email : "pat"
+                try KeychainManager().setPassword(token, instanceName: name, account: account)
+            } catch {
+                print("Keychain save failed: \(error)")
+                return
+            }
         }
         let auth = Configuration.AuthEntry(method: method, email: method == .apiToken ? email : nil)
         let entry = Configuration.InstanceEntry(name: name, type: edition, url: url, auth: auth)

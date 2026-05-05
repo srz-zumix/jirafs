@@ -11,12 +11,26 @@ import JiraFSCore
 struct MountControlView: View {
     let entry: Configuration.InstanceEntry
     @State private var readOnly: Bool = true
+    @State private var copied: Bool = false
 
     var body: some View {
         GroupBox("Mount") {
             VStack(alignment: .leading, spacing: 8) {
                 Toggle("Read-only", isOn: $readOnly)
-                Text("Mount command:").font(.headline)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Mount command:").font(.headline)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(mountCommand, forType: .string)
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+                    } label: {
+                        Label(copied ? "Copied!" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(copied ? .green : .accentColor)
+                }
                 Text(mountCommand)
                     .font(.system(.body, design: .monospaced))
                     .textSelection(.enabled)
