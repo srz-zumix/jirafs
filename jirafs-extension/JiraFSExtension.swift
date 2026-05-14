@@ -5,5 +5,6 @@ import FSKit
 @available(macOS 15.4, *)
 @main
 struct JiraFSExtension: UnaryFileSystemExtension {
-    var fileSystem: JiraFileSystem { JiraFileSystem() }
+    // Must be a stored property so FSKit always gets the same instance.
+    let fileSystem = JiraFileSystem()
 }

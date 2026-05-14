@@ -16,9 +16,8 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "15.4"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "KPZ4FUM7GD"
     CODE_SIGN_STYLE: Automatic
-    CODE_SIGNING_ALLOWED: NO
     ENABLE_HARDENED_RUNTIME: YES
 
 packages:
@@ -66,7 +65,9 @@ targets:
       - path: jirafs-extension
     dependencies:
       - target: JiraAPI
+        embed: true
       - target: JiraFSCore
+        embed: true
     info:
       path: jirafs-extension/Info.plist
       properties:
@@ -74,11 +75,25 @@ targets:
         CFBundleName: $(PRODUCT_NAME)
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule
-          FSShortName: jirafs
-          FSSupportsURLMounting: true
-          FSMatchingURLSchemes:
+          FSActivateOptionSyntax:
+            shortOptions: "o:"
+          FSCheckOptionSyntax:
+            shortOptions: "nqy"
+          FSFormatOptionSyntax:
+            shortOptions: "v"
+          FSMediaTypes: {}
+          FSPersonalities:
+            jirafsPersonality:
+              FSName: jirafs
+              FSfileObjectsAreCaseSensitive: false
+          FSSupportedSchemes:
             - jira
-            - https
+          FSShortName: jirafs
+          FSSupportsBlockResources: false
+          FSSupportsGenericURLResources: true
+          FSSupportsPathURLs: false
+          FSSupportsServerURLs: true
+          FSSupportsURLMounting: true
     entitlements:
       path: jirafs-extension/jirafs-extension.entitlements
       properties:
@@ -91,6 +106,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.fskit
         EXTENSIONKIT_EXTENSION: YES
+        SWIFT_OBJC_BRIDGING_HEADER: jirafs-extension/jirafs-extension-Bridging-Header.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
 
   jirafs:
     type: application
@@ -112,6 +129,10 @@ targets:
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSHumanReadableCopyright: "Copyright © 2026"
         NSPrincipalClass: NSApplication
+        CFBundleURLTypes:
+          - CFBundleURLName: JIRA File System
+            CFBundleURLSchemes:
+              - jira
     entitlements:
       path: jirafs/jirafs.entitlements
       properties:

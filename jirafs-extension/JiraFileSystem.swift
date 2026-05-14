@@ -23,8 +23,13 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             let isReadOnly = true
             let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
+            // Transition container state from notReady → ready before handing the
+            // volume to fskitd.  Without this, fskitd sees the container still in
+            // notReady state and returns EAGAIN to the caller.
+            self.containerStatus = .ready
             reply(volume, nil)
         } catch {
+            logger.error("loadResource failed: \(error, privacy: .public)")
             reply(nil, FSKitError.from(error))
         }
     }
@@ -34,11 +39,15 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     func probeResource(resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
-        guard let entry = JiraFileSystem.firstInstance() else {
-            reply(.notRecognized, nil); return
-        }
-        let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: entry.name))
-        reply(.usable(name: entry.name, containerID: containerID), nil)
+        // URL-based resources are recognized by scheme (FSMatchingURLSchemes in Info.plist).
+        // Always return usable; actual credential validation happens in loadResource.
+        let name = JiraFileSystem.firstInstance()?.name ?? "jirafs"
+        // Use deterministic UUID so fskitd recognises the container across the applyResource
+        // state machine.  Random UUIDs cause fskitd to treat every attempt as an unknown
+        // container and immediately close it (EAGAIN).  Cross-session collisions are
+        // avoided by restarting fskitd (launchctl kickstart) before each mount.
+        let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: name))
+        reply(.usable(name: name, containerID: containerID), nil)
     }
 
     func didFinishLoading() {

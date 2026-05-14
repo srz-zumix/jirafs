@@ -23,8 +23,8 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
         self.dataSource = dataSource
         self.instanceName = name
         self.isReadOnly = isReadOnly
-        let uuid = JiraFileSystem.deterministicUUID(for: name)
-        super.init(volumeID: FSVolume.Identifier(uuid: uuid),
+        // Use random UUID per mount to avoid fskitd container cache collisions.
+        super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
                    volumeName: FSFileName(string: "jirafs-\(name)"))
     }
 

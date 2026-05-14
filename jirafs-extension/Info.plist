@@ -22,13 +22,47 @@
 	<dict>
 		<key>EXExtensionPointIdentifier</key>
 		<string>com.apple.fskit.fsmodule</string>
-		<key>FSMatchingURLSchemes</key>
-		<array>
-			<string>jira</string>
-			<string>https</string>
-		</array>
+		<key>FSActivateOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>o:</string>
+		</dict>
+		<key>FSCheckOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>nqy</string>
+		</dict>
+		<key>FSFormatOptionSyntax</key>
+		<dict>
+			<key>shortOptions</key>
+			<string>v</string>
+		</dict>
+		<key>FSMediaTypes</key>
+		<dict/>
+		<key>FSPersonalities</key>
+		<dict>
+			<key>jirafsPersonality</key>
+			<dict>
+				<key>FSName</key>
+				<string>jirafs</string>
+				<key>FSfileObjectsAreCaseSensitive</key>
+				<false/>
+			</dict>
+		</dict>
 		<key>FSShortName</key>
 		<string>jirafs</string>
+		<key>FSSupportedSchemes</key>
+		<array>
+			<string>jira</string>
+		</array>
+		<key>FSSupportsBlockResources</key>
+		<false/>
+		<key>FSSupportsGenericURLResources</key>
+		<true/>
+		<key>FSSupportsPathURLs</key>
+		<false/>
+		<key>FSSupportsServerURLs</key>
+		<true/>
 		<key>FSSupportsURLMounting</key>
 		<true/>
 	</dict>

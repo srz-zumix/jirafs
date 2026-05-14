@@ -1,12 +1,15 @@
 import Foundation
 import Security
+import os
+
+private let keychainLogger = Logger(subsystem: "com.zumix.jirafs", category: "keychain")
 
 /// Wraps Keychain access for jirafs credentials.
 ///
 /// Items live in the shared Keychain Access Group so the host app and the
 /// FSKit extension can both read them.
 public struct KeychainManager: Sendable {
-    public static let accessGroup = "com.zumix.jirafs.shared"
+    public static let accessGroup = "KPZ4FUM7GD.com.zumix.jirafs.shared"
     public static let servicePrefix = "com.zumix.jirafs"
 
     public init() {}
@@ -30,6 +33,7 @@ public struct KeychainManager: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
         ]
 
         let attributes: [String: Any] = [
@@ -57,16 +61,21 @@ public struct KeychainManager: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
+        keychainLogger.debug("lookup: service=\(service, privacy: .public) account=\(account, privacy: .public) group=\(Self.accessGroup, privacy: .public)")
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
+        keychainLogger.debug("lookup status: \(status, privacy: .public)")
         guard status == errSecSuccess else {
             if status == errSecItemNotFound {
+                keychainLogger.error("Keychain item not found: service=\(service, privacy: .public) account=\(account, privacy: .public)")
                 throw JiraAPIError.missingCredentials
             }
+            keychainLogger.error("Keychain read failed: \(status, privacy: .public)")
             throw JiraAPIError.transport("Keychain read failed: \(status)")
         }
         guard let data = item as? Data, let string = String(data: data, encoding: .utf8) else {
@@ -82,6 +91,7 @@ public struct KeychainManager: Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
