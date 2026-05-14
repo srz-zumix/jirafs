@@ -72,8 +72,17 @@ extension JiraVolume: FSVolume.Operations {
         guard let node = item as? JiraFSItem else {
             reply(nil, FSKitError.notFound); return
         }
-        let attrs = makeAttributes(for: node)
-        reply(attrs, nil)
+        // Lazily load payload so the kernel sees the real file size on stat.
+        // Without this, open/read never get issued for size-0 files.
+        if !node.kind.isDirectory && node.cachedData == nil {
+            let r = SendableBox(reply)
+            Task {
+                try? await self.loadPayload(for: node)
+                r.value(self.makeAttributes(for: node), nil)
+            }
+            return
+        }
+        reply(makeAttributes(for: node), nil)
     }
 
     func setAttributes(_ newAttributes: FSItem.SetAttributesRequest, on item: FSItem, replyHandler reply: @escaping (FSItem.Attributes?, Error?) -> Void) {
@@ -96,6 +105,7 @@ extension JiraVolume: FSVolume.Operations {
                     r.value(nil, nil, FSKitError.notFound)
                 }
             } catch {
+                self.logger.error("lookupItem failed parent=\(String(describing: parent.kind), privacy: .public) name=\(lookupName, privacy: .public) error=\(error, privacy: .public)")
                 r.value(nil, nil, FSKitError.from(error))
             }
         }
@@ -119,22 +129,29 @@ extension JiraVolume: FSVolume.Operations {
         }
         let r = SendableBox(reply)
         let p = SendableBox(packer)
+        logger.info("enumerateDirectory start kind=\(String(describing: parent.kind), privacy: .public) cookie=\(cookie.rawValue)")
         Task {
             do {
                 let entries = try await self.children(of: parent.kind)
+                logger.info("enumerateDirectory got \(entries.count) entries for kind=\(String(describing: parent.kind), privacy: .public)")
                 var index: UInt64 = 0
                 for (name, kind) in entries {
                     index += 1
                     if index <= cookie.rawValue { continue }
                     let child = self.item(for: kind)
+                    // Preload file content so the kernel receives the real size in attrs.
+                    // Attachments are skipped to avoid downloading large binaries.
+                    if kind.shouldPreloadOnEnumerate {
+                        try? await self.loadPayload(for: child)
+                    }
                     let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
                     let nextCookie = FSDirectoryCookie(rawValue: index)
-                    let attrs = self.makeAttributes(for: child)
-                    let cont = p.value.packEntry(name: FSFileName(string: name), itemType: itemType, itemID: child.identifier, nextCookie: nextCookie, attributes: attrs)
+                    let cont = p.value.packEntry(name: FSFileName(string: name), itemType: itemType, itemID: child.identifier, nextCookie: nextCookie, attributes: self.makeAttributes(for: child))
                     if !cont { break }
                 }
                 r.value(verifier, nil)
             } catch {
+                self.logger.error("enumerateDirectory failed kind=\(String(describing: parent.kind), privacy: .public) error=\(error, privacy: .public)")
                 r.value(verifier, FSKitError.from(error))
             }
         }
@@ -186,7 +203,7 @@ extension JiraVolume: FSVolume.Operations {
             let keys = try await dataSource.issueKeys(forProject: project)
             return keys.map { ($0, FSNodeKind.issue(key: $0)) }
         case .issue(let key):
-            var kids = PathResolver.childKinds(of: .issue(key: key))
+            let kids = PathResolver.childKinds(of: .issue(key: key))
             return kids
         case .commentsDir(let issueKey):
             let comments = try await dataSource.comments(issueKey: issueKey)
@@ -214,6 +231,7 @@ extension JiraVolume: FSVolume.Operations {
         attrs.fileID = node.identifier
         attrs.parentID = .invalid
         attrs.linkCount = 1
+        attrs.flags = 0
         attrs.size = node.cachedSize
         attrs.allocSize = node.cachedSize
         attrs.modifyTime = node.cachedMTime.timespec

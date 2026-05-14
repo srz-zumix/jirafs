@@ -149,10 +149,23 @@ public struct JiraAttachment: Codable, Sendable, Equatable, Identifiable {
 // MARK: - Search
 
 public struct JiraSearchResult: Codable, Sendable, Equatable {
-    public let startAt: Int
-    public let maxResults: Int
-    public let total: Int
+    /// Continuation token returned by Cloud v3 `search/jql`. Nil when there
+    /// are no further pages.
+    public let nextPageToken: String?
     public let issues: [JiraIssue]
+    /// Legacy Server v2 fields – nil for Cloud `search/jql` responses.
+    public let startAt: Int?
+    public let maxResults: Int?
+    public let total: Int?
+
+    public init(nextPageToken: String? = nil, issues: [JiraIssue],
+                startAt: Int? = nil, maxResults: Int? = nil, total: Int? = nil) {
+        self.nextPageToken = nextPageToken
+        self.issues = issues
+        self.startAt = startAt
+        self.maxResults = maxResults
+        self.total = total
+    }
 }
 
 // MARK: - Generic JSON

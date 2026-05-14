@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let authLogger = Logger(subsystem: "com.zumix.jirafs", category: "auth")
 
 /// JIRA Cloud API Token (HTTP Basic with `email:token`).
 public struct APITokenAuth: AuthProvider {
@@ -11,6 +14,7 @@ public struct APITokenAuth: AuthProvider {
     }
 
     public func authorize(_ request: inout URLRequest) async throws {
+        authLogger.info("authorize: email=\(self.email, privacy: .public) token_len=\(self.token.count)")
         let raw = "\(email):\(token)"
         guard let data = raw.data(using: .utf8) else {
             throw JiraAPIError.missingCredentials

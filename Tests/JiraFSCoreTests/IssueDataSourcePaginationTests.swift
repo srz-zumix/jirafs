@@ -29,15 +29,17 @@ private final actor StubPaginatedClient: JiraClient {
         JiraProject(id: "1", key: key, name: key)
     }
 
-    func searchIssues(jql: String, startAt: Int, maxResults: Int) async throws -> JiraSearchResult {
+    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
         requestCount += 1
+        let startAt = nextPageToken.flatMap(Int.init) ?? 0
         let end = min(startAt + maxResults, total)
         let count = max(0, end - startAt)
         let issues: [JiraIssue] = (0..<count).map { i in
             let n = startAt + i
             return JiraIssue(id: "\(n)", key: "PROJ-\(n)", fields: JiraIssueFields())
         }
-        return JiraSearchResult(startAt: startAt, maxResults: maxResults, total: total, issues: issues)
+        let nextToken = (startAt + count < total) ? String(startAt + count) : nil
+        return JiraSearchResult(nextPageToken: nextToken, issues: issues)
     }
 
     func getIssue(key: String) async throws -> JiraIssue {

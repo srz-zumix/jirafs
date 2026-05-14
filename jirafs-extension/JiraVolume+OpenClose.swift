@@ -37,7 +37,11 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
 
     /// Populate `cachedData` for the node by querying the data source.
     func loadPayload(for node: JiraFSItem) async throws {
-        if node.cachedData != nil { return }
+        if node.cachedData != nil {
+            logger.info("loadPayload: already cached kind=\(String(describing: node.kind), privacy: .public) size=\(node.cachedSize)")
+            return
+        }
+        logger.info("loadPayload: fetching kind=\(String(describing: node.kind), privacy: .public)")
         let data: Data
         switch node.kind {
         case .summary(let key):
@@ -68,6 +72,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
         default:
             return
         }
+        logger.info("loadPayload: loaded kind=\(String(describing: node.kind), privacy: .public) bytes=\(data.count)")
         node.cachedData = data
         node.cachedSize = UInt64(data.count)
     }

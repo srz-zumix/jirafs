@@ -55,16 +55,18 @@ public actor IssueDataSource {
             return cached
         }
         var collected: [String] = []
-        var startAt = 0
+        var pageToken: String? = nil
         let pageSize = maxResults
         while true {
-            let pageStart = startAt
+            let token = pageToken
             let result = try await limiter.run { [client] in
-                try await client.searchIssues(jql: "project = \(key) ORDER BY created DESC", startAt: pageStart, maxResults: pageSize)
+                try await client.searchIssues(jql: "project = \(key) ORDER BY created DESC",
+                                              nextPageToken: token,
+                                              maxResults: pageSize)
             }
             collected.append(contentsOf: result.issues.map(\.key))
-            startAt += result.issues.count
-            if startAt >= result.total || result.issues.isEmpty { break }
+            pageToken = result.nextPageToken
+            if result.issues.isEmpty || pageToken == nil { break }
         }
         await cache.set(cacheKey, value: collected, ttl: ttl.issues)
         return collected

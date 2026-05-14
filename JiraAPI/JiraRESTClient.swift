@@ -36,13 +36,69 @@ public actor JiraRESTClient: JiraClient {
         try await get("project/\(key)")
     }
 
-    public func searchIssues(jql: String, startAt: Int, maxResults: Int) async throws -> JiraSearchResult {
+    public func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+        if config.edition == .cloud {
+            return try await searchIssuesCloud(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults)
+        } else {
+            return try await searchIssuesServer(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults)
+        }
+    }
+
+    // Cloud v3: POST to search/jql, token-based pagination.
+    private func searchIssuesCloud(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+        struct Body: Encodable {
+            let jql: String
+            let maxResults: Int
+            let nextPageToken: String?
+            let fields: [String]
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(jql, forKey: .jql)
+                try c.encode(maxResults, forKey: .maxResults)
+                if let token = nextPageToken { try c.encode(token, forKey: .nextPageToken) }
+                try c.encode(fields, forKey: .fields)
+            }
+            enum CodingKeys: String, CodingKey { case jql, maxResults, nextPageToken, fields }
+        }
+        struct CloudResult: Decodable {
+            let issues: [JiraIssue]
+            let nextPageToken: String?
+        }
+        let fieldList = [
+            "summary", "status", "priority", "assignee", "reporter",
+            "issuetype", "labels", "components", "created", "updated",
+            "resolution", "parent", "subtasks", "issuelinks", "description"
+        ]
+        let body = Body(
+            jql: jql,
+            maxResults: maxResults,
+            nextPageToken: nextPageToken,
+            fields: fieldList
+        )
+        let url = try buildURL(path: "search/jql")
+        let r: CloudResult = try await postDecoding(url: url, body: body)
+        return JiraSearchResult(nextPageToken: r.nextPageToken, issues: r.issues)
+    }
+
+    // Server v2: GET search with startAt offset encoded in nextPageToken.
+    private func searchIssuesServer(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+        struct ServerResult: Decodable {
+            let startAt: Int
+            let maxResults: Int
+            let total: Int
+            let issues: [JiraIssue]
+        }
+        let startAt = nextPageToken.flatMap(Int.init) ?? 0
         var items = [URLQueryItem]()
         items.append(URLQueryItem(name: "jql", value: jql))
         items.append(URLQueryItem(name: "startAt", value: String(startAt)))
         items.append(URLQueryItem(name: "maxResults", value: String(maxResults)))
         items.append(URLQueryItem(name: "fields", value: "summary,status,priority,assignee,reporter,issuetype,labels,components,created,updated,resolution,parent,subtasks,issuelinks,description"))
-        return try await get("search", query: items)
+        let r: ServerResult = try await get("search", query: items)
+        let nextOffset = startAt + r.issues.count
+        let token = nextOffset < r.total ? String(nextOffset) : nil
+        return JiraSearchResult(nextPageToken: token, issues: r.issues,
+                                startAt: r.startAt, maxResults: r.maxResults, total: r.total)
     }
 
     public func getIssue(key: String) async throws -> JiraIssue {
@@ -92,6 +148,23 @@ public actor JiraRESTClient: JiraClient {
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         let url = try buildURL(path: path, query: query)
         return try await sendDecoding(url: url)
+    }
+
+    private func postDecoding<T: Decodable, B: Encodable>(url: URL, body: B) async throws -> T {
+        var request = try await makeRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, http) = try await transport.data(for: request)
+        try validate(http: http, data: data)
+        let preview = String(data: data.prefix(300), encoding: .utf8) ?? "<binary>"
+        logger.info("POST \(url.absoluteString, privacy: .public) status=\(http.statusCode) body=\(preview, privacy: .public)")
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            logger.error("decode failure for \(url.absoluteString, privacy: .public): \(String(describing: error))")
+            throw JiraAPIError.decoding(String(describing: error))
+        }
     }
 
     private func sendDecoding<T: Decodable>(url: URL) async throws -> T {
@@ -145,6 +218,8 @@ public actor JiraRESTClient: JiraClient {
 
     private func validate(http: HTTPURLResponse, data: Data) throws {
         guard !(200..<300).contains(http.statusCode) else { return }
+        let body = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
+        logger.error("HTTP \(http.statusCode, privacy: .public) \(http.url?.absoluteString ?? "?", privacy: .public): \(body, privacy: .public)")
         throw mapError(status: http.statusCode, http: http)
     }
 

@@ -33,7 +33,7 @@ public protocol JiraClient: Sendable {
     func serverInfo() async throws
     func listProjects() async throws -> [JiraProject]
     func getProject(key: String) async throws -> JiraProject
-    func searchIssues(jql: String, startAt: Int, maxResults: Int) async throws -> JiraSearchResult
+    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult
     func getIssue(key: String) async throws -> JiraIssue
     func listComments(issueKey: String) async throws -> [JiraComment]
     func listAttachments(issueKey: String) async throws -> [JiraAttachment]

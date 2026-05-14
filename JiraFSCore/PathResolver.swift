@@ -27,6 +27,13 @@ public enum FSNodeKind: Hashable, Sendable {
             return false
         }
     }
+
+    /// Whether to eagerly load file content during directory enumeration.
+    /// Attachments are excluded to avoid downloading large binaries.
+    public var shouldPreloadOnEnumerate: Bool {
+        if case .attachment = self { return false }
+        return !isDirectory
+    }
 }
 
 /// Validates and converts between filesystem paths and `FSNodeKind`s.
