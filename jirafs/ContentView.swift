@@ -150,6 +150,14 @@ struct InstanceDetailView: View {
                                 Text(email).textSelection(.enabled)
                             }
                         }
+                        if let keys = entry.allowedProjectKeys, !keys.isEmpty {
+                            GridRow {
+                                Text("Projects").foregroundStyle(.secondary)
+                                Text(keys.joined(separator: ", "))
+                                    .textSelection(.enabled)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
                     }
                     .font(.callout)
                     .padding(.vertical, 4)

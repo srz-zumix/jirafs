@@ -29,6 +29,9 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// Tilde-expanded path where this instance is mounted, e.g. `~/jirafs/myinstance`.
         /// `nil` uses the default `~/jirafs/<name>`.
         public var mountPath: String?
+        /// Project keys to expose. `nil` means all projects; a non-empty array
+        /// limits the file system to only those project keys (case-insensitive).
+        public var allowedProjectKeys: [String]?
 
         public var id: String { name }
 
@@ -37,12 +40,13 @@ public struct Configuration: Codable, Sendable, Equatable {
             return (raw as NSString).expandingTildeInPath
         }
 
-        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry, mountPath: String? = nil) {
+        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry, mountPath: String? = nil, allowedProjectKeys: [String]? = nil) {
             self.name = name
             self.type = type
             self.url = url
             self.auth = auth
             self.mountPath = mountPath
+            self.allowedProjectKeys = allowedProjectKeys
         }
     }
 
@@ -75,7 +79,8 @@ public struct Configuration: Codable, Sendable, Equatable {
 
     public struct Pagination: Codable, Sendable, Equatable {
         public var maxResults: Int
-        public static let `default` = Pagination(maxResults: 100)
+        /// JIRA Server JQL allows up to 1000 results per request; Cloud caps at 100.
+        public static let `default` = Pagination(maxResults: 1000)
     }
 
     public static func load(from url: URL) throws -> Configuration {

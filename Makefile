@@ -23,7 +23,7 @@ DERIVED_DATA   ?= build/DerivedData
 APP_PATH        = $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)/jirafs.app
 APPEX_PATH      = /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
 
-# マウント用（make mount INSTANCE=dena0.atlassian.net PATH=~/jirafs/dena）
+# マウント用（make mount INSTANCE=hoge.atlassian.net PATH=~/jirafs/hoge
 INSTANCE       ?=
 PATH_ARG       ?= ~/jirafs
 
@@ -60,9 +60,8 @@ install: build ## ビルド → /Applications/jirafs.app にインストール
 # （install 後や入れ替え後は必ず実行）
 # ──────────────────────────────────────────
 register: ## fskitd を停止し拡張を pluginkit 再登録（install 後に必ず実行）
-	@echo "Stopping fskitd (launchd will restart on demand)..."
-	-sudo launchctl stop com.apple.filesystems.fskitd
-	@sleep 1
+	@echo "Stopping fskitd..."
+	-sudo kill $$(pgrep fskitd) 2>/dev/null; sleep 2
 	sudo pluginkit -a "$(APPEX_PATH)"
 	@echo "✓ Extension registered"
 
@@ -79,11 +78,11 @@ open: ## ホストアプリ（/Applications/jirafs.app）を起動
 
 # ──────────────────────────────────────────
 # マウント
-# 使い方: make mount INSTANCE=dena0.atlassian.net PATH_ARG=~/jirafs/dena
+# 使い方: make mount INSTANCE=hoge.atlassian.net PATH_ARG=~/jirafs/hoge
 # ──────────────────────────────────────────
-mount: ## マウント（例: make mount INSTANCE=dena0.atlassian.net PATH_ARG=~/jirafs/dena）
+mount: ## マウント（例: make mount INSTANCE=hoge.atlassian.net PATH_ARG=~/jirafs/hoge）
 	@if [ -z "$(INSTANCE)" ]; then \
-		echo "ERROR: INSTANCE が未指定です。例: make mount INSTANCE=dena0.atlassian.net PATH_ARG=~/jirafs/dena"; \
+		echo "ERROR: INSTANCE が未指定です。例: make mount INSTANCE=hoge.atlassian.net PATH_ARG=~/jirafs/hoge"; \
 		exit 1; \
 	fi
 	mkdir -p "$(PATH_ARG)"
@@ -93,9 +92,9 @@ mount: ## マウント（例: make mount INSTANCE=dena0.atlassian.net PATH_ARG=~
 
 # ──────────────────────────────────────────
 # アンマウント
-# 使い方: make unmount PATH_ARG=~/jirafs/dena
+# 使い方: make unmount PATH_ARG=~/jirafs/hoge
 # ──────────────────────────────────────────
-unmount: ## アンマウント（例: make unmount PATH_ARG=~/jirafs/dena）
+unmount: ## アンマウント（例: make unmount PATH_ARG=~/jirafs/hoge）
 	sudo /usr/sbin/diskutil unmount force "$(PATH_ARG)"
 	@echo "✓ Unmounted $(PATH_ARG)"
 

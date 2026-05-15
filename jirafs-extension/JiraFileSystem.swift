@@ -24,9 +24,9 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             self.containerStatus = .ready
             let hostname = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
-            let (instanceName, config, auth) = try JiraFileSystem.lookupInstance(hostname: hostname)
+            let (instanceName, config, auth, allowedProjectKeys) = try JiraFileSystem.lookupInstance(hostname: hostname)
             let client = JiraRESTClient(config: config, auth: auth)
-            let dataSource = IssueDataSource(client: client)
+            let dataSource = IssueDataSource(client: client, allowedProjectKeys: allowedProjectKeys)
             let isReadOnly = true
             let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
@@ -113,7 +113,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     /// Resolve the instance matching `hostname` (falls back to the first entry).
-    static func lookupInstance(hostname: String?) throws -> (String, JiraInstanceConfig, AuthProvider) {
+    static func lookupInstance(hostname: String?) throws -> (String, JiraInstanceConfig, AuthProvider, [String]?) {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
         let entry: Configuration.InstanceEntry?
@@ -135,13 +135,20 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             let token = try keychain.password(instanceName: entry.name, account: "pat")
             auth = PATAuth(token: token)
         }
-        return (entry.name, cfg, auth)
+        return (entry.name, cfg, auth, entry.allowedProjectKeys)
     }
 
     static func configURL() -> URL {
         let fm = FileManager.default
-        let appSupport = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        return appSupport.appendingPathComponent("jirafs/config.json")
+        // The extension is sandboxed; applicationSupportDirectory resolves to
+        // ~/Library/Containers/com.zumix.jirafs.fskit/Data/Library/Application Support/
+        // The host app writes here directly (no sandbox on host side).
+        let appSupport = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                      appropriateFor: nil, create: true))
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support")
+        let dir = appSupport.appendingPathComponent("jirafs", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("config.json")
     }
 }

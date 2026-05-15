@@ -19,6 +19,46 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
     private let itemsLock = NSLock()
     private var items: [UInt64: JiraFSItem] = [:]
 
+    // MARK: - Task lifecycle tracking
+
+    /// Storage for in-flight task handles, protected by an async-safe lock.
+    /// `OSAllocatedUnfairLock.withLock` is safe to call from async contexts
+    /// (unlike `NSLock.lock()`/`unlock()` which are `@available(*, noasync)`).
+    private struct TaskState {
+        var tasks: [UInt64: Task<Void, Never>] = [:]
+        var nextID: UInt64 = 0
+    }
+    private let taskStorage = OSAllocatedUnfairLock(initialState: TaskState())
+
+    /// Creates a `Task<Void, Never>` whose lifetime is tracked by this volume.
+    /// The task removes itself from tracking when it finishes.
+    /// Call `cancelAllTasks()` in `unmount` to abort in-flight work before
+    /// FSKit tears down the volume.
+    @discardableResult
+    func makeTask(_ body: @Sendable @escaping () async -> Void) -> Task<Void, Never> {
+        let id = taskStorage.withLock { state -> UInt64 in
+            let id = state.nextID
+            state.nextID &+= 1
+            return id
+        }
+        let task = Task<Void, Never> {
+            defer { self.taskStorage.withLock { $0.tasks.removeValue(forKey: id) } }
+            await body()
+        }
+        taskStorage.withLock { $0.tasks[id] = task }
+        return task
+    }
+
+    /// Cancels every tracked in-flight task. Call before `unmount reply()`.
+    func cancelAllTasks() {
+        let snapshot = taskStorage.withLock { state -> [UInt64: Task<Void, Never>] in
+            let s = state.tasks
+            state.tasks = [:]
+            return s
+        }
+        snapshot.values.forEach { $0.cancel() }
+    }
+
     init(name: String, dataSource: IssueDataSource, isReadOnly: Bool) {
         self.dataSource = dataSource
         self.instanceName = name

@@ -108,6 +108,7 @@ targets:
         EXTENSIONKIT_EXTENSION: YES
         SWIFT_OBJC_BRIDGING_HEADER: jirafs-extension/jirafs-extension-Bridging-Header.h
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
 
   jirafs:
     type: application

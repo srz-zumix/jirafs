@@ -12,15 +12,15 @@ extension JiraVolume: FSVolume.ReadWriteOperations {
         logger.info("read: kind=\(String(describing: node.kind), privacy: .public) offset=\(offset) length=\(length) bufLen=\(buffer.length)")
         let r = SendableBox(reply)
         let b = SendableBox(buffer)
-        Task {
+        makeTask {
             do {
                 try await self.loadPayload(for: node)
                 guard let data = node.cachedData else {
-                    logger.warning("read: cachedData nil for \(String(describing: node.kind), privacy: .public)")
+                    self.logger.warning("read: cachedData nil for \(String(describing: node.kind), privacy: .public)")
                     r.value(0, FSKitError.notFound); return
                 }
                 let start = Int(offset)
-                logger.info("read: data.count=\(data.count) start=\(start) length=\(length)")
+                self.logger.info("read: data.count=\(data.count) start=\(start) length=\(length)")
                 guard start < data.count else { r.value(0, nil); return }
                 let end = min(data.count, start + length)
                 let slice = data.subdata(in: start..<end)
@@ -33,10 +33,10 @@ extension JiraVolume: FSVolume.ReadWriteOperations {
                         return n
                     }
                 }
-                logger.info("read: copied=\(copied)")
+                self.logger.info("read: copied=\(copied)")
                 r.value(copied, nil)
             } catch {
-                logger.error("read: error=\(error, privacy: .public)")
+                self.logger.error("read: error=\(error, privacy: .public)")
                 r.value(0, FSKitError.from(error))
             }
         }

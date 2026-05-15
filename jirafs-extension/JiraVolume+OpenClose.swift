@@ -11,7 +11,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             reply(FSKitError.readOnly); return
         }
         let r = SendableBox(reply)
-        Task {
+        makeTask {
             do {
                 try await self.loadPayload(for: node)
                 r.value(nil)

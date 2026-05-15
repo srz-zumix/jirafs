@@ -10,6 +10,8 @@ public actor IssueDataSource {
     public let cache: CacheManager
     public let ttl: Configuration.CacheTTLConfig
     public let maxResults: Int
+    /// Project key allowlist. `nil` = all projects; non-empty = only listed keys.
+    public let allowedProjectKeys: [String]?
     private let limiter: RateLimiter
 
     public init(
@@ -17,12 +19,14 @@ public actor IssueDataSource {
         cache: CacheManager = CacheManager(),
         ttl: Configuration.CacheTTLConfig = .default,
         maxResults: Int = 100,
+        allowedProjectKeys: [String]? = nil,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
         self.cache = cache
         self.ttl = ttl
         self.maxResults = maxResults
+        self.allowedProjectKeys = allowedProjectKeys
         self.limiter = limiter
     }
 
@@ -33,8 +37,15 @@ public actor IssueDataSource {
         let value = try await limiter.run { [client] in
             try await client.listProjects()
         }
-        await cache.set("projects", value: value, ttl: ttl.projects)
-        return value
+        let filtered: [JiraProject]
+        if let allowed = allowedProjectKeys, !allowed.isEmpty {
+            let upper = allowed.map { $0.uppercased() }
+            filtered = value.filter { upper.contains($0.key.uppercased()) }
+        } else {
+            filtered = value
+        }
+        await cache.set("projects", value: filtered, ttl: ttl.projects)
+        return filtered
     }
 
     public func project(key: String) async throws -> JiraProject {
@@ -100,27 +111,54 @@ public actor IssueDataSource {
         return collected
     }
 
-    /// Fetches pages `fetchedCount..<total` (step `maxResults`) in parallel.
+    /// Fetches pages `fetchedCount..<total` (step `maxResults`) in parallel,
+    /// with a concurrency cap to avoid triggering JIRA rate limiting.
     private func fetchRemainingPagesParallel(jql: String, fetchedCount: Int, total: Int) async throws -> [String] {
         let offsets = stride(from: fetchedCount, to: total, by: maxResults).map { Int($0) }
         guard !offsets.isEmpty else { return [] }
+        // Cap concurrent requests to avoid hitting server-side rate limits.
+        let concurrencyLimit = 20
 
         let pages = try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
-            for offset in offsets {
+            var inFlight = 0
+            var offsetIterator = offsets.makeIterator()
+
+            // Seed up to concurrencyLimit tasks.
+            while inFlight < concurrencyLimit, let offset = offsetIterator.next() {
+                let capturedOffset = offset
                 group.addTask {
                     let result = try await self.limiter.run { [self] in
                         try await self.client.searchIssues(
                             jql: jql,
-                            nextPageToken: String(offset),
+                            nextPageToken: String(capturedOffset),
                             maxResults: self.maxResults,
                             fields: []
                         )
                     }
-                    return (offset, result.issues.map(\.key))
+                    return (capturedOffset, result.issues.map(\.key))
+                }
+                inFlight += 1
+            }
+
+            var all: [(Int, [String])] = []
+            // As each task finishes, launch the next pending offset.
+            for try await page in group {
+                all.append(page)
+                if let offset = offsetIterator.next() {
+                    let capturedOffset = offset
+                    group.addTask {
+                        let result = try await self.limiter.run { [self] in
+                            try await self.client.searchIssues(
+                                jql: jql,
+                                nextPageToken: String(capturedOffset),
+                                maxResults: self.maxResults,
+                                fields: []
+                            )
+                        }
+                        return (capturedOffset, result.issues.map(\.key))
+                    }
                 }
             }
-            var all: [(Int, [String])] = []
-            for try await page in group { all.append(page) }
             return all.sorted { $0.0 < $1.0 }.flatMap(\.1)
         }
         return pages

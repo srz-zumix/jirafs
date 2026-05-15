@@ -44,12 +44,16 @@ extension JiraVolume: FSVolume.Operations {
 
     func unmount(replyHandler reply: @escaping () -> Void) {
         logger.info("unmount \(self.instanceName, privacy: .public)")
+        // Cancel all in-flight Tasks (network fetches, directory enumeration, etc.)
+        // BEFORE calling reply(), so FSKit doesn't destroy the volume while Tasks
+        // are still holding references to packer/reply handlers.
+        cancelAllTasks()
         reply()
     }
 
     func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping (Error?) -> Void) {
         let r = SendableBox(reply)
-        Task {
+        makeTask {
             await self.dataSource.synchronize()
             r.value(nil)
         }
@@ -76,7 +80,7 @@ extension JiraVolume: FSVolume.Operations {
         // Without this, open/read never get issued for size-0 files.
         if !node.kind.isDirectory && node.cachedData == nil {
             let r = SendableBox(reply)
-            Task {
+            makeTask {
                 try? await self.loadPayload(for: node)
                 r.value(self.makeAttributes(for: node), nil)
             }
@@ -96,7 +100,7 @@ extension JiraVolume: FSVolume.Operations {
         let lookupName = name.string ?? ""
         let r = SendableBox(reply)
         let n = SendableBox(name)
-        Task {
+        makeTask {
             do {
                 if let kind = try await self.resolveChild(parent: parent.kind, name: lookupName) {
                     let child = self.item(for: kind)
@@ -131,10 +135,10 @@ extension JiraVolume: FSVolume.Operations {
         let p = SendableBox(packer)
         logger.info("enumerateDirectory start kind=\(String(describing: parent.kind), privacy: .public) cookie=\(cookie.rawValue)")
 
-        Task {
+        makeTask {
             do {
                 let entries = try await self.children(of: parent.kind)
-                logger.info("enumerateDirectory got \(entries.count) entries for kind=\(String(describing: parent.kind), privacy: .public)")
+                self.logger.info("enumerateDirectory got \(entries.count) entries for kind=\(String(describing: parent.kind), privacy: .public)")
                 var index: UInt64 = 0
                 for (name, kind) in entries {
                     index += 1

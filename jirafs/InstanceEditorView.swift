@@ -10,6 +10,8 @@ struct InstanceEditorView: View {
     @State private var email: String
     @State private var token: String
     @State private var mountPath: String
+    /// Comma-separated project keys to allow. Empty string = all projects.
+    @State private var projectFilter: String
 
     private let originalName: String?
     let onSave: (Configuration.InstanceEntry) -> Void
@@ -28,6 +30,8 @@ struct InstanceEditorView: View {
         _email = State(initialValue: initial?.auth.email ?? "")
         _token = State(initialValue: "")
         _mountPath = State(initialValue: initial?.mountPath ?? "")
+        let keys = initial?.allowedProjectKeys ?? []
+        _projectFilter = State(initialValue: keys.joined(separator: ", "))
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -86,6 +90,25 @@ struct InstanceEditorView: View {
                             )
                             .help("Directory where the volume will be mounted. Tilde (~) is supported.")
                         }
+                    }
+
+                    formSection("Projects") {
+                        fieldRow("Filter") {
+                            TextField("ALL (e.g. PROJ, ALPHA)", text: $projectFilter)
+                            .help("Comma-separated project keys to expose. Leave blank to show all projects.")
+                        }
+                        .overlay(alignment: .bottom) { Color.clear }
+                        HStack(spacing: 4) {
+                            Image(systemName: "info.circle")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("Leave blank to show all projects. Keys are case-insensitive.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                        .padding(.bottom, 6)
                     }
                 }
                 .padding()
@@ -160,9 +183,14 @@ struct InstanceEditorView: View {
             }
         }
         let auth = Configuration.AuthEntry(method: method, email: method == .apiToken ? email : nil)
+        let parsedKeys = projectFilter
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty }
         let entry = Configuration.InstanceEntry(
             name: name, type: edition, url: url, auth: auth,
-            mountPath: mountPath.isEmpty ? nil : mountPath
+            mountPath: mountPath.isEmpty ? nil : mountPath,
+            allowedProjectKeys: parsedKeys.isEmpty ? nil : parsedKeys
         )
         onSave(entry)
     }
