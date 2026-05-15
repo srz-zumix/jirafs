@@ -33,9 +33,21 @@ public protocol JiraClient: Sendable {
     func serverInfo() async throws
     func listProjects() async throws -> [JiraProject]
     func getProject(key: String) async throws -> JiraProject
-    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult
+    /// Searches for issues matching `jql`.
+    ///
+    /// - Parameter fields: JIRA field IDs to include in each issue's `fields`
+    ///   object. Pass `[]` to request **no** fields (key is always returned as
+    ///   a top-level property). Pass `nil` to request the standard full set.
+    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int, fields: [String]?) async throws -> JiraSearchResult
     func getIssue(key: String) async throws -> JiraIssue
     func listComments(issueKey: String) async throws -> [JiraComment]
     func listAttachments(issueKey: String) async throws -> [JiraAttachment]
     func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data
+}
+
+extension JiraClient {
+    /// Backward-compatible overload that requests the full field set.
+    public func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+        try await searchIssues(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults, fields: nil)
+    }
 }

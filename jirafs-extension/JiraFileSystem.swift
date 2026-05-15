@@ -17,16 +17,22 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         replyHandler reply: @escaping (FSVolume?, Error?) -> Void
     ) {
         do {
-            let (instanceName, config, auth) = try JiraFileSystem.lookupInstance()
+            // For URL-based resources (jira://), fskitd skips probeResource and
+            // calls loadResource directly. FSKit requires containerStatus == .ready
+            // before it processes the reply(volume:) call, so we ensure it here.
+            // (If probeResource was called it already set .ready; this is idempotent.)
+            self.containerStatus = .ready
+            let hostname = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
+            logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
+            let (instanceName, config, auth) = try JiraFileSystem.lookupInstance(hostname: hostname)
             let client = JiraRESTClient(config: config, auth: auth)
             let dataSource = IssueDataSource(client: client)
             let isReadOnly = true
             let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
-            // Transition container state from notReady → ready before handing the
-            // volume to fskitd.  Without this, fskitd sees the container still in
-            // notReady state and returns EAGAIN to the caller.
-            self.containerStatus = .ready
+            // FSKit automatically transitions containerStatus notReady → active
+            // when reply(volume, nil) is called. Do NOT set it manually here
+            // or FSKit reports "unexpected container state".
             reply(volume, nil)
         } catch {
             logger.error("loadResource failed: \(error, privacy: .public)")
@@ -35,18 +41,37 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     func unloadResource(resource: FSResource, options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
+        // Reset to ready so fskitd can re-probe and re-load the same containerID
+        // on a subsequent mount without needing a fskitd restart.
+        self.containerStatus = .ready
         reply(nil)
     }
 
     func probeResource(resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
-        // URL-based resources are recognized by scheme (FSMatchingURLSchemes in Info.plist).
-        // Always return usable; actual credential validation happens in loadResource.
-        let name = JiraFileSystem.firstInstance()?.name ?? "jirafs"
-        // Use deterministic UUID so fskitd recognises the container across the applyResource
-        // state machine.  Random UUIDs cause fskitd to treat every attempt as an unknown
-        // container and immediately close it (EAGAIN).  Cross-session collisions are
-        // avoided by restarting fskitd (launchctl kickstart) before each mount.
-        let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: name))
+        // URL ベースのマウントでは resource から hostname を KVC で取得し、
+        // config.json の対応インスタンスを選択する。
+        let hostname = JiraFileSystem.hostname(from: resource, taskOptions: [])
+        logger.info("probeResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
+        let configURL = JiraFileSystem.configURL()
+        let config = (try? Configuration.load(from: configURL)) ?? Configuration()
+        let entry: Configuration.InstanceEntry?
+        if let hostname {
+            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        } else {
+            entry = config.instances.first
+        }
+        let name = entry?.name ?? "jirafs"
+        // Deterministic UUID keyed on the hostname (or instance name) so fskitd
+        // recognises the same container across the probe → load state machine.
+        // Using a random UUID causes EAGAIN because fskitd treats every attempt
+        // as an unknown container and immediately closes it.
+        let seedKey = hostname ?? name
+        let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: seedKey))
+        // Transition notReady → ready so that fskitd can subsequently call
+        // loadResource. FSKit requires the container to be in "ready" state
+        // before it will invoke loadResource; without this, loadResource fails
+        // with EAGAIN ("unexpected container state").
+        self.containerStatus = .ready
         reply(.usable(name: name, containerID: containerID), nil)
     }
 
@@ -56,23 +81,48 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
 
     // MARK: - Configuration lookup
 
+    /// Extracts the JIRA hostname from the FSResource (via KVC) or from the
+    /// raw taskOptions strings (looks for a "jira://" URL).
+    static func hostname(from resource: FSResource, taskOptions: [String]) -> String? {
+        // Approach 1: FSResource may carry a URL property (non-public API).
+        // Use KVC so we don't crash if the property doesn't exist.
+        if resource.responds(to: NSSelectorFromString("url")),
+           let url = (resource as AnyObject).value(forKey: "url") as? URL,
+           let host = url.host {
+            return host
+        }
+        // Approach 2: scan taskOptions for a "jira://<host>" string.
+        for opt in taskOptions {
+            if let url = URL(string: opt), url.scheme == "jira", let host = url.host {
+                return host
+            }
+        }
+        return nil
+    }
+
     static func firstInstance() -> Configuration.InstanceEntry? {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
         return config.instances.first
     }
 
-    static func deterministicUUID(for name: String) -> UUID {
+    static func deterministicUUID(for key: String) -> UUID {
         var bytes = Array<UInt8>(repeating: 0, count: 16)
-        for (i, b) in Array(name.utf8).enumerated() { bytes[i % 16] ^= b }
+        for (i, b) in Array(key.utf8).enumerated() { bytes[i % 16] ^= b }
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
-    /// Resolve the first configured instance into config + auth provider.
-    static func lookupInstance() throws -> (String, JiraInstanceConfig, AuthProvider) {
-        guard let entry = firstInstance() else {
-            throw JiraAPIError.missingCredentials
+    /// Resolve the instance matching `hostname` (falls back to the first entry).
+    static func lookupInstance(hostname: String?) throws -> (String, JiraInstanceConfig, AuthProvider) {
+        let configURL = JiraFileSystem.configURL()
+        let config = (try? Configuration.load(from: configURL)) ?? Configuration()
+        let entry: Configuration.InstanceEntry?
+        if let hostname {
+            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        } else {
+            entry = config.instances.first
         }
+        guard let entry else { throw JiraAPIError.missingCredentials }
         let keychain = KeychainManager()
         let cfg = JiraInstanceConfig(name: entry.name, baseURL: entry.url, edition: entry.type)
         let auth: AuthProvider

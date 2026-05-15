@@ -197,57 +197,132 @@ Phase 1 (MVP) の実装ステップとはどこまで進んだかを記録する
 
 ## ビルド & テスト
 
-Xcode 16.4 以降を選択していることを確認する (`xcode-select -p` または `DEVELOPER_DIR=...`)。
+Xcode 16.4 以降を選択していることを確認する。
 
 ```bash
-# プロジェクト生成 (project.yml を編集した後は毎回実行)
+# Xcode バージョン確認
+DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer xcodebuild -version
+```
+
+### プロジェクト生成
+
+`project.yml` を編集したら **毎回** 実行する（`jirafs.xcodeproj` は .gitignore 済）。
+
+```bash
 xcodegen generate
-
-# ビルド (FSKit entitlement のため CODE_SIGNING_ALLOWED=NO を付与)
-DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  xcodebuild -project jirafs.xcodeproj -scheme jirafs -configuration Debug \
-    -destination 'platform=macOS' -derivedDataPath build \
-    CODE_SIGNING_ALLOWED=NO build
-
-# テスト (JiraAPITests + JiraFSCoreTests, deployment target 14.0)
-DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer \
-  xcodebuild -project jirafs.xcodeproj -scheme jirafs -configuration Debug \
-    -destination 'platform=macOS' -derivedDataPath build \
-    CODE_SIGNING_ALLOWED=NO test
-
-# アーカイブ (開発者署名あり)
-xcodebuild -scheme jirafs -configuration Release archive
 ```
 
-> 拡張本体 (`jirafs-extension`) と `jirafs` ホストアプリは macOS 15.4 が必要 (FSKit 依存)。`JiraAPI` / `JiraFSCore` / テストは macOS 14.0 を維持し、Xcode 16.4 + macOS 14 以降のホストでテスト実行できる。
+### ビルド
 
-## マウント手順
-
-マウントは **CLI / ホストアプリ UI** のいずれかを選択できる。いずれも **1 マウント = 1 JIRA スペース** を前提とする。
+FSKit 拡張は **コード署名が必須** (`CODE_SIGNING_ALLOWED=NO` は使用禁止)。
+署名に `-allowProvisioningUpdates` を使い、Automatic Signing で証明書を自動取得する。
 
 ```bash
-# 1. ホストアプリをビルド・実行して認証情報を保存
-# 2. システム設定で jirafs 拡張を有効化
-#    設定 > 一般 > ログイン項目と拡張機能 > ファイルシステム拡張機能
-
-### A. CLI でマウント
-mkdir ~/jirafs
-mount -F -t jirafs -o ro jira://mycompany.atlassian.net ~/jirafs   # read-only
-# または
-mount -F -t jirafs -o rw jira://mycompany.atlassian.net ~/jirafs   # read-write
-
-### B. ホストアプリ UI でマウント
-# ホストアプリでインスタンスを選択し「マウント」ボタンを押下。
-# デフォルトで /Volumes/jirafs-<instanceName> にマウントされる。
-
-# 使用
-ls ~/jirafs/projects/
-cat ~/jirafs/projects/PROJ/issues/PROJ-1/summary.txt
-cat ~/jirafs/projects/PROJ/issues/PROJ-1/description.md
-
-# アンマウント
-umount ~/jirafs
+DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
+  xcodebuild -project jirafs.xcodeproj \
+             -scheme jirafs \
+             -configuration Debug \
+             -derivedDataPath build/DerivedData \
+             -allowProvisioningUpdates \
+             build 2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)"
 ```
+
+### テスト
+
+フレームワーク層（`JiraAPI` / `JiraFSCore`）のテストは macOS 14.0 以降で実行可能。
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
+  xcodebuild -project jirafs.xcodeproj \
+             -scheme jirafs \
+             -configuration Debug \
+             -derivedDataPath build/DerivedData \
+             -allowProvisioningUpdates \
+             test 2>&1 | grep -E "error:|Test Suite|FAILED|PASSED"
+```
+
+> 拡張本体 (`jirafs-extension`) と `jirafs` ホストアプリは macOS 15.4 が必要 (FSKit 依存)。
+> `JiraAPI` / `JiraFSCore` / テストは macOS 14.0 を維持し、Xcode 16.4 + macOS 14 以降のホストでテスト実行できる。
+
+## インストールとマウント手順
+
+### インストール
+
+ビルド後、`/Applications/` にコピーする。
+
+```bash
+sudo cp -R build/DerivedData/Build/Products/Debug/jirafs.app /Applications/
+```
+
+### FSKit 拡張の登録
+
+インストール後 **初回** または **アプリを入れ替えた後** に必ず実行する。
+
+```bash
+# 1. fskitd を再起動（古い拡張を掴んでいる場合はこれをしないとマウント失敗）
+FSKITD_PID=$(sudo launchctl list 2>/dev/null | awk '/fskitd/{print $1}')
+[ -n "$FSKITD_PID" ] && [ "$FSKITD_PID" != "-" ] && sudo kill -9 "$FSKITD_PID"
+
+# 2. 5 秒待つ（fskitd が自動再起動するまで）
+sleep 5
+
+# 3. 拡張を登録
+sudo pluginkit -a /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
+```
+
+登録確認:
+
+```bash
+pluginkit -m -A -i com.zumix.jirafs.fskit
+```
+
+### ホストアプリの起動と設定
+
+1. `/Applications/jirafs.app` を起動
+2. 「+」で JIRA インスタンスを追加（URL / Edition / 認証情報）
+3. 認証情報は Keychain に保存される
+
+### マウント
+
+マウントには `sudo` が必要。`mount -F` は FSKit (fskitd) 経由でのマウントを意味する。
+
+```bash
+# マウントポイント作成（初回のみ）
+mkdir -p ~/jirafs
+
+# マウント（read-only）
+sudo /sbin/mount -F -t jirafs -o ro jira://<host> ~/jirafs
+
+# 例: Atlassian Cloud
+sudo /sbin/mount -F -t jirafs -o ro jira://mycompany.atlassian.net ~/jirafs
+
+# 例: JIRA Server
+sudo /sbin/mount -F -t jirafs -o ro jira://jira.example.com ~/jirafs
+```
+
+マウント確認:
+
+```bash
+mount | grep jirafs
+ls ~/jirafs/projects/
+```
+
+### アンマウント
+
+```bash
+# 通常
+sudo /sbin/umount ~/jirafs
+
+# 強制（ビジー状態の場合）
+sudo /usr/sbin/diskutil unmount force ~/jirafs
+```
+
+## ホストアプリの Mount ボタンを使う場合
+
+UI から Mount / Unmount を操作できる。  
+`do shell script … with administrator privileges` で macOS 標準のパスワードダイアログが表示され、root 権限で上記の `mount` コマンドが実行される。
+
+失敗した場合はエラー欄に表示されるコマンドを手動で実行できる。
 
 ### 動作モード
 
@@ -267,22 +342,50 @@ umount ~/jirafs
 
 ## トラブルシューティング
 
+### `Resource busy` / `Operation not permitted` (code 69) でマウント失敗
+
+fskitd が古いバージョンの拡張を掴んでいる。以下の手順で再登録する。
+
+```bash
+FSKITD_PID=$(sudo launchctl list 2>/dev/null | awk '/fskitd/{print $1}')
+[ -n "$FSKITD_PID" ] && [ "$FSKITD_PID" != "-" ] && sudo kill -9 "$FSKITD_PID"
+sleep 5
+sudo pluginkit -a /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
+```
+
+> アプリを `/Applications/` に再インストールするたびに、この手順が必要。
+
+### `CODE_SIGNING_ALLOWED=NO` でビルドした拡張がマウントできない
+
+FSKit 拡張は署名なしでは fskitd に拒否される。必ず `-allowProvisioningUpdates` で署名付きビルドを使うこと。
+
+### ホストアプリが「管理者のユーザー名またはパスワードが違います」で失敗する
+
+ホストアプリに `app-sandbox` entitlement が付与されていると `NSAppleScript with administrator privileges` が OS レベルでブロックされる。`project.yml` から `com.apple.security.app-sandbox: true` を削除して再ビルドすること。
+
 ### FSKit 拡張が認識されない
 
-- システム設定で拡張機能が有効になっているか確認
-- SIP (System Integrity Protection) が有効な場合、開発者署名が必要
-- `systemextensionsctl list` で拡張の状態確認
+```bash
+# 拡張の登録状態を確認
+pluginkit -m -A -i com.zumix.jirafs.fskit
 
-### マウントが失敗する
+# 再登録
+sudo pluginkit -a /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
+```
 
-- `mount -F -t jirafs` の `-t` に指定する名前が `Info.plist` の `FSShortName` と一致しているか確認
-- macOS 15+ では `-F` オプション (FSKit 経由) が必要。従来の `mount -t` だけでは認識されない
-- JIRA URL が正しいか確認 (`jira://` への正規化推奨)
-- ネットワーク接続を確認
-- Console.app でログ確認 (subsystem: `com.zumix.jirafs`)
+### ログ確認
+
+```bash
+# fskitd / 拡張のログをリアルタイム表示
+log stream --predicate 'subsystem CONTAINS "com.zumix.jirafs" OR process CONTAINS "fskitd"' --level debug
+
+# 過去 10 分のログ
+log show --predicate 'subsystem CONTAINS "com.zumix.jirafs" OR process CONTAINS "fskitd"' \
+  --last 10m --style compact | tail -50
+```
 
 ### JIRA API エラー
 
 - 認証情報が正しいか Keychain で確認
 - API のレート制限に達していないか確認
-- JIRA インスタンスのバージョンに応じた API バージョンを使用しているか確認
+- JIRA インスタンスのバージョンに応じた API バージョンを使用しているか確認（Cloud: v3 / Server: v2）

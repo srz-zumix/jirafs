@@ -36,16 +36,16 @@ public actor JiraRESTClient: JiraClient {
         try await get("project/\(key)")
     }
 
-    public func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+    public func searchIssues(jql: String, nextPageToken: String?, maxResults: Int, fields: [String]?) async throws -> JiraSearchResult {
         if config.edition == .cloud {
-            return try await searchIssuesCloud(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults)
+            return try await searchIssuesCloud(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults, fields: fields)
         } else {
-            return try await searchIssuesServer(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults)
+            return try await searchIssuesServer(jql: jql, nextPageToken: nextPageToken, maxResults: maxResults, fields: fields)
         }
     }
 
     // Cloud v3: POST to search/jql, token-based pagination.
-    private func searchIssuesCloud(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+    private func searchIssuesCloud(jql: String, nextPageToken: String?, maxResults: Int, fields: [String]?) async throws -> JiraSearchResult {
         struct Body: Encodable {
             let jql: String
             let maxResults: Int
@@ -64,7 +64,7 @@ public actor JiraRESTClient: JiraClient {
             let issues: [JiraIssue]
             let nextPageToken: String?
         }
-        let fieldList = [
+        let fieldList: [String] = fields ?? [
             "summary", "status", "priority", "assignee", "reporter",
             "issuetype", "labels", "components", "created", "updated",
             "resolution", "parent", "subtasks", "issuelinks", "description"
@@ -81,7 +81,7 @@ public actor JiraRESTClient: JiraClient {
     }
 
     // Server v2: GET search with startAt offset encoded in nextPageToken.
-    private func searchIssuesServer(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+    private func searchIssuesServer(jql: String, nextPageToken: String?, maxResults: Int, fields: [String]?) async throws -> JiraSearchResult {
         struct ServerResult: Decodable {
             let startAt: Int
             let maxResults: Int
@@ -93,7 +93,10 @@ public actor JiraRESTClient: JiraClient {
         items.append(URLQueryItem(name: "jql", value: jql))
         items.append(URLQueryItem(name: "startAt", value: String(startAt)))
         items.append(URLQueryItem(name: "maxResults", value: String(maxResults)))
-        items.append(URLQueryItem(name: "fields", value: "summary,status,priority,assignee,reporter,issuetype,labels,components,created,updated,resolution,parent,subtasks,issuelinks,description"))
+        // fields=nil → full field set; fields=[] → "-*" (no fields, key always returned)
+        let fieldsValue = fields.map { $0.isEmpty ? "-*" : $0.joined(separator: ",") }
+            ?? "summary,status,priority,assignee,reporter,issuetype,labels,components,created,updated,resolution,parent,subtasks,issuelinks,description"
+        items.append(URLQueryItem(name: "fields", value: fieldsValue))
         let r: ServerResult = try await get("search", query: items)
         let nextOffset = startAt + r.issues.count
         let token = nextOffset < r.total ? String(nextOffset) : nil

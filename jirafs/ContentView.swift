@@ -113,25 +113,54 @@ struct InstanceDetailView: View {
     let onDelete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(entry.name).font(.title)
-            Group {
-                LabeledContent("URL", value: entry.url.absoluteString)
-                LabeledContent("Edition", value: entry.type.rawValue)
-                LabeledContent("Auth", value: entry.auth.method.rawValue)
-                if let email = entry.auth.email {
-                    LabeledContent("Email", value: email)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Header
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name).font(.title2.bold())
+                        Text(entry.url.host ?? entry.url.absoluteString)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Button("Edit", action: onEdit)
+                        Button("Delete", role: .destructive, action: onDelete)
+                    }
+                    .buttonStyle(.bordered)
                 }
-            }
-            MountControlView(entry: entry)
-            Divider()
-            HStack {
-                Button("Edit", action: onEdit)
-                Button("Delete", role: .destructive, action: onDelete)
+
+                Divider()
+
+                // Instance info
+                GroupBox("Connection") {
+                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+                        GridRow {
+                            Text("Edition").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                            Text(entry.type.rawValue)
+                        }
+                        GridRow {
+                            Text("Auth").foregroundStyle(.secondary)
+                            Text(entry.auth.method.rawValue)
+                        }
+                        if let email = entry.auth.email {
+                            GridRow {
+                                Text("Email").foregroundStyle(.secondary)
+                                Text(email).textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .font(.callout)
+                    .padding(.vertical, 4)
+                }
+
+                MountControlView(entry: entry)
+                    .id(entry.id)
+
                 Spacer()
             }
-            Spacer()
+            .padding()
         }
-        .padding()
     }
 }

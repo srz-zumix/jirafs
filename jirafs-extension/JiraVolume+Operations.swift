@@ -130,6 +130,7 @@ extension JiraVolume: FSVolume.Operations {
         let r = SendableBox(reply)
         let p = SendableBox(packer)
         logger.info("enumerateDirectory start kind=\(String(describing: parent.kind), privacy: .public) cookie=\(cookie.rawValue)")
+
         Task {
             do {
                 let entries = try await self.children(of: parent.kind)

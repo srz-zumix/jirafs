@@ -26,14 +26,23 @@ public struct Configuration: Codable, Sendable, Equatable {
         public var type: JiraEdition
         public var url: URL
         public var auth: AuthEntry
+        /// Tilde-expanded path where this instance is mounted, e.g. `~/jirafs/myinstance`.
+        /// `nil` uses the default `~/jirafs/<name>`.
+        public var mountPath: String?
 
         public var id: String { name }
 
-        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry) {
+        public var effectiveMountPath: String {
+            let raw = mountPath ?? "~/jirafs/\(name)"
+            return (raw as NSString).expandingTildeInPath
+        }
+
+        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry, mountPath: String? = nil) {
             self.name = name
             self.type = type
             self.url = url
             self.auth = auth
+            self.mountPath = mountPath
         }
     }
 
@@ -66,7 +75,7 @@ public struct Configuration: Codable, Sendable, Equatable {
 
     public struct Pagination: Codable, Sendable, Equatable {
         public var maxResults: Int
-        public static let `default` = Pagination(maxResults: 50)
+        public static let `default` = Pagination(maxResults: 100)
     }
 
     public static func load(from url: URL) throws -> Configuration {
