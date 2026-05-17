@@ -104,6 +104,7 @@ struct ContentView: View {
                 editingInstance = nil
             }
         }
+
     }
 }
 
@@ -111,6 +112,9 @@ struct InstanceDetailView: View {
     let entry: Configuration.InstanceEntry
     let onEdit: () -> Void
     let onDelete: () -> Void
+
+    @State private var showClearCacheConfirm = false
+    @State private var clearCacheResult: String?
 
     var body: some View {
         ScrollView {
@@ -165,6 +169,38 @@ struct InstanceDetailView: View {
 
                 MountControlView(entry: entry)
                     .id(entry.id)
+
+                // Cache management
+                if entry.diskCache {
+                    GroupBox("Cache") {
+                        HStack {
+                            if let result = clearCacheResult {
+                                Text(result)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Clear Cache", role: .destructive) {
+                                showClearCacheConfirm = true
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .confirmationDialog(
+                        "Clear disk cache for \"\(entry.name)\"?",
+                        isPresented: $showClearCacheConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Clear Cache", role: .destructive) {
+                            let deleted = CacheManager.clearCache(for: entry.name)
+                            clearCacheResult = "Deleted \(deleted) file\(deleted == 1 ? "" : "s")"
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Cached data will be re-fetched from JIRA on next access.")
+                    }
+                }
 
                 Spacer()
             }

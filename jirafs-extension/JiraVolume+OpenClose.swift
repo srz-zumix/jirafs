@@ -67,6 +67,9 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
                 throw JiraAPIError.notFound
             }
             data = try await dataSource.attachmentData(attachment)
+        case .metadataNeverIndex:
+            // Zero-byte file — presence in the listing is all Spotlight checks for.
+            data = Data()
         case .configFile:
             data = Data("{}\n".utf8)
         default:

@@ -24,9 +24,26 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             self.containerStatus = .ready
             let hostname = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
-            let (instanceName, config, auth, allowedProjectKeys) = try JiraFileSystem.lookupInstance(hostname: hostname)
+            let (instanceName, config, auth, allowedProjectKeys, ttl, diskCacheEnabled) =
+                try JiraFileSystem.lookupInstance(hostname: hostname)
             let client = JiraRESTClient(config: config, auth: auth)
-            let dataSource = IssueDataSource(client: client, allowedProjectKeys: allowedProjectKeys)
+            let cachesDir: URL? = {
+                guard let base = try? FileManager.default.url(
+                    for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                else { return nil }
+                return CacheManager.cacheDirectory(for: instanceName, baseCachesDir: base)
+            }()
+            let cache = CacheManager(diskEnabled: diskCacheEnabled, cachesDir: cachesDir)
+            if diskCacheEnabled {
+                Task { await cache.evictExpiredDiskEntries() }
+            }
+            let dataSource = IssueDataSource(
+                client: client,
+                cache: cache,
+                ttl: ttl,
+                maxResults: 1000,
+                allowedProjectKeys: allowedProjectKeys
+            )
             let isReadOnly = true
             let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
@@ -113,7 +130,10 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     /// Resolve the instance matching `hostname` (falls back to the first entry).
-    static func lookupInstance(hostname: String?) throws -> (String, JiraInstanceConfig, AuthProvider, [String]?) {
+    static func lookupInstance(hostname: String?) throws
+        -> (String, JiraInstanceConfig, AuthProvider, [String]?,
+            Configuration.CacheTTLConfig, Bool)
+    {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
         let entry: Configuration.InstanceEntry?
@@ -135,7 +155,8 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             let token = try keychain.password(instanceName: entry.name, account: "pat")
             auth = PATAuth(token: token)
         }
-        return (entry.name, cfg, auth, entry.allowedProjectKeys)
+        return (entry.name, cfg, auth, entry.allowedProjectKeys,
+                config.cache, entry.diskCache)
     }
 
     static func configURL() -> URL {

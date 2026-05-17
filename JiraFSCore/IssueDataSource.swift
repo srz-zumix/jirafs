@@ -5,6 +5,17 @@ import JiraAPI
 ///
 /// Combines a `JiraClient` with `CacheManager` so the volume sees a
 /// unified, cache-aware view.
+///
+/// ## Stale-while-revalidate
+/// For every resource type (projects, issue keys, issue detail, comments,
+/// attachments) the lookup order is:
+///   1. **Fresh cache** → return immediately, no network.
+///   2. **Stale cache** → return immediately (Finder never spins), schedule
+///      a background `Task` to refresh the cache for the next access.
+///   3. **No cache** → synchronous API fetch (first-time only).
+///
+/// A `refreshing` set guards against duplicate in-flight background fetches
+/// for the same cache key.
 public actor IssueDataSource {
     public let client: any JiraClient
     public let cache: CacheManager
@@ -13,6 +24,9 @@ public actor IssueDataSource {
     /// Project key allowlist. `nil` = all projects; non-empty = only listed keys.
     public let allowedProjectKeys: [String]?
     private let limiter: RateLimiter
+
+    /// Cache keys for which a background refresh is already in flight.
+    private var refreshing: Set<String> = []
 
     public init(
         client: any JiraClient,
@@ -30,10 +44,147 @@ public actor IssueDataSource {
         self.limiter = limiter
     }
 
+    // MARK: - Public API
+
     public func projects() async throws -> [JiraProject] {
-        if let cached = await cache.get("projects", as: [JiraProject].self) {
-            return cached
+        let cacheKey = "projects"
+        if let fresh = await cache.get(cacheKey, as: [JiraProject].self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: [JiraProject].self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshProjects() }
+            return stale
         }
+        return try await fetchAndCacheProjects()
+    }
+
+    public func project(key: String) async throws -> JiraProject {
+        let cacheKey = "project/\(key)"
+        if let fresh = await cache.get(cacheKey, as: JiraProject.self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: JiraProject.self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshProject(key: key) }
+            return stale
+        }
+        return try await fetchAndCacheProject(key: key)
+    }
+
+    /// Returns all issue keys for a JIRA project.
+    ///
+    /// **Server edition** (response includes `total` + numeric `startAt`):
+    /// after the first page, all remaining pages are fetched in parallel via
+    /// `TaskGroup`, so even a 1 000-issue project completes in roughly one
+    /// round-trip (≈ 1.3 s instead of 20 × 1.3 s sequentially).
+    ///
+    /// **Cloud edition** (cursor-based `nextPageToken`): pages are fetched
+    /// sequentially as the token for page N+1 is only available after page N.
+    public func issueKeys(forProject key: String) async throws -> [String] {
+        let cacheKey = "issues/\(key)"
+        if let fresh = await cache.get(cacheKey, as: [String].self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: [String].self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshIssueKeys(project: key) }
+            return stale
+        }
+        return try await fetchAndCacheIssueKeys(forProject: key)
+    }
+
+    public func issue(key: String) async throws -> JiraIssue {
+        let cacheKey = "issue/\(key)"
+        if let fresh = await cache.get(cacheKey, as: JiraIssue.self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: JiraIssue.self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshIssue(key: key) }
+            return stale
+        }
+        return try await fetchAndCacheIssue(key: key)
+    }
+
+    public func comments(issueKey: String) async throws -> [JiraComment] {
+        let cacheKey = "comments/\(issueKey)"
+        if let fresh = await cache.get(cacheKey, as: [JiraComment].self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: [JiraComment].self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshComments(issueKey: issueKey) }
+            return stale
+        }
+        return try await fetchAndCacheComments(issueKey: issueKey)
+    }
+
+    public func attachments(issueKey: String) async throws -> [JiraAttachment] {
+        let cacheKey = "attachments/\(issueKey)"
+        if let fresh = await cache.get(cacheKey, as: [JiraAttachment].self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: [JiraAttachment].self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshAttachments(issueKey: issueKey) }
+            return stale
+        }
+        return try await fetchAndCacheAttachments(issueKey: issueKey)
+    }
+
+    public func attachmentData(_ attachment: JiraAttachment) async throws -> Data {
+        let cacheKey = "attachment-bin/\(attachment.id)"
+        if let cached = await cache.get(cacheKey, as: Data.self) { return cached }
+        let value = try await limiter.run { [client] in
+            try await client.downloadAttachment(attachment, range: nil)
+        }
+        await cache.set(cacheKey, value: value, ttl: ttl.attachmentBinary)
+        return value
+    }
+
+    public func synchronize() async {
+        await cache.synchronize()
+    }
+
+    /// Pre-warm the in-memory cache from disk so Finder browsing is fast
+    /// immediately after mount. Loads projects list and all issue key lists
+    /// sequentially in the background; individual issue details remain lazy.
+    public func warmUp() async {
+        guard let projects = try? await self.projects() else { return }
+        for project in projects {
+            _ = try? await self.issueKeys(forProject: project.key)
+        }
+    }
+
+    // MARK: - Background refresh scheduling
+
+    /// Starts a background refresh task for `key` if one is not already running.
+    private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) {
+        guard !refreshing.contains(key) else { return }
+        refreshing.insert(key)
+        Task { await task() }
+    }
+
+    private func finishRefresh(_ key: String) { refreshing.remove(key) }
+
+    // MARK: - Background refresh tasks
+
+    private func bgRefreshProjects() async {
+        _ = try? await fetchAndCacheProjects()
+        finishRefresh("projects")
+    }
+
+    private func bgRefreshProject(key: String) async {
+        _ = try? await fetchAndCacheProject(key: key)
+        finishRefresh("project/\(key)")
+    }
+
+    private func bgRefreshIssueKeys(project: String) async {
+        _ = try? await fetchAndCacheIssueKeys(forProject: project)
+        finishRefresh("issues/\(project)")
+    }
+
+    private func bgRefreshIssue(key: String) async {
+        _ = try? await fetchAndCacheIssue(key: key)
+        finishRefresh("issue/\(key)")
+    }
+
+    private func bgRefreshComments(issueKey: String) async {
+        _ = try? await fetchAndCacheComments(issueKey: issueKey)
+        finishRefresh("comments/\(issueKey)")
+    }
+
+    private func bgRefreshAttachments(issueKey: String) async {
+        _ = try? await fetchAndCacheAttachments(issueKey: issueKey)
+        finishRefresh("attachments/\(issueKey)")
+    }
+
+    // MARK: - Fetch + cache (synchronous path)
+
+    private func fetchAndCacheProjects() async throws -> [JiraProject] {
         let value = try await limiter.run { [client] in
             try await client.listProjects()
         }
@@ -48,46 +199,24 @@ public actor IssueDataSource {
         return filtered
     }
 
-    public func project(key: String) async throws -> JiraProject {
-        let cacheKey = "project/\(key)"
-        if let cached = await cache.get(cacheKey, as: JiraProject.self) {
-            return cached
-        }
+    private func fetchAndCacheProject(key: String) async throws -> JiraProject {
         let value = try await limiter.run { [client] in
             try await client.getProject(key: key)
         }
-        await cache.set(cacheKey, value: value, ttl: ttl.projects)
+        await cache.set("project/\(key)", value: value, ttl: ttl.projects)
         return value
     }
 
-    /// Returns all issue keys for a JIRA project.
-    ///
-    /// **Server edition** (response includes `total` + numeric `startAt`):
-    /// after the first page, all remaining pages are fetched in parallel via
-    /// `TaskGroup`, so even a 1 000-issue project completes in roughly one
-    /// round-trip (≈ 1.3 s instead of 20 × 1.3 s sequentially).
-    ///
-    /// **Cloud edition** (cursor-based `nextPageToken`): pages are fetched
-    /// sequentially as the token for page N+1 is only available after page N.
-    public func issueKeys(forProject key: String) async throws -> [String] {
+    private func fetchAndCacheIssueKeys(forProject key: String) async throws -> [String] {
         let cacheKey = "issues/\(key)"
-        if let cached = await cache.get(cacheKey, as: [String].self) {
-            return cached
-        }
-
         let jql = "project = \(key) ORDER BY created DESC"
 
-        // Fetch first page to detect edition and obtain total if available.
-        // fields: [] → JIRA returns only the top-level "key" (no fields body),
-        // which is all we need here. Full issue data is fetched lazily on demand.
         let first = try await limiter.run { [client] in
             try await client.searchIssues(jql: jql, nextPageToken: nil, maxResults: maxResults, fields: [])
         }
         var collected = first.issues.map(\.key)
 
         if let total = first.total, let startAt = first.startAt, total > collected.count {
-            // Server edition: all remaining pages can be calculated upfront and
-            // fetched concurrently because the offset is a simple integer.
             let extra = try await fetchRemainingPagesParallel(
                 jql: jql,
                 fetchedCount: startAt + collected.count,
@@ -95,9 +224,9 @@ public actor IssueDataSource {
             )
             collected.append(contentsOf: extra)
         } else {
-            // Cloud edition: sequential cursor walk.
             var pageToken = first.nextPageToken
             while let token = pageToken {
+                try Task.checkCancellation()
                 let result = try await limiter.run { [client] in
                     try await client.searchIssues(jql: jql, nextPageToken: token, maxResults: maxResults, fields: [])
                 }
@@ -111,19 +240,42 @@ public actor IssueDataSource {
         return collected
     }
 
+    private func fetchAndCacheIssue(key: String) async throws -> JiraIssue {
+        let value = try await limiter.run { [client] in
+            try await client.getIssue(key: key)
+        }
+        await cache.set("issue/\(key)", value: value, ttl: ttl.issueDetail)
+        return value
+    }
+
+    private func fetchAndCacheComments(issueKey: String) async throws -> [JiraComment] {
+        let value = try await limiter.run { [client] in
+            try await client.listComments(issueKey: issueKey)
+        }
+        await cache.set("comments/\(issueKey)", value: value, ttl: ttl.issueDetail)
+        return value
+    }
+
+    private func fetchAndCacheAttachments(issueKey: String) async throws -> [JiraAttachment] {
+        let value = try await limiter.run { [client] in
+            try await client.listAttachments(issueKey: issueKey)
+        }
+        await cache.set("attachments/\(issueKey)", value: value, ttl: ttl.attachments)
+        return value
+    }
+    // MARK: - Server parallel page fetch
+
     /// Fetches pages `fetchedCount..<total` (step `maxResults`) in parallel,
     /// with a concurrency cap to avoid triggering JIRA rate limiting.
     private func fetchRemainingPagesParallel(jql: String, fetchedCount: Int, total: Int) async throws -> [String] {
         let offsets = stride(from: fetchedCount, to: total, by: maxResults).map { Int($0) }
         guard !offsets.isEmpty else { return [] }
-        // Cap concurrent requests to avoid hitting server-side rate limits.
         let concurrencyLimit = 20
 
         let pages = try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
             var inFlight = 0
             var offsetIterator = offsets.makeIterator()
 
-            // Seed up to concurrencyLimit tasks.
             while inFlight < concurrencyLimit, let offset = offsetIterator.next() {
                 let capturedOffset = offset
                 group.addTask {
@@ -141,7 +293,6 @@ public actor IssueDataSource {
             }
 
             var all: [(Int, [String])] = []
-            // As each task finishes, launch the next pending offset.
             for try await page in group {
                 all.append(page)
                 if let offset = offsetIterator.next() {
@@ -162,57 +313,5 @@ public actor IssueDataSource {
             return all.sorted { $0.0 < $1.0 }.flatMap(\.1)
         }
         return pages
-    }
-
-    public func issue(key: String) async throws -> JiraIssue {
-        let cacheKey = "issue/\(key)"
-        if let cached = await cache.get(cacheKey, as: JiraIssue.self) {
-            return cached
-        }
-        let value = try await limiter.run { [client] in
-            try await client.getIssue(key: key)
-        }
-        await cache.set(cacheKey, value: value, ttl: ttl.issueDetail)
-        return value
-    }
-
-    public func comments(issueKey: String) async throws -> [JiraComment] {
-        let cacheKey = "comments/\(issueKey)"
-        if let cached = await cache.get(cacheKey, as: [JiraComment].self) {
-            return cached
-        }
-        let value = try await limiter.run { [client] in
-            try await client.listComments(issueKey: issueKey)
-        }
-        await cache.set(cacheKey, value: value, ttl: ttl.issueDetail)
-        return value
-    }
-
-    public func attachments(issueKey: String) async throws -> [JiraAttachment] {
-        let cacheKey = "attachments/\(issueKey)"
-        if let cached = await cache.get(cacheKey, as: [JiraAttachment].self) {
-            return cached
-        }
-        let value = try await limiter.run { [client] in
-            try await client.listAttachments(issueKey: issueKey)
-        }
-        await cache.set(cacheKey, value: value, ttl: ttl.attachments)
-        return value
-    }
-
-    public func attachmentData(_ attachment: JiraAttachment) async throws -> Data {
-        let cacheKey = "attachment-bin/\(attachment.id)"
-        if let cached = await cache.get(cacheKey, as: Data.self) {
-            return cached
-        }
-        let value = try await limiter.run { [client] in
-            try await client.downloadAttachment(attachment, range: nil)
-        }
-        await cache.set(cacheKey, value: value, ttl: ttl.attachmentBinary)
-        return value
-    }
-
-    public func synchronize() async {
-        await cache.synchronize()
     }
 }

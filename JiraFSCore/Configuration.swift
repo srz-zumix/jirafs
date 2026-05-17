@@ -32,6 +32,9 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// Project keys to expose. `nil` means all projects; a non-empty array
         /// limits the file system to only those project keys (case-insensitive).
         public var allowedProjectKeys: [String]?
+        /// When `true`, the cache manager persists entries to disk (AES-GCM encrypted)
+        /// so they survive fskitd restarts. Defaults to `false`.
+        public var diskCache: Bool
 
         public var id: String { name }
 
@@ -40,13 +43,28 @@ public struct Configuration: Codable, Sendable, Equatable {
             return (raw as NSString).expandingTildeInPath
         }
 
-        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry, mountPath: String? = nil, allowedProjectKeys: [String]? = nil) {
+        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry,
+                    mountPath: String? = nil, allowedProjectKeys: [String]? = nil,
+                    diskCache: Bool = false) {
             self.name = name
             self.type = type
             self.url = url
             self.auth = auth
             self.mountPath = mountPath
             self.allowedProjectKeys = allowedProjectKeys
+            self.diskCache = diskCache
+        }
+
+        // Custom decoder: `diskCache` key was added later → default false.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name             = try c.decode(String.self, forKey: .name)
+            type             = try c.decode(JiraEdition.self, forKey: .type)
+            url              = try c.decode(URL.self, forKey: .url)
+            auth             = try c.decode(AuthEntry.self, forKey: .auth)
+            mountPath        = try c.decodeIfPresent(String.self, forKey: .mountPath)
+            allowedProjectKeys = try c.decodeIfPresent([String].self, forKey: .allowedProjectKeys)
+            diskCache        = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? false
         }
     }
 
@@ -70,8 +88,8 @@ public struct Configuration: Codable, Sendable, Equatable {
 
         public static let `default` = CacheTTLConfig(
             projects: 300,
-            issues: 60,
-            issueDetail: 30,
+            issues: 600,
+            issueDetail: 600,
             attachments: 600,
             attachmentBinary: 1800
         )

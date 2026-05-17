@@ -68,6 +68,8 @@ public struct JiraIssueFields: Codable, Sendable, Equatable {
     public var parent: JiraIssueRef?
     public var subtasks: [JiraIssueRef]?
     public var issuelinks: [JiraIssueLink]?
+    /// Custom fields (`customfield_NNNNN`) decoded as raw JSON values.
+    public var customFields: [String: JSONValue] = [:]
 
     public enum CodingKeys: String, CodingKey {
         case summary, description, status, priority, assignee, reporter
@@ -77,6 +79,40 @@ public struct JiraIssueFields: Codable, Sendable, Equatable {
     }
 
     public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        summary     = try c.decodeIfPresent(String.self,          forKey: .summary)
+        description = try c.decodeIfPresent(JSONValue.self,       forKey: .description)
+        issueType   = try c.decodeIfPresent(NamedValue.self,      forKey: .issueType)
+        status      = try c.decodeIfPresent(NamedValue.self,      forKey: .status)
+        priority    = try c.decodeIfPresent(NamedValue.self,      forKey: .priority)
+        assignee    = try c.decodeIfPresent(JiraUser.self,        forKey: .assignee)
+        reporter    = try c.decodeIfPresent(JiraUser.self,        forKey: .reporter)
+        labels      = try c.decodeIfPresent([String].self,        forKey: .labels)
+        components  = try c.decodeIfPresent([NamedValue].self,    forKey: .components)
+        created     = try c.decodeIfPresent(String.self,          forKey: .created)
+        updated     = try c.decodeIfPresent(String.self,          forKey: .updated)
+        resolution  = try c.decodeIfPresent(NamedValue.self,      forKey: .resolution)
+        parent      = try c.decodeIfPresent(JiraIssueRef.self,    forKey: .parent)
+        subtasks    = try c.decodeIfPresent([JiraIssueRef].self,  forKey: .subtasks)
+        issuelinks  = try c.decodeIfPresent([JiraIssueLink].self, forKey: .issuelinks)
+        // Decode all remaining keys that look like custom fields.
+        struct AnyCodingKey: CodingKey {
+            let stringValue: String
+            let intValue: Int? = nil
+            init(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { return nil }
+        }
+        let all = try decoder.container(keyedBy: AnyCodingKey.self)
+        var custom: [String: JSONValue] = [:]
+        for key in all.allKeys where key.stringValue.hasPrefix("customfield_") {
+            if let v = try? all.decodeIfPresent(JSONValue.self, forKey: key), v != .null {
+                custom[key.stringValue] = v
+            }
+        }
+        customFields = custom
+    }
 
     public struct NamedValue: Codable, Sendable, Equatable {
         public let name: String?

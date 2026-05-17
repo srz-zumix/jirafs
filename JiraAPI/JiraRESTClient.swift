@@ -69,9 +69,11 @@ public actor JiraRESTClient: JiraClient {
             "issuetype", "labels", "components", "created", "updated",
             "resolution", "parent", "subtasks", "issuelinks", "description"
         ]
+        // Cloud caps maxResults at 100; clamp to avoid a 400 error.
+        let cloudMaxResults = min(maxResults, 100)
         let body = Body(
             jql: jql,
-            maxResults: maxResults,
+            maxResults: cloudMaxResults,
             nextPageToken: nextPageToken,
             fields: fieldList
         )

@@ -17,9 +17,11 @@ import JiraFSCore
 @MainActor
 struct MountControlView: View {
     let entry: Configuration.InstanceEntry
-    @State private var isMounted = false
+    @EnvironmentObject private var monitor: MountStatusMonitor
     @State private var isBusy = false
     @State private var errorMessage: String?
+
+    private var isMounted: Bool { monitor.mountedStates[entry.name] ?? false }
 
     var body: some View {
         GroupBox {
@@ -138,7 +140,7 @@ struct MountControlView: View {
             Label("Mount", systemImage: "externaldrive")
                 .font(.callout.weight(.semibold))
         }
-        .task { await refreshMountStatus() }
+        .task { monitor.refresh() }
     }
 
     // MARK: - Actions
@@ -167,9 +169,28 @@ struct MountControlView: View {
         let mountCmd = "/sbin/mount -F -t jirafs -o ro jira://\(host) '\(escapedPath)'"
         do {
             try await runPrivileged(mountCmd)
-            await refreshMountStatus()
+            // Wait briefly for the kernel to register the volume before checking.
+            try? await Task.sleep(for: .seconds(1))
+            monitor.refresh()
             if !isMounted {
                 errorMessage = "Mount command completed but volume is not visible. Check fskitd and pluginkit registration."
+            }
+        } catch MountError.scriptFailed(let msg) where Self.isExtensionKitError(msg) {
+            // fskitd is holding stale state from a previous run — kill it so launchd
+            // restarts it and re-registers the extension, then mount again.
+            errorMessage = "Restarting fskitd and retrying…"
+            do {
+                // Single privileged shell: kill fskitd, wait for launchd to restart it,
+                // then mount. Merged into one call to avoid a second auth prompt.
+                let retryCmd = "kill $(pgrep fskitd) 2>/dev/null; sleep 3; \(mountCmd)"
+                try await runPrivileged(retryCmd)
+                try? await Task.sleep(for: .seconds(1))
+                monitor.refresh()
+                errorMessage = isMounted ? nil : "Retry failed — try running 'make reinstall' from the project."
+            } catch MountError.cancelled {
+                errorMessage = nil
+            } catch {
+                errorMessage = error.localizedDescription
             }
         } catch MountError.cancelled {
             // ユーザーが Touch ID / パスワードダイアログをキャンセルした場合はエラー非表示。
@@ -185,14 +206,16 @@ struct MountControlView: View {
         let url = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true)
         // Try the non-privileged route first (works when current user owns the mount).
         if (try? NSWorkspace.shared.unmountAndEjectDevice(at: url)) != nil {
-            await refreshMountStatus()
+            try? await Task.sleep(for: .seconds(1))
+            monitor.refresh()
             return
         }
         // Fallback: privileged diskutil.
         let escapedPath = entry.effectiveMountPath.replacingOccurrences(of: "'", with: "'\\''")
         do {
             try await runPrivileged("/usr/sbin/diskutil unmount force '\(escapedPath)'")
-            await refreshMountStatus()
+            try? await Task.sleep(for: .seconds(1))
+            monitor.refresh()
         } catch MountError.cancelled {
             // キャンセル時はエラー非表示。
         } catch {
@@ -202,13 +225,8 @@ struct MountControlView: View {
 
     // MARK: - Helpers
 
-    private func refreshMountStatus() async {
-        let target = entry.effectiveMountPath
-        let targetURL = URL(fileURLWithPath: target, isDirectory: true)
-            .standardized
-        let fm = FileManager.default
-        let mounted = fm.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? []
-        isMounted = mounted.contains { $0.standardized == targetURL }
+    private static func isExtensionKitError(_ msg: String) -> Bool {
+        msg.contains("extensionKit") || msg.contains("not found") || msg.contains("error 2")
     }
 
     /// Runs `command` with root privileges.

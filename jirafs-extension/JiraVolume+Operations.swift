@@ -39,6 +39,9 @@ extension JiraVolume: FSVolume.Operations {
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
+        // Pre-populate the in-memory cache from disk so Finder browsing is
+        // instant after mount instead of hitting disk on every access.
+        makeTask { await self.dataSource.warmUp() }
         reply(nil)
     }
 
@@ -77,7 +80,7 @@ extension JiraVolume: FSVolume.Operations {
             reply(nil, FSKitError.notFound); return
         }
         // Lazily load payload so the kernel sees the real file size on stat.
-        // Without this, open/read never get issued for size-0 files.
+        // Without this, the kernel caches a wrong size and read() is clipped.
         if !node.kind.isDirectory && node.cachedData == nil {
             let r = SendableBox(reply)
             makeTask {
@@ -144,11 +147,6 @@ extension JiraVolume: FSVolume.Operations {
                     index += 1
                     if index <= cookie.rawValue { continue }
                     let child = self.item(for: kind)
-                    // Preload file content so the kernel receives the real size in attrs.
-                    // Attachments are skipped to avoid downloading large binaries.
-                    if kind.shouldPreloadOnEnumerate {
-                        try? await self.loadPayload(for: child)
-                    }
                     let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
                     let nextCookie = FSDirectoryCookie(rawValue: index)
                     let cont = p.value.packEntry(name: FSFileName(string: name), itemType: itemType, itemID: child.identifier, nextCookie: nextCookie, attributes: self.makeAttributes(for: child))
@@ -191,6 +189,17 @@ extension JiraVolume: FSVolume.Operations {
     // MARK: - Helpers
 
     private func resolveChild(parent: FSNodeKind, name: String) async throws -> FSNodeKind? {
+        // Fast path for issuesDir: the kernel only calls lookupItem with names
+        // it received from enumerateDirectory, so we can construct the kind
+        // directly without re-fetching and scanning the full issue list (O(N²)).
+        if case .issuesDir(let project) = parent {
+            let prefix = project + "-"
+            guard name.hasPrefix(prefix),
+                  name.dropFirst(prefix.count).allSatisfy(\.isNumber),
+                  !name.dropFirst(prefix.count).isEmpty
+            else { return nil }
+            return .issue(key: name)
+        }
         let kids = try await children(of: parent)
         return kids.first(where: { $0.0 == name })?.1
     }
@@ -205,26 +214,56 @@ extension JiraVolume: FSVolume.Operations {
         case .project:
             return PathResolver.childKinds(of: kind)
         case .issuesDir(let project):
-            let keys = try await dataSource.issueKeys(forProject: project)
-            return keys.map { ($0, FSNodeKind.issue(key: $0)) }
+            do {
+                let keys = try await dataSource.issueKeys(forProject: project)
+                return keys.map { ($0, FSNodeKind.issue(key: $0)) }
+            } catch {
+                // API failure (e.g. invalid JSON, network error, permission denied).
+                // Return an empty listing so Finder shows the directory as empty
+                // rather than making FSKit propagate an error that causes the
+                // issues/ directory to appear missing in the parent listing.
+                logger.error("issueKeys failed project=\(project, privacy: .public) error=\(error, privacy: .public)")
+                return []
+            }
         case .issue(let key):
-            let kids = PathResolver.childKinds(of: .issue(key: key))
-            return kids
+            // Always include all children. Previously we checked whether comments
+            // and attachments were non-empty before showing those directories, but
+            // that required 2 API calls per issue directory — O(N) API calls when
+            // Finder enumerates N issues. Now we unconditionally show comments/ and
+            // attachments/ (they appear empty if there is no data), eliminating the
+            // per-issue API round-trips on directory listing.
+            return [
+                ("summary.txt",    .summary(issueKey: key)),
+                ("description.md", .description(issueKey: key)),
+                ("metadata.json",  .metadata(issueKey: key)),
+                ("comments",       .commentsDir(issueKey: key)),
+                ("attachments",    .attachmentsDir(issueKey: key)),
+            ]
         case .commentsDir(let issueKey):
-            let comments = try await dataSource.comments(issueKey: issueKey)
-            var taken = Set<String>()
-            return comments.enumerated().map { (i, c) in
-                let raw = IssueFileBuilder.commentFileName(index: i + 1, comment: c)
-                let name = FileNameSanitizer.deduplicate(raw, taken: &taken)
-                return (name, FSNodeKind.comment(issueKey: issueKey, fileName: name))
+            do {
+                let comments = try await dataSource.comments(issueKey: issueKey)
+                var taken = Set<String>()
+                return comments.enumerated().map { (i, c) in
+                    let raw = IssueFileBuilder.commentFileName(index: i + 1, comment: c)
+                    let name = FileNameSanitizer.deduplicate(raw, taken: &taken)
+                    return (name, FSNodeKind.comment(issueKey: issueKey, fileName: name))
+                }
+            } catch {
+                logger.error("comments failed issueKey=\(issueKey, privacy: .public) error=\(error, privacy: .public)")
+                return []
             }
         case .attachmentsDir(let issueKey):
-            let atts = try await dataSource.attachments(issueKey: issueKey)
-            var taken = Set<String>()
-            return atts.map { a in
-                let cleaned = FileNameSanitizer.sanitize(a.filename)
-                let name = FileNameSanitizer.deduplicate(cleaned, taken: &taken)
-                return (name, FSNodeKind.attachment(issueKey: issueKey, fileName: name))
+            do {
+                let atts = try await dataSource.attachments(issueKey: issueKey)
+                var taken = Set<String>()
+                return atts.map { a in
+                    let cleaned = FileNameSanitizer.sanitize(a.filename)
+                    let name = FileNameSanitizer.deduplicate(cleaned, taken: &taken)
+                    return (name, FSNodeKind.attachment(issueKey: issueKey, fileName: name))
+                }
+            } catch {
+                logger.error("attachments failed issueKey=\(issueKey, privacy: .public) error=\(error, privacy: .public)")
+                return []
             }
         default:
             return []

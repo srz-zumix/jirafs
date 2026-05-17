@@ -34,7 +34,7 @@ XCODEBUILD = DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild \
 	-derivedDataPath $(DERIVED_DATA) \
 	-allowProvisioningUpdates
 
-.PHONY: build install register reinstall open mount unmount test generate clean log help
+.PHONY: build install register reinstall open mount unmount remount fix-fskitd test generate clean log help
 
 help: ## Display this help screen
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sed -e 's/^GNUmakefile://' | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -86,8 +86,17 @@ mount: ## マウント（例: make mount INSTANCE=hoge.atlassian.net PATH_ARG=~/
 		exit 1; \
 	fi
 	mkdir -p "$(PATH_ARG)"
-	sudo /sbin/mount -F -t jirafs -o ro "jira://$(INSTANCE)" "$(PATH_ARG)"
-	@echo "✓ Mounted jira://$(INSTANCE) → $(PATH_ARG)"
+	@if sudo /sbin/mount -F -t jirafs -o ro "jira://$(INSTANCE)" "$(PATH_ARG)" 2>/tmp/jirafs_mount_err; then \
+		echo "✓ Mounted jira://$(INSTANCE) → $(PATH_ARG)"; \
+	elif grep -qE "extensionKit|error 2|not found" /tmp/jirafs_mount_err 2>/dev/null; then \
+		echo "⚠ extensionKit error — restarting fskitd and retrying..."; \
+		sudo kill $$(pgrep fskitd) 2>/dev/null; sleep 3; \
+		sudo /sbin/mount -F -t jirafs -o ro "jira://$(INSTANCE)" "$(PATH_ARG)" && \
+			echo "✓ Mounted jira://$(INSTANCE) → $(PATH_ARG) (after retry)" || \
+			{ echo "✗ Mount failed after retry"; cat /tmp/jirafs_mount_err; exit 1; }; \
+	else \
+		cat /tmp/jirafs_mount_err; exit 1; \
+	fi
 	@mount | grep jirafs
 
 # ──────────────────────────────────────────
@@ -97,6 +106,21 @@ mount: ## マウント（例: make mount INSTANCE=hoge.atlassian.net PATH_ARG=~/
 unmount: ## アンマウント（例: make unmount PATH_ARG=~/jirafs/hoge）
 	sudo /usr/sbin/diskutil unmount force "$(PATH_ARG)"
 	@echo "✓ Unmounted $(PATH_ARG)"
+
+remount: ## アンマウント→再マウント（extensionKit エラー回復用）
+	@if [ -z "$(INSTANCE)" ]; then \
+		echo "ERROR: INSTANCE が未指定です。例: make remount INSTANCE=hoge.atlassian.net PATH_ARG=~/jirafs/hoge"; \
+		exit 1; \
+	fi
+	-sudo /usr/sbin/diskutil unmount force "$(PATH_ARG)" 2>/dev/null; true
+	$(MAKE) mount INSTANCE=$(INSTANCE) PATH_ARG=$(PATH_ARG)
+
+fix-fskitd: ## fskitd を再起動して extensionKit エラーを解消
+	@echo "Killing fskitd..."
+	-sudo kill $$(pgrep fskitd) 2>/dev/null; true
+	@echo "Waiting for fskitd to restart..."
+	@sleep 3
+	@pgrep fskitd > /dev/null && echo "✓ fskitd restarted (PID: $$(pgrep fskitd))" || echo "⚠ fskitd not running (will start on demand)"
 
 # ──────────────────────────────────────────
 # テスト

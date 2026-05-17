@@ -59,8 +59,27 @@ public enum IssueFileBuilder {
                 ]
             }
         }
+        // Custom fields — output as a nested object keyed by customfield_NNNNN.
+        if !issue.fields.customFields.isEmpty {
+            var custom: [String: Any] = [:]
+            for (k, v) in issue.fields.customFields {
+                custom[k] = jsonValueToAny(v)
+            }
+            dict["customFields"] = custom
+        }
         let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
+    }
+
+    private static func jsonValueToAny(_ value: JSONValue) -> Any {
+        switch value {
+        case .null:              return NSNull()
+        case .bool(let v):       return v
+        case .number(let v):     return v
+        case .string(let v):     return v
+        case .array(let v):      return v.map { jsonValueToAny($0) }
+        case .object(let v):     return v.mapValues { jsonValueToAny($0) }
+        }
     }
 
     public static func commentBody(_ comment: JiraComment) -> Data {

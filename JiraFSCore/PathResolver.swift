@@ -3,6 +3,7 @@ import Foundation
 /// Identifies what JIRA resource a filesystem path maps to.
 public enum FSNodeKind: Hashable, Sendable {
     case root
+    case metadataNeverIndex          // /.metadata_never_index (prevents Spotlight indexing)
     case configDir                   // /.jirafs
     case configFile                  // /.jirafs/config.json
     case projectsDir                 // /projects
@@ -27,13 +28,6 @@ public enum FSNodeKind: Hashable, Sendable {
             return false
         }
     }
-
-    /// Whether to eagerly load file content during directory enumeration.
-    /// Attachments are excluded to avoid downloading large binaries.
-    public var shouldPreloadOnEnumerate: Bool {
-        if case .attachment = self { return false }
-        return !isDirectory
-    }
 }
 
 /// Validates and converts between filesystem paths and `FSNodeKind`s.
@@ -54,6 +48,7 @@ public enum PathResolver {
             return [
                 ("projects", .projectsDir),
                 (".jirafs", .configDir),
+                (".metadata_never_index", .metadataNeverIndex),
             ]
         case .configDir:
             return [("config.json", .configFile)]
