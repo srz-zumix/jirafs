@@ -11,6 +11,7 @@ struct InstanceEditorView: View {
     @State private var token: String
     @State private var mountPath: String
     @State private var diskCache: Bool
+    @State private var htmlView: Bool
     /// Comma-separated project keys to allow. Empty string = all projects.
     @State private var projectFilter: String
 
@@ -40,7 +41,8 @@ struct InstanceEditorView: View {
         _email = State(initialValue: initial?.auth.email ?? "")
         _token = State(initialValue: "")
         _mountPath = State(initialValue: initial?.mountPath ?? "")
-        _diskCache = State(initialValue: initial?.diskCache ?? false)
+        _diskCache = State(initialValue: initial?.diskCache ?? true)
+        _htmlView  = State(initialValue: initial?.htmlView ?? false)
         let keys = initial?.allowedProjectKeys ?? []
         _projectFilter = State(initialValue: keys.joined(separator: ", "))
         self.onSave = onSave
@@ -107,6 +109,13 @@ struct InstanceEditorView: View {
                                 .toggleStyle(.switch)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .help("Persist cached JIRA data to disk (AES-GCM encrypted). Survives fskitd restarts.")
+                        }
+                        fieldRow("HTML View") {
+                            Toggle("", isOn: $htmlView)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .help("Add issue.html to each issue directory — a formatted view with all fields, comments, and attachments.")
                         }
                     }
 
@@ -320,7 +329,8 @@ struct InstanceEditorView: View {
             name: name, type: edition, url: url, auth: auth,
             mountPath: mountPath.isEmpty ? nil : mountPath,
             allowedProjectKeys: parsedKeys.isEmpty ? nil : parsedKeys,
-            diskCache: diskCache
+            diskCache: diskCache,
+            htmlView: htmlView
         )
         onSave(entry)
     }

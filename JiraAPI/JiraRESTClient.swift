@@ -110,6 +110,10 @@ public actor JiraRESTClient: JiraClient {
         try await get("issue/\(key)")
     }
 
+    public func listFields() async throws -> [JiraField] {
+        try await get("field")
+    }
+
     public func listComments(issueKey: String) async throws -> [JiraComment] {
         let list: JiraCommentList = try await get("issue/\(issueKey)/comment")
         return list.comments

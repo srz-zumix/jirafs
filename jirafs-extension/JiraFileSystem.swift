@@ -24,7 +24,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             self.containerStatus = .ready
             let hostname = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
-            let (instanceName, config, auth, allowedProjectKeys, ttl, diskCacheEnabled) =
+            let (instanceName, config, auth, allowedProjectKeys, ttl, diskCacheEnabled, htmlEnabled) =
                 try JiraFileSystem.lookupInstance(hostname: hostname)
             let client = JiraRESTClient(config: config, auth: auth)
             let cachesDir: URL? = {
@@ -45,7 +45,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
                 allowedProjectKeys: allowedProjectKeys
             )
             let isReadOnly = true
-            let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly)
+            let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly, htmlEnabled: htmlEnabled)
             logger.info("loaded volume for \(instanceName, privacy: .public)")
             // FSKit automatically transitions containerStatus notReady → active
             // when reply(volume, nil) is called. Do NOT set it manually here
@@ -132,7 +132,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     /// Resolve the instance matching `hostname` (falls back to the first entry).
     static func lookupInstance(hostname: String?) throws
         -> (String, JiraInstanceConfig, AuthProvider, [String]?,
-            Configuration.CacheTTLConfig, Bool)
+            Configuration.CacheTTLConfig, Bool, Bool)
     {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
@@ -156,7 +156,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             auth = PATAuth(token: token)
         }
         return (entry.name, cfg, auth, entry.allowedProjectKeys,
-                config.cache, entry.diskCache)
+                config.cache, entry.diskCache, entry.htmlView)
     }
 
     static func configURL() -> URL {

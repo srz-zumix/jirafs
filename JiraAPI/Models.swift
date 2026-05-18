@@ -1,5 +1,20 @@
 import Foundation
 
+// MARK: - Field
+
+/// Metadata for a single JIRA field (built-in or custom).
+public struct JiraField: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let custom: Bool
+
+    public init(id: String, name: String, custom: Bool) {
+        self.id = id
+        self.name = name
+        self.custom = custom
+    }
+}
+
 // MARK: - Project
 
 public struct JiraProject: Codable, Sendable, Equatable, Identifiable {

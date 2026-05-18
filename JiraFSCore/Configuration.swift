@@ -35,6 +35,9 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// When `true`, the cache manager persists entries to disk (AES-GCM encrypted)
         /// so they survive fskitd restarts. Defaults to `false`.
         public var diskCache: Bool
+        /// When `true`, each issue directory contains an `issue.html` file with
+        /// a formatted view of all issue data. Defaults to `false`.
+        public var htmlView: Bool
 
         public var id: String { name }
 
@@ -45,7 +48,7 @@ public struct Configuration: Codable, Sendable, Equatable {
 
         public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedProjectKeys: [String]? = nil,
-                    diskCache: Bool = false) {
+                    diskCache: Bool = true, htmlView: Bool = false) {
             self.name = name
             self.type = type
             self.url = url
@@ -53,9 +56,10 @@ public struct Configuration: Codable, Sendable, Equatable {
             self.mountPath = mountPath
             self.allowedProjectKeys = allowedProjectKeys
             self.diskCache = diskCache
+            self.htmlView = htmlView
         }
 
-        // Custom decoder: `diskCache` key was added later → default false.
+        // Custom decoder: new keys default to false for backward compatibility.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name             = try c.decode(String.self, forKey: .name)
@@ -64,7 +68,8 @@ public struct Configuration: Codable, Sendable, Equatable {
             auth             = try c.decode(AuthEntry.self, forKey: .auth)
             mountPath        = try c.decodeIfPresent(String.self, forKey: .mountPath)
             allowedProjectKeys = try c.decodeIfPresent([String].self, forKey: .allowedProjectKeys)
-            diskCache        = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? false
+            diskCache        = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? true
+            htmlView         = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
         }
     }
 

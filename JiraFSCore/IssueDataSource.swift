@@ -129,6 +129,21 @@ public actor IssueDataSource {
         await cache.synchronize()
     }
 
+    /// Returns a mapping of custom field id → display name (e.g. "customfield_10016" → "Story Points").
+    /// Result is cached with the projects TTL and lazily fetched on first call.
+    public func fieldNames() async -> [String: String] {
+        let cacheKey = "fieldNames"
+        if let fresh = await cache.get(cacheKey, as: [String: String].self) { return fresh }
+        if let stale = await cache.getStale(cacheKey, as: [String: String].self) {
+            scheduleRefresh(cacheKey) { await self.bgRefreshFieldNames() }
+            return stale
+        }
+        guard let fields = try? await limiter.run({ [client] in try await client.listFields() }) else { return [:] }
+        let map = Dictionary(uniqueKeysWithValues: fields.map { ($0.id, $0.name) })
+        await cache.set(cacheKey, value: map, ttl: ttl.projects)
+        return map
+    }
+
     /// Pre-warm the in-memory cache from disk so Finder browsing is fast
     /// immediately after mount. Loads projects list and all issue key lists
     /// sequentially in the background; individual issue details remain lazy.
@@ -180,6 +195,16 @@ public actor IssueDataSource {
     private func bgRefreshAttachments(issueKey: String) async {
         _ = try? await fetchAndCacheAttachments(issueKey: issueKey)
         finishRefresh("attachments/\(issueKey)")
+    }
+
+    private func bgRefreshFieldNames() async {
+        let key = "fieldNames"
+        guard let fields = try? await limiter.run({ [client] in try await client.listFields() }) else {
+            finishRefresh(key); return
+        }
+        let map = Dictionary(uniqueKeysWithValues: fields.map { ($0.id, $0.name) })
+        await cache.set(key, value: map, ttl: ttl.projects)
+        finishRefresh(key)
     }
 
     // MARK: - Fetch + cache (synchronous path)

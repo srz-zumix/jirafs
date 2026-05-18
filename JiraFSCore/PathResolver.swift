@@ -14,6 +14,7 @@ public enum FSNodeKind: Hashable, Sendable {
     case summary(issueKey: String)
     case description(issueKey: String)
     case metadata(issueKey: String)
+    case issueHtml(issueKey: String)   // /projects/{KEY}/issues/{ISSUE-KEY}/issue.html
     case commentsDir(issueKey: String)
     case comment(issueKey: String, fileName: String)
     case attachmentsDir(issueKey: String)

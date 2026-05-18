@@ -232,13 +232,17 @@ extension JiraVolume: FSVolume.Operations {
             // Finder enumerates N issues. Now we unconditionally show comments/ and
             // attachments/ (they appear empty if there is no data), eliminating the
             // per-issue API round-trips on directory listing.
-            return [
+            var kids: [(String, FSNodeKind)] = [
                 ("summary.txt",    .summary(issueKey: key)),
                 ("description.md", .description(issueKey: key)),
                 ("metadata.json",  .metadata(issueKey: key)),
                 ("comments",       .commentsDir(issueKey: key)),
                 ("attachments",    .attachmentsDir(issueKey: key)),
             ]
+            if htmlEnabled {
+                kids.append(("issue.html", .issueHtml(issueKey: key)))
+            }
+            return kids
         case .commentsDir(let issueKey):
             do {
                 let comments = try await dataSource.comments(issueKey: issueKey)

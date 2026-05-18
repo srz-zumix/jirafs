@@ -43,6 +43,8 @@ public protocol JiraClient: Sendable {
     func listComments(issueKey: String) async throws -> [JiraComment]
     func listAttachments(issueKey: String) async throws -> [JiraAttachment]
     func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data
+    /// Returns all fields defined on the instance (id → name).
+    func listFields() async throws -> [JiraField]
 }
 
 extension JiraClient {

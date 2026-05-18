@@ -67,6 +67,17 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
                 throw JiraAPIError.notFound
             }
             data = try await dataSource.attachmentData(attachment)
+        case .issueHtml(let key):
+            async let issueResult    = dataSource.issue(key: key)
+            async let commentsResult = dataSource.comments(issueKey: key)
+            async let attsResult     = dataSource.attachments(issueKey: key)
+            async let fieldNamesResult = dataSource.fieldNames()
+            let issue      = try await issueResult
+            let comments   = (try? await commentsResult) ?? []
+            let atts       = (try? await attsResult) ?? []
+            let fieldNames = await fieldNamesResult
+            let baseURL    = await dataSource.client.config.baseURL
+            data = IssueFileBuilder.html(issue, comments: comments, attachments: atts, baseURL: baseURL, fieldNames: fieldNames)
         case .metadataNeverIndex:
             // Zero-byte file — presence in the listing is all Spotlight checks for.
             data = Data()

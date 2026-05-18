@@ -12,6 +12,7 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
     let dataSource: IssueDataSource
     let instanceName: String
     let isReadOnly: Bool
+    let htmlEnabled: Bool
     let logger = JiraLog.logger("volume")
 
     /// Cache of currently-known items (keyed by identifier raw value) so we
@@ -59,10 +60,11 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
         snapshot.values.forEach { $0.cancel() }
     }
 
-    init(name: String, dataSource: IssueDataSource, isReadOnly: Bool) {
+    init(name: String, dataSource: IssueDataSource, isReadOnly: Bool, htmlEnabled: Bool = false) {
         self.dataSource = dataSource
         self.instanceName = name
         self.isReadOnly = isReadOnly
+        self.htmlEnabled = htmlEnabled
         // Use random UUID per mount to avoid fskitd container cache collisions.
         super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
                    volumeName: FSFileName(string: "jirafs-\(name)"))
