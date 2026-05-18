@@ -148,10 +148,11 @@
 // ---------------------------------------------------------------------------
 // Register FSServerURLUnaryOperations conformance at load time.
 // ---------------------------------------------------------------------------
-// Static conformance is declared via the Swift class definition (bridging header
-// declares @protocol FSServerURLUnaryOperations and JiraFileSystem.swift lists it
-// as a conformance).  This load-time function is kept as a belt-and-suspenders
-// dynamic addition in case of any runtime discrepancy.
+// JiraFileSystem does NOT declare FSServerURLUnaryOperations as a static Swift
+// conformance (doing so from Swift would require a circular bridging-header
+// import).  Instead, class_addProtocol runs at dylib-load time so that
+// fskitd's -conformsToProtocol: check succeeds.  The five protocol methods are
+// already present on JiraFileSystem via the (ServerURL) category above.
 
 __attribute__((constructor))
 static void registerServerURLConformance(void) {

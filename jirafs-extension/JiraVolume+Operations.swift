@@ -250,7 +250,10 @@ extension JiraVolume: FSVolume.Operations {
                 return comments.enumerated().map { (i, c) in
                     let raw = IssueFileBuilder.commentFileName(index: i + 1, comment: c)
                     let name = FileNameSanitizer.deduplicate(raw, taken: &taken)
-                    return (name, FSNodeKind.comment(issueKey: issueKey, fileName: name))
+                    // Store the 1-based index as the stable identifier so that
+                    // loadPayload can resolve comments[index-1] regardless of
+                    // whether the filename was deduplicated.
+                    return (name, FSNodeKind.comment(issueKey: issueKey, index: i + 1))
                 }
             } catch {
                 logger.error("comments failed issueKey=\(issueKey, privacy: .public) error=\(error, privacy: .public)")
@@ -263,7 +266,9 @@ extension JiraVolume: FSVolume.Operations {
                 return atts.map { a in
                     let cleaned = FileNameSanitizer.sanitize(a.filename)
                     let name = FileNameSanitizer.deduplicate(cleaned, taken: &taken)
-                    return (name, FSNodeKind.attachment(issueKey: issueKey, fileName: name))
+                    // Store the attachment id as the stable identifier so that
+                    // loadPayload can resolve by id regardless of deduplication.
+                    return (name, FSNodeKind.attachment(issueKey: issueKey, attachmentId: a.id))
                 }
             } catch {
                 logger.error("attachments failed issueKey=\(issueKey, privacy: .public) error=\(error, privacy: .public)")

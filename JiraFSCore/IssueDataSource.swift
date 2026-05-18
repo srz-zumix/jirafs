@@ -297,6 +297,13 @@ public actor IssueDataSource {
         guard !offsets.isEmpty else { return [] }
         let concurrencyLimit = 20
 
+        // Capture actor-isolated state into local constants so that @Sendable
+        // task closures can reference them without crossing the actor boundary
+        // (required by Swift 6 strict concurrency).
+        let client = self.client
+        let limiter = self.limiter
+        let maxResults = self.maxResults
+
         let pages = try await withThrowingTaskGroup(of: (Int, [String]).self) { group in
             var inFlight = 0
             var offsetIterator = offsets.makeIterator()
@@ -304,11 +311,11 @@ public actor IssueDataSource {
             while inFlight < concurrencyLimit, let offset = offsetIterator.next() {
                 let capturedOffset = offset
                 group.addTask {
-                    let result = try await self.limiter.run { [self] in
-                        try await self.client.searchIssues(
+                    let result = try await limiter.run {
+                        try await client.searchIssues(
                             jql: jql,
                             nextPageToken: String(capturedOffset),
-                            maxResults: self.maxResults,
+                            maxResults: maxResults,
                             fields: []
                         )
                     }
@@ -323,11 +330,11 @@ public actor IssueDataSource {
                 if let offset = offsetIterator.next() {
                     let capturedOffset = offset
                     group.addTask {
-                        let result = try await self.limiter.run { [self] in
-                            try await self.client.searchIssues(
+                        let result = try await limiter.run {
+                            try await client.searchIssues(
                                 jql: jql,
                                 nextPageToken: String(capturedOffset),
-                                maxResults: self.maxResults,
+                                maxResults: maxResults,
                                 fields: []
                             )
                         }

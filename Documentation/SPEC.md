@@ -72,6 +72,7 @@ mount -F -t jirafs jira://jira.internal.example.com ~/jirafs/internal
 │   │       │   ├── summary.txt       # サマリー (1行テキスト)
 │   │       │   ├── description.md    # 説明 (Markdown)
 │   │       │   ├── metadata.json     # メタデータ (status, assignee, priority 等)
+│   │       │   ├── issue.html        # HTMLビュー (htmlView: true 時のみ)
 │   │       │   ├── comments/         # コメント一覧
 │   │       │   │   ├── 001_user_2024-01-01.md
 │   │       │   │   ├── 002_user_2024-01-02.md
@@ -176,11 +177,6 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
   "created": "2024-01-01T00:00:00.000+0000",
   "updated": "2024-01-15T12:00:00.000+0000",
   "resolution": null,
-  "sprint": {
-    "name": "Sprint 1",
-    "state": "active"
-  },
-  "storyPoints": 5,
   "parent": "PROJ-100",
   "subtasks": ["PROJ-2", "PROJ-3"],
   "links": [
@@ -189,7 +185,11 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
       "direction": "outward",
       "key": "PROJ-50"
     }
-  ]
+  ],
+  "customFields": {
+    "customfield_10016": 5,
+    "customfield_10020": "Sprint 1"
+  }
 }
 ```
 
@@ -225,7 +225,6 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
 |---|---|---|---|
 | API Token | ✅ | ❌ | email + token |
 | Personal Access Token (PAT) | ❌ | ✅ | token |
-| OAuth 2.0 (3LO) | ✅ | ✅ | client_id, client_secret, redirect_uri |
 
 認証情報は macOS Keychain に保存する。
 
@@ -260,7 +259,7 @@ GET /rest/api/{ver}/attachment/content/{id}        # 添付ファイルダウン
 | `probeResource(resource:replyHandler:)` | リソースが有効な JIRA 設定を持つか検証 (deterministic UUID で `FSContainerIdentifier` 返却) |
 | `didFinishLoading()` | 初期化完了処理 |
 
-> **Phase 1 注意**: FSKit 15.4 SDK に URL ベース `FSResource` サブクラスが未公開のため、`loadResource` は渡された URL を使わずホストアプリの `config.json` の先頭インスタンスを使用する。複数インスタンス選択は将来拡張。
+> **注**: `loadResource` は `jira://` URL のホスト名を `JiraFileSystem+ServerURL.m` で取得し、`config.json` の対応インスタンスを選択する。複数インスタンスを並行利用する場合は、それぞれ別の `jira://` URL でマウントする。
 
 ### FSVolume (JiraVolume)
 
@@ -296,31 +295,38 @@ GET /rest/api/{ver}/attachment/content/{id}        # 添付ファイルダウン
 
 | メソッド | 実装内容 |
 |---|---|
-| `open(item:mode:replyHandler:)` | アイテムオープン (キャッシュフェッチ) |
-| `close(item:keepAlive:replyHandler:)` | アイテムクローズ |
+| `openItem(_:modes:replyHandler:)` | アイテムオープン (cachedData をフェッチ) |
+| `closeItem(_:modes:replyHandler:)` | アイテムクローズ (cachedData を解放) |
 
 ### JiraFSItem (FSItem サブクラス)
 
-JIRA データをファイルシステムアイテムとして表現するクラス。
+JIRA データをファイルシステムアイテムとして表現するクラス。ノード種別は `FSNodeKind` 列挙型で管理する。
 
 ```swift
-class JiraFSItem: FSItem {
-    enum Kind {
-        case root                    // /
-        case projectsDir             // /projects/
-        case project(key: String)    // /projects/{KEY}/
-        case issuesDir(project: String)  // /projects/{KEY}/issues/
-        case issue(key: String)      // /projects/{KEY}/issues/{KEY}/
-        case issueFile(key: String, field: IssueField) // summary.txt, description.md, metadata.json
-        case commentsDir(issueKey: String)
-        case commentFile(issueKey: String, commentId: String)
-        case attachmentsDir(issueKey: String)
-        case attachmentFile(issueKey: String, attachmentId: String, filename: String)
-    }
+public enum FSNodeKind: Hashable, Sendable {
+    case root                                               // /
+    case metadataNeverIndex                                 // /.metadata_never_index
+    case configDir                                          // /.jirafs
+    case configFile                                         // /.jirafs/config.json
+    case projectsDir                                        // /projects
+    case project(key: String)                               // /projects/{KEY}
+    case projectMeta(key: String)                           // /projects/{KEY}/.project.json
+    case issuesDir(project: String)                         // /projects/{KEY}/issues
+    case issue(key: String)                                 // /projects/{KEY}/issues/{ISSUE-KEY}
+    case summary(issueKey: String)                          // .../summary.txt
+    case description(issueKey: String)                      // .../description.md
+    case metadata(issueKey: String)                         // .../metadata.json
+    case issueHtml(issueKey: String)                        // .../issue.html (htmlView: true 時)
+    case commentsDir(issueKey: String)                      // .../comments/
+    case comment(issueKey: String, index: Int)              // .../comments/NNN_author_date.md
+    case attachmentsDir(issueKey: String)                   // .../attachments/
+    case attachment(issueKey: String, attachmentId: String) // .../attachments/{filename}
+}
 
-    let kind: Kind
+final class JiraFSItem: FSItem {
+    let kind: FSNodeKind
     var cachedData: Data?
-    var cachedAttributes: FSItem.Attributes?
+    var cachedSize: UInt64
 }
 ```
 
@@ -330,11 +336,11 @@ class JiraFSItem: FSItem {
 
 | データ種別 | TTL | 理由 |
 |---|---|---|
-| プロジェクト一覧 | 5 分 | 変更頻度が低い |
-| イシュー一覧 | 1 分 | 変更頻度が中程度 |
-| イシュー詳細 | 30 秒 | コメントや状態が変わりうる |
-| 添付ファイル | 10 分 | 変更頻度が低い |
-| 添付ファイル本体 | 30 分 | サイズが大きいため長めにキャッシュ |
+| プロジェクト一覧 | 5 分 (300s) | 変更頻度が低い |
+| イシュー一覧 | 10 分 (600s) | 変更頻度が中程度 |
+| イシュー詳細 | 10 分 (600s) | コメントや状態が変わりうる |
+| 添付ファイル一覧 | 10 分 (600s) | 変更頻度が低い |
+| 添付ファイル本体 | 30 分 (1800s) | サイズが大きいため長めにキャッシュ |
 
 ### キャッシュ無効化
 
@@ -395,7 +401,9 @@ class JiraFSItem: FSItem {
       "auth": {
         "method": "api_token",
         "email": "user@example.com"
-      }
+      },
+      "diskCache": true,
+      "htmlView": false
     },
     {
       "name": "my-server",
@@ -403,19 +411,21 @@ class JiraFSItem: FSItem {
       "url": "https://jira.internal.example.com",
       "auth": {
         "method": "pat"
-      }
+      },
+      "allowedProjectKeys": ["PROJ", "OPS"],
+      "diskCache": true,
+      "htmlView": true
     }
   ],
   "cache": {
-    "ttl": {
-      "projects": 300,
-      "issues": 60,
-      "issueDetail": 30,
-      "attachments": 600
-    }
+    "projects": 300,
+    "issues": 600,
+    "issueDetail": 600,
+    "attachments": 600,
+    "attachmentBinary": 1800
   },
   "pagination": {
-    "maxResults": 50
+    "maxResults": 1000
   }
 }
 ```
@@ -487,4 +497,5 @@ umount ~/jirafs
 - 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (現状は全件 In-Memory キャッシュ)
 - JIRA Cloud の ADF (Atlassian Document Format) → Markdown 変換は完全でない場合がある (主要ノードのみ対応、それ以外は raw fallback)
 - Server 版の wiki markup → Markdown 変換の互換性 (見出し / リスト / リンク / 強調 / `{code}` / `{panel}` / `{quote}` のみ)
-- `searchIssues` は JIRA Cloud v3 で `/rest/api/3/search` を使用しているが、2024 年以降の Cloud では `/search/jql` への移行が推奨されている (将来対応)
+- JIRA Cloud v3 の `/search/jql` エンドポイントを使用 (2024年以降推奨の API)
+- `searchIssues` (Server v2) は `GET /rest/api/2/search` を使用

@@ -23,14 +23,13 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
 
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
         if let node = item as? JiraFSItem, modes.isEmpty {
-            // Drop binary payload but keep metadata if cheap to keep.
-            switch node.kind {
-            case .attachment:
-                node.cachedData = nil
-                node.cachedSize = 0
-            default:
-                break
-            }
+            // Drop cached payload on final close so the next open always
+            // fetches fresh data from IssueDataSource (stale-while-revalidate
+            // may have served outdated content on the first open, and
+            // node.cachedData would otherwise pin that stale HTML/text
+            // indefinitely while the background refresh already completed).
+            node.cachedData = nil
+            node.cachedSize = 0
         }
         reply(nil)
     }
@@ -52,18 +51,19 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             data = IssueFileBuilder.metadata(try await dataSource.issue(key: key))
         case .projectMeta(let key):
             data = IssueFileBuilder.projectMeta(try await dataSource.project(key: key))
-        case .comment(let issueKey, let fileName):
+        case .comment(let issueKey, let index):
             let comments = try await dataSource.comments(issueKey: issueKey)
-            guard let (idx, comment) = comments.enumerated().first(where: {
-                IssueFileBuilder.commentFileName(index: $0 + 1, comment: $1) == fileName
-            }) else {
+            // Use the stable 1-based index stored in FSNodeKind — this is
+            // immune to filename deduplication (“foo (2).md” etc.).
+            guard index >= 1 && index <= comments.count else {
                 throw JiraAPIError.notFound
             }
-            _ = idx
-            data = IssueFileBuilder.commentBody(comment)
-        case .attachment(let issueKey, let fileName):
+            data = IssueFileBuilder.commentBody(comments[index - 1])
+        case .attachment(let issueKey, let attachmentId):
             let atts = try await dataSource.attachments(issueKey: issueKey)
-            guard let attachment = atts.first(where: { FileNameSanitizer.sanitize($0.filename) == fileName }) else {
+            // Match by stable attachment id — immune to filename sanitization
+            // and deduplication ("report (2).pdf" etc.).
+            guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
                 throw JiraAPIError.notFound
             }
             data = try await dataSource.attachmentData(attachment)

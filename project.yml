@@ -7,7 +7,7 @@ options:
   createIntermediateGroups: true
   generateEmptyDirectories: true
   groupSortPosition: top
-  xcodeVersion: "16.1"
+  xcodeVersion: "16.4"
 
 settings:
   base:

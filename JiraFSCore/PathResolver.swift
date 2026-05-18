@@ -16,9 +16,9 @@ public enum FSNodeKind: Hashable, Sendable {
     case metadata(issueKey: String)
     case issueHtml(issueKey: String)   // /projects/{KEY}/issues/{ISSUE-KEY}/issue.html
     case commentsDir(issueKey: String)
-    case comment(issueKey: String, fileName: String)
+    case comment(issueKey: String, index: Int)  // 1-based; stable across deduplication
     case attachmentsDir(issueKey: String)
-    case attachment(issueKey: String, fileName: String)
+    case attachment(issueKey: String, attachmentId: String)  // stable JiraAttachment.id
 
     public var isDirectory: Bool {
         switch self {

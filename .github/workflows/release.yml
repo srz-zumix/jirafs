@@ -31,7 +31,7 @@ jobs:
           persist-credentials: false
 
       - name: Import Code-Signing Certificates
-        uses: Apple-Actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v3
+        uses: Apple-Actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
         with:
           p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
           p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -72,3 +72,44 @@ jobs:
       - name: Create GitHub Release
         run: |
           gh release create "$TAG" --title "Release $TAG" --notes "Release notes for $TAG" jirafs-$TAG.dmg
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.ref || github.ref_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          repository: srz-zumix/homebrew-tap
+          persist-credentials: false
+      - name: Update Homebrew Tap
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          SHA256=$(shasum -a 256 "jirafs-$TAG.dmg" | awk '{print $1}')
+
+          mkdir -p Casks
+          sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SHA256}}/$SHA256/g" \
+            .github/homebrew/jirafs.rb.tmpl > Casks/jirafs.rb
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: steps.check-diff.outputs.diff == '1'
+        with:
+          client-id: ${{ secrets.MY_ACTIONS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MY_ACTIONS_APP_PRIVATE_KEY }}
+
+      - name: Commit changes
+        uses: suzuki-shunsuke/commit-action@06e3b49d4706498d325d29bd85adc82ecf2f5d8f # v1.0.0
+        if: steps.check-diff.outputs.diff == '1'
+        with:
+          commit_message: "Update jirafs Homebrew Tap for $TAG"
+          github_token: ${{ steps.app-token.outputs.token }}
+          files: |
+            Casks/jirafs.rb

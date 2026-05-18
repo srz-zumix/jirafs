@@ -1,9 +1,11 @@
 // JiraFileSystemURLEnabled.h
-// ObjC subclass of JiraFileSystem that statically declares FSServerURLUnaryOperations
-// conformance, so fskitd can discover URL-resource support from the binary metadata.
+// Re-declares the private FSServerURLUnaryOperations protocol so that other
+// translation units can reference it by type.  The actual protocol conformance
+// is registered dynamically in JiraFileSystem+ServerURL.m via class_addProtocol,
+// which runs at load time through __attribute__((constructor)).
 //
-// The private FSServerURLUnaryOperations protocol is re-declared here; at runtime
-// the ObjC linker merges this declaration with the one in FSKit.framework by name.
+// There is no JiraFileSystemURLEnabled subclass: JiraFileSystem itself is used
+// directly, and fskitd discovers URL-resource support via conformsToProtocol:.
 
 #import <Foundation/Foundation.h>
 #import <FSKit/FSKit.h>
@@ -44,16 +46,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)closeSession:(nullable id)session
         replyHandler:(void (^)(NSError * _Nullable error))replyHandler;
 
-@end
-
-// ---------------------------------------------------------------------------
-// JiraFileSystemURLEnabled — FSServerURLUnaryOperations-aware subclass.
-// Returned by JiraFSExtension as the fileSystem instance so fskitd sees static
-// FSServerURLUnaryOperations conformance in the binary.
-// The five protocol methods are implemented in JiraFileSystem+ServerURL.m as a
-// category on JiraFileSystem and are inherited here.
-// ---------------------------------------------------------------------------
-@interface JiraFileSystemURLEnabled : NSObject
 @end
 
 NS_ASSUME_NONNULL_END

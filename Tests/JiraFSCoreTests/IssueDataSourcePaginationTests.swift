@@ -29,7 +29,10 @@ private final actor StubPaginatedClient: JiraClient {
         JiraProject(id: "1", key: key, name: key)
     }
 
-    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int) async throws -> JiraSearchResult {
+    // IssueDataSource always calls the 4-parameter variant (fields: []).
+    // The `fields` parameter is intentionally ignored here — this stub
+    // tests pagination behaviour, not field filtering.
+    func searchIssues(jql: String, nextPageToken: String?, maxResults: Int, fields: [String]?) async throws -> JiraSearchResult {
         requestCount += 1
         let startAt = nextPageToken.flatMap(Int.init) ?? 0
         let end = min(startAt + maxResults, total)
@@ -48,6 +51,7 @@ private final actor StubPaginatedClient: JiraClient {
     func listComments(issueKey: String) async throws -> [JiraComment] { [] }
     func listAttachments(issueKey: String) async throws -> [JiraAttachment] { [] }
     func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data { Data() }
+    func listFields() async throws -> [JiraField] { [] }
 }
 
 final class IssueDataSourcePaginationTests: XCTestCase {

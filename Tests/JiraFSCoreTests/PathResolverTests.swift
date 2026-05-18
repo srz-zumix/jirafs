@@ -4,7 +4,7 @@ import XCTest
 final class PathResolverTests: XCTestCase {
     func testRootHasProjectsAndConfig() {
         let kids = PathResolver.childKinds(of: .root)
-        XCTAssertEqual(kids.map(\.name), ["projects", ".jirafs"])
+        XCTAssertEqual(kids.map(\.name), ["projects", ".jirafs", ".metadata_never_index"])
     }
 
     func testIssueChildren() {
