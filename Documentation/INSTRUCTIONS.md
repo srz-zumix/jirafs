@@ -214,8 +214,9 @@ xcodegen generate
 
 ### ビルド
 
-FSKit 拡張は **コード署名が必須** (`CODE_SIGNING_ALLOWED=NO` は使用禁止)。
-署名に `-allowProvisioningUpdates` を使い、Automatic Signing で証明書を自動取得する。
+FSKit 拡張を **実際に mount / runtime 検証するビルドではコード署名が必須** であり、この用途では `CODE_SIGNING_ALLOWED=NO` は使用しない。
+一方、CI やローカルでの **フレームワーク層のコンパイル確認・テスト実行** では、署名不要のため `CODE_SIGNING_ALLOWED=NO` を使う構成がある。
+実機動作確認用のビルドでは、`-allowProvisioningUpdates` を使い、Automatic Signing で証明書を自動取得する。
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
