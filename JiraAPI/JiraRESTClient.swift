@@ -166,8 +166,7 @@ public actor JiraRESTClient: JiraClient {
         request.httpBody = try JSONEncoder().encode(body)
         let (data, http) = try await transport.data(for: request)
         try validate(http: http, data: data)
-        let preview = String(data: data.prefix(300), encoding: .utf8) ?? "<binary>"
-        logger.info("POST \(url.absoluteString, privacy: .public) status=\(http.statusCode) body=\(preview, privacy: .public)")
+        logger.info("POST \(url.absoluteString, privacy: .public) status=\(http.statusCode)")
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
