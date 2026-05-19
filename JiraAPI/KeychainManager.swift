@@ -66,13 +66,13 @@ public struct KeychainManager: Sendable {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
-        keychainLogger.debug("lookup: service=\(service, privacy: .public) account=\(account, privacy: .public) group=\(Self.accessGroup, privacy: .public)")
+        keychainLogger.debug("lookup: service=\(service, privacy: .public) account=\(account, privacy: .private) group=\(Self.accessGroup, privacy: .public)")
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         keychainLogger.debug("lookup status: \(status, privacy: .public)")
         guard status == errSecSuccess else {
             if status == errSecItemNotFound {
-                keychainLogger.error("Keychain item not found: service=\(service, privacy: .public) account=\(account, privacy: .public)")
+                keychainLogger.error("Keychain item not found: service=\(service, privacy: .public) account=\(account, privacy: .private)")
                 throw JiraAPIError.missingCredentials
             }
             keychainLogger.error("Keychain read failed: \(status, privacy: .public)")
