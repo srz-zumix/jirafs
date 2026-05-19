@@ -33,7 +33,7 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// limits the file system to only those project keys (case-insensitive).
         public var allowedProjectKeys: [String]?
         /// When `true`, the cache manager persists entries to disk (AES-GCM encrypted)
-        /// so they survive fskitd restarts. Defaults to `false`.
+        /// so they survive fskitd restarts. Defaults to `true`.
         public var diskCache: Bool
         /// When `true`, each issue directory contains an `issue.html` file with
         /// a formatted view of all issue data. Defaults to `false`.

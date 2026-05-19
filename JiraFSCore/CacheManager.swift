@@ -100,7 +100,9 @@ public actor CacheManager {
             return nil
         }
         // 2. Disk hit (only when disk cache enabled)
-        guard diskEnabled, let value: T = diskGet(key: key) else { return nil }
+        guard diskEnabled else { return nil }
+        guard let (value, expiry): (T, Date) = diskGet(key: key) else { return nil }
+        storage[key] = Entry(value: value, expiresAt: expiry)
         return value
     }
 
@@ -116,9 +118,13 @@ public actor CacheManager {
             return nil
         }
         cacheLogger.info("getStale diskLookup: \(key, privacy: .public)")
-        let v: T? = diskGetStale(key: key)
-        cacheLogger.info("getStale diskResult=\(v == nil ? "nil" : "hit", privacy: .public) key=\(key, privacy: .public)")
-        return v
+        guard let (value, expiry): (T, Date) = diskGetStale(key: key) else {
+            cacheLogger.info("getStale diskResult=nil key=\(key, privacy: .public)")
+            return nil
+        }
+        cacheLogger.info("getStale diskResult=hit key=\(key, privacy: .public)")
+        storage[key] = Entry(value: value, expiresAt: expiry)
+        return value
     }
 
     public func set<T: Codable & Sendable>(_ key: String, value: T, ttl: TimeInterval) {
@@ -136,16 +142,20 @@ public actor CacheManager {
             return nil
         }
         guard diskEnabled else { return nil }
-        guard let box: DataBox = diskGet(key: key) else { return nil }
-        return Data(base64Encoded: box.base64)
+        guard let (box, expiry): (DataBox, Date) = diskGet(key: key) else { return nil }
+        guard let data = Data(base64Encoded: box.base64) else { return nil }
+        storage[key] = Entry(value: data, expiresAt: expiry)
+        return data
     }
 
     /// Returns a `Data` value even if expired (stale-while-revalidate).
     public func getStale(_ key: String, as type: Data.Type) -> Data? {
         if let entry = storage[key], let v = entry.value as? Data { return v }
         guard diskEnabled else { return nil }
-        guard let box: DataBox = diskGetStale(key: key) else { return nil }
-        return Data(base64Encoded: box.base64)
+        guard let (box, expiry): (DataBox, Date) = diskGetStale(key: key) else { return nil }
+        guard let data = Data(base64Encoded: box.base64) else { return nil }
+        storage[key] = Entry(value: data, expiresAt: expiry)
+        return data
     }
 
     public func set(_ key: String, value: Data, ttl: TimeInterval) {
@@ -203,7 +213,7 @@ public actor CacheManager {
         try? combined.write(to: fileURL, options: .atomic)
     }
 
-    private func diskGet<T: Codable>(key: String) -> T? {
+    private func diskGet<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {
         guard let dir = cacheDir, let encKey = encryptionKey else { return nil }
         let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
         guard let combined = try? Data(contentsOf: fileURL) else { return nil }
@@ -215,11 +225,12 @@ public actor CacheManager {
         // Do NOT delete expired files here — diskGetStale() needs them for stale-while-revalidate.
         // Expired entries are cleaned up lazily by evictExpiredDiskEntries().
         guard expiry > Date() else { return nil }
-        return try? JSONDecoder().decode(T.self, from: payload.dropFirst(8))
+        guard let value = try? JSONDecoder().decode(T.self, from: payload.dropFirst(8)) else { return nil }
+        return (value, expiry)
     }
 
     /// Like `diskGet` but skips the expiry check — for stale-while-revalidate.
-    private func diskGetStale<T: Codable>(key: String) -> T? {
+    private func diskGetStale<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {
         guard let dir = cacheDir, let encKey = encryptionKey else {
             cacheLogger.info("diskGetStale: no dir or key for \(key, privacy: .public)")
             return nil
@@ -240,9 +251,14 @@ public actor CacheManager {
             return nil
         }
         guard payload.count > 8 else { return nil }
-        let decoded = try? JSONDecoder().decode(T.self, from: payload.dropFirst(8))
-        cacheLogger.info("diskGetStale: decode=\(decoded == nil ? "fail" : "ok", privacy: .public) for \(key, privacy: .public)")
-        return decoded
+        let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        let expiry = Date(timeIntervalSince1970: TimeInterval(expiryTimestamp))
+        guard let decoded = try? JSONDecoder().decode(T.self, from: payload.dropFirst(8)) else {
+            cacheLogger.info("diskGetStale: decode=fail for \(key, privacy: .public)")
+            return nil
+        }
+        cacheLogger.info("diskGetStale: decode=ok for \(key, privacy: .public)")
+        return (decoded, expiry)
     }
 
     private func diskRemove(key: String) {

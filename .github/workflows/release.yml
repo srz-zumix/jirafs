@@ -30,6 +30,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
       - name: Import Code-Signing Certificates
         uses: Apple-Actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
         with:
@@ -79,6 +85,7 @@ jobs:
     permissions:
       contents: read
     env:
+      GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.ref || github.ref_name }}
     steps:
       - name: Checkout code
@@ -86,6 +93,13 @@ jobs:
         with:
           repository: srz-zumix/homebrew-tap
           persist-credentials: false
+
+      - name: Download DMG from GitHub Release
+        run: |
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "jirafs-$TAG.dmg"
+
       - name: Update Homebrew Tap
         if: github.event_name == 'push' || inputs.publish
         env:
