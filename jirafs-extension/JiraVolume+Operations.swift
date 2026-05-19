@@ -39,9 +39,24 @@ extension JiraVolume: FSVolume.Operations {
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
-        // Pre-populate the in-memory cache from disk so Finder browsing is
-        // instant after mount instead of hitting disk on every access.
-        makeTask { await self.dataSource.warmUp() }
+        makeTask {
+            // Wire change notifications before warming up so that any stale-while-revalidate
+            // refresh that fires during warmUp() already has the handler in place.
+            await self.dataSource.setIssueKeysChangedHandler { [weak self] projectKey in
+                guard let self else { return }
+                // Update the issuesDir mtime so Finder's kqueue watcher sees the
+                // change and re-enumerates the directory automatically.
+                let node = self.item(for: .issuesDir(project: projectKey))
+                node.cachedMTime = Date()
+                self.logger.info("issueKeys changed project=\(projectKey, privacy: .public): mtime updated")
+            }
+            // Phase 1: fast pre-warm from disk cache so Finder browsing is instant.
+            await self.dataSource.warmUp()
+            // Phase 2: immediately schedule background API fetches for all projects
+            // so fresh data arrives as soon as possible after mount, without blocking
+            // the mount reply.
+            await self.dataSource.postWarmUpRefresh()
+        }
         reply(nil)
     }
 

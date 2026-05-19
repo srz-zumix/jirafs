@@ -13,7 +13,11 @@ final class JiraFSItem: FSItem, @unchecked Sendable {
     let identifier: FSItem.Identifier
     var cachedData: Data?
     var cachedSize: UInt64 = 0
-    var cachedMTime: Date = Date()
+    // Mutable from both FSKit operation tasks and the IssueDataSource change-notification
+    // callback. `nonisolated(unsafe)` opts out of Swift 6 isolation checks; Date is a
+    // simple struct (Double-backed) whose assignment is effectively atomic on 64-bit
+    // platforms, so a torn read/write is not possible.
+    nonisolated(unsafe) var cachedMTime: Date = Date()
 
     init(kind: FSNodeKind) {
         self.kind = kind

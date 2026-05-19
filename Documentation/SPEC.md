@@ -332,7 +332,23 @@ final class JiraFSItem: FSItem {
 
 ## キャッシュ戦略
 
-### In-Memory キャッシュ
+### 2 層キャッシュ構造
+
+`CacheManager` は **In-Memory** と **Disk** の 2 層を持つ。
+
+| 層 | 実体 | 用途 |
+|---|---|---|
+| L1: In-Memory | actor-isolated `[String: Entry]` | TTL 期間中の高速応答 |
+| L2: Disk | AES-GCM 暗号化 `.cache` ファイル | マウント間のウォームアップ |
+
+#### ディスクヒット時のメモリウォームアップ
+
+L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (**ただし添付バイナリは除く**)。
+
+- `get<T: Codable>` / `getStale<T: Codable>`: L2 ヒット時に `storage[key]` へ書き戻す。次回以降の読み出しは L1 でヒットし、再デクリプトが不要になる。
+- `get(Data)` / `getStale(Data)` (添付バイナリ): L2 ヒット時でも **L1 への書き戻しは行わない**。添付バイナリは MB〜数百 MB に達するため、ディスク読み出しと AES 復号アロケーションが並走する状況でヒープフラグメントが起きやすい。ディスクキャッシュ自体が十分な warm-up となるため L1 への保持は不要と判断している。
+
+### TTL
 
 | データ種別 | TTL | 理由 |
 |---|---|---|
@@ -342,11 +358,19 @@ final class JiraFSItem: FSItem {
 | 添付ファイル一覧 | 10 分 (600s) | 変更頻度が低い |
 | 添付ファイル本体 | 30 分 (1800s) | サイズが大きいため長めにキャッシュ |
 
+### Stale-while-revalidate
+
+`IssueDataSource` は以下の優先順位でデータを返す。
+
+1. **L1 Fresh** (TTL 内) → 即返却
+2. **L1/L2 Stale** (TTL 超過だが 7 日以内) → 即返却 + バックグラウンドで再取得
+3. **L1/L2 なし** → API フェッチ (初回アクセスのみ)
+
 ### キャッシュ無効化
 
-- `synchronize()` 呼び出し時にキャッシュを全クリア
-- ディレクトリ列挙時に TTL 超過分をリフレッシュ
-- ファイルオープン時に TTL チェック
+- `synchronize()` 呼び出し時に L1・L2 を全クリア
+- ディレクトリ列挙時に TTL 超過分をバックグラウンドリフレッシュ
+- ファイルクローズ時に `JiraFSItem.cachedData` を解放 (レンダリング済みコンテンツの再生成を保証)
 
 ## セキュリティ
 
@@ -412,7 +436,7 @@ final class JiraFSItem: FSItem {
       "auth": {
         "method": "pat"
       },
-      "allowedProjectKeys": ["PROJ", "OPS"],
+      "allowedProjectKeys": ["PROJ", "OPS"],   // 設定時は listProjects() 一括取得ではなく getProject(key:) 並列呼び出しで取得 (Server の大量プロジェクト対策)
       "diskCache": true,
       "htmlView": true
     }
@@ -494,7 +518,7 @@ umount ~/jirafs
 - **FSKit は macOS 15.4 SDK / Xcode 16.4+ が必須**。それ未満では拡張のビルド/動作不可 (フレームワーク `JiraAPI` / `JiraFSCore` とテストは macOS 14.0 を維持)
 - JIRA API のレート制限によるスループット制約
 - 大量イシュー (数万件) の場合、ページネーションと遅延読み込みが必要
-- 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (現状は全件 In-Memory キャッシュ)
+- 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (ディスクキャッシュには AES-GCM base64 形式で保存; In-Memory キャッシュには保持しない)
 - JIRA Cloud の ADF (Atlassian Document Format) → Markdown 変換は完全でない場合がある (主要ノードのみ対応、それ以外は raw fallback)
 - Server 版の wiki markup → Markdown 変換の互換性 (見出し / リスト / リンク / 強調 / `{code}` / `{panel}` / `{quote}` のみ)
 - JIRA Cloud v3 の `/search/jql` エンドポイントを使用 (2024年以降推奨の API)

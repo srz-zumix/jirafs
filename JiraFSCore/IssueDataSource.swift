@@ -28,6 +28,33 @@ public actor IssueDataSource {
     /// Cache keys for which a background refresh is already in flight.
     private var refreshing: Set<String> = []
 
+    /// In-flight deduplication for the projects fetch.
+    /// When warmUp and a Finder `enumerateDirectory` both call `projects()` on
+    /// a cold cache simultaneously (which is the common case on first mount),
+    /// both would otherwise issue an identical `listProjects()` network request
+    /// independently.  Storing the in-flight `Task` here lets the second caller
+    /// piggy-back on the first request instead of issuing a duplicate.
+    private var pendingProjectsFetch: Task<[JiraProject], Error>?
+
+    /// In-flight deduplication for per-project issue-key fetches.
+    /// Same rationale as `pendingProjectsFetch`: warmUp's `issueKeys()` and a
+    /// concurrent Finder `enumerateDirectory` of the same issues/ directory
+    /// should share one network round-trip instead of each issuing their own.
+    private var pendingIssueKeysFetch: [String: Task<[String], Error>] = [:]
+
+    /// Called on the actor's executor whenever the issue key list for a project
+    /// changes after a background refresh. The parameter is the project key.
+    /// `JiraVolume` uses this to update the directory's `cachedMTime` so that
+    /// Finder's kqueue watcher fires and the directory listing auto-refreshes.
+    public var onIssueKeysChanged: (@Sendable (String) -> Void)?
+
+    /// Sets the handler invoked when the issue key list for any project changes
+    /// after a background refresh. This is an async setter because `IssueDataSource`
+    /// is an actor — the property can only be mutated on the actor's executor.
+    public func setIssueKeysChangedHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        onIssueKeysChanged = handler
+    }
+
     public init(
         client: any JiraClient,
         cache: CacheManager = CacheManager(),
@@ -154,6 +181,26 @@ public actor IssueDataSource {
         }
     }
 
+    /// Schedule background API fetches for all known projects immediately
+    /// after `warmUp()`. The cache at this point may be stale disk data;
+    /// this call ensures the in-memory cache is populated with fresh network
+    /// data as soon as possible after mount, without blocking the reply.
+    ///
+    /// Skips projects whose issue-key list is already fresh in L1 — this avoids
+    /// a redundant round-trip when `warmUp()` just performed a cold-cache fetch
+    /// and stored fresh data moments ago.
+    public func postWarmUpRefresh() async {
+        guard let projects = try? await self.projects() else { return }
+        for project in projects {
+            let key = "issues/\(project.key)"
+            // cache.get() returns non-nil only for unexpired (fresh) entries.
+            // If the data is fresh, warmUp() already did the network fetch;
+            // scheduling another refresh here would be a wasted API call.
+            if await cache.get(key, as: [String].self) != nil { continue }
+            scheduleRefresh(key) { await self.bgRefreshIssueKeys(project: project.key) }
+        }
+    }
+
     // MARK: - Background refresh scheduling
 
     /// Starts a background refresh task for `key` if one is not already running.
@@ -178,8 +225,19 @@ public actor IssueDataSource {
     }
 
     private func bgRefreshIssueKeys(project: String) async {
-        _ = try? await fetchAndCacheIssueKeys(forProject: project)
-        finishRefresh("issues/\(project)")
+        let cacheKey = "issues/\(project)"
+        // Snapshot current key list before the refresh so we can detect
+        // additions or deletions after the API response comes back.
+        let oldKeys = await cache.get(cacheKey, as: [String].self)
+                   ?? await cache.getStale(cacheKey, as: [String].self)
+                   ?? []
+        guard let newKeys = try? await fetchAndCacheIssueKeys(forProject: project) else {
+            finishRefresh(cacheKey); return
+        }
+        finishRefresh(cacheKey)
+        if Set(newKeys) != Set(oldKeys) {
+            onIssueKeysChanged?(project)
+        }
     }
 
     private func bgRefreshIssue(key: String) async {
@@ -210,6 +268,29 @@ public actor IssueDataSource {
     // MARK: - Fetch + cache (synchronous path)
 
     private func fetchAndCacheProjects() async throws -> [JiraProject] {
+        // Single-flight deduplication: if a fetch is already in progress, join
+        // it rather than starting a second identical network request.
+        if let pending = pendingProjectsFetch {
+            return try await pending.value
+        }
+        let task = Task<[JiraProject], Error> { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try await self.doFetchAndCacheProjects()
+        }
+        pendingProjectsFetch = task
+        do {
+            let result = try await task.value
+            pendingProjectsFetch = nil
+            return result
+        } catch {
+            pendingProjectsFetch = nil
+            throw error
+        }
+    }
+
+    /// Actual network + cache-store implementation for the projects list.
+    /// Only called once per in-flight window via `fetchAndCacheProjects()`.
+    private func doFetchAndCacheProjects() async throws -> [JiraProject] {
         // When an allowedProjectKeys allowlist is configured, fetch each project
         // individually in parallel instead of downloading the entire project list.
         // On JIRA Server, GET /rest/api/2/project returns ALL projects with no
@@ -250,6 +331,28 @@ public actor IssueDataSource {
     }
 
     private func fetchAndCacheIssueKeys(forProject key: String) async throws -> [String] {
+        // Single-flight deduplication: if warmUp is already fetching this project's
+        // issue keys and Finder simultaneously opens the same issues/ directory,
+        // join the existing Task rather than starting a second network request.
+        if let pending = pendingIssueKeysFetch[key] {
+            return try await pending.value
+        }
+        let task = Task<[String], Error> { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try await self.doFetchAndCacheIssueKeys(forProject: key)
+        }
+        pendingIssueKeysFetch[key] = task
+        do {
+            let result = try await task.value
+            pendingIssueKeysFetch[key] = nil
+            return result
+        } catch {
+            pendingIssueKeysFetch[key] = nil
+            throw error
+        }
+    }
+
+    private func doFetchAndCacheIssueKeys(forProject key: String) async throws -> [String] {
         let cacheKey = "issues/\(key)"
         let jql = "project = \(key) ORDER BY created DESC"
 
