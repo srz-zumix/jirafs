@@ -210,14 +210,31 @@ public actor IssueDataSource {
     // MARK: - Fetch + cache (synchronous path)
 
     private func fetchAndCacheProjects() async throws -> [JiraProject] {
-        let value = try await limiter.run { [client] in
-            try await client.listProjects()
-        }
+        // When an allowedProjectKeys allowlist is configured, fetch each project
+        // individually in parallel instead of downloading the entire project list.
+        // On JIRA Server, GET /rest/api/2/project returns ALL projects with no
+        // server-side pagination, so the bulk request can be very large.
+        // Cloud's equivalent is smaller by default, but the same optimisation applies.
         let filtered: [JiraProject]
         if let allowed = allowedProjectKeys, !allowed.isEmpty {
-            let upper = allowed.map { $0.uppercased() }
-            filtered = value.filter { upper.contains($0.key.uppercased()) }
+            filtered = try await withThrowingTaskGroup(of: JiraProject?.self) { group in
+                let client = self.client
+                let limiter = self.limiter
+                for key in allowed {
+                    group.addTask {
+                        try? await limiter.run { try await client.getProject(key: key) }
+                    }
+                }
+                var results: [JiraProject] = []
+                for try await project in group {
+                    if let p = project { results.append(p) }
+                }
+                return results.sorted { $0.key < $1.key }
+            }
         } else {
+            let value = try await limiter.run { [client] in
+                try await client.listProjects()
+            }
             filtered = value
         }
         await cache.set("projects", value: filtered, ttl: ttl.projects)

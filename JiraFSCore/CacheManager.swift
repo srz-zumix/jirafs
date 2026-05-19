@@ -142,20 +142,21 @@ public actor CacheManager {
             return nil
         }
         guard diskEnabled else { return nil }
-        guard let (box, expiry): (DataBox, Date) = diskGet(key: key) else { return nil }
-        guard let data = Data(base64Encoded: box.base64) else { return nil }
-        storage[key] = Entry(value: data, expiresAt: expiry)
-        return data
+        // Attachment binaries can be large (MB–hundreds of MB). Storing them in
+        // the memory cache alongside ongoing AES-GCM allocations causes heap
+        // pressure that can corrupt the malloc free list. Disk cache alone is
+        // sufficient as a warm-up for binary data; skip memory repopulation here.
+        guard let (box, _): (DataBox, Date) = diskGet(key: key) else { return nil }
+        return Data(base64Encoded: box.base64)
     }
 
     /// Returns a `Data` value even if expired (stale-while-revalidate).
     public func getStale(_ key: String, as type: Data.Type) -> Data? {
         if let entry = storage[key], let v = entry.value as? Data { return v }
         guard diskEnabled else { return nil }
-        guard let (box, expiry): (DataBox, Date) = diskGetStale(key: key) else { return nil }
-        guard let data = Data(base64Encoded: box.base64) else { return nil }
-        storage[key] = Entry(value: data, expiresAt: expiry)
-        return data
+        // Skip memory repopulation for the same reason as get(_:as:Data.Type).
+        guard let (box, _): (DataBox, Date) = diskGetStale(key: key) else { return nil }
+        return Data(base64Encoded: box.base64)
     }
 
     public func set(_ key: String, value: Data, ttl: TimeInterval) {
