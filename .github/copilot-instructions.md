@@ -46,7 +46,7 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装。
 - フォルダ命名は Swift 慣例: `Tests/` `Documentation/` `JiraAPI/` `JiraFSCore/` は PascalCase、製品名そのものの `jirafs/` `jirafs-extension/` は lowercase
 - 新規 Swift ソースを追加したら `xcodegen generate` を実行 (`project.yml` がソース・オブ・トゥルース、`jirafs.xcodeproj` は gitignore 済)
 - ビルド・テストは Xcode 16.4+ / `DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer` 必須
-- `xcodebuild` は常に `CODE_SIGNING_ALLOWED=NO` を付与 (FSKit entitlement のため)
+- `xcodebuild` で `CODE_SIGNING_ALLOWED=NO` を付与するのは CI / unit test / 署名不要ビルドに限定する。FSKit Extension を実際に mount・検証するビルドや release 用ビルドでは署名が必要なので、`Documentation/INSTRUCTIONS.md` と release workflow の手順に従う
 - ホスト/拡張は `MACOSX_DEPLOYMENT_TARGET=15.4`、`JiraAPI` / `JiraFSCore` / Tests は `14.0` を維持
 - Swift 6 strict concurrency 準拠。FSKit reply handler を `Task` でキャプチャするときは `SendableBox(reply)` でラップ
 - `actor` 内の `while` ループで mutable var をクロージャに渡す前に `let` で不変コピーを取る
