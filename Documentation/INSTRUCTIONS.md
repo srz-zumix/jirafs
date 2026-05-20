@@ -78,9 +78,9 @@ jirafs/
 - **Type**: SwiftUI App
 - **用途**: 接続設定 UI、認証情報管理、拡張機能の有効化ガイド
 - **Entitlements**:
-  - `com.apple.security.app-sandbox`
   - `com.apple.security.keychain-access-groups`
   - `com.apple.security.network.client`
+- **備考**: ホストアプリは **sandbox 化しない**。`com.apple.security.app-sandbox` は現在の `jirafs/jirafs.entitlements` には含めず、特権的なマウント処理を阻害するため再追加しないこと。
 
 #### App Extension (`jirafs-extension`)
 
