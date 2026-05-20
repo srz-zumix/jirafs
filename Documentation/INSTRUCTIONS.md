@@ -61,7 +61,7 @@ jirafs/
 │   ├── IssueDataSource.swift          # JiraClient + CacheManager 統合
 │   ├── ContentRenderer.swift          # ADF / wiki markup → Markdown
 │   ├── IssueFileBuilder.swift         # summary.txt / description.md / metadata.json / comments 生成
-│   └── FileNameSanitizer.swift        # パストラバーサル防止 + 衰名衰避
+│   └── FileNameSanitizer.swift        # パストラバーサル防止 + 重複回避
 ├── Tests/
 │   ├── JiraAPITests/                  # AuthTests / JiraRESTClientTests (URLProtocol stub)
 │   └── JiraFSCoreTests/               # FileNameSanitizer / PathResolver / ContentRenderer / CacheManager / IssueDataSourcePagination
