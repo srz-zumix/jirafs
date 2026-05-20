@@ -77,7 +77,15 @@ jobs:
 
       - name: Create GitHub Release
         run: |
-          gh release create "$TAG" --title "Release $TAG" --notes "Release notes for $TAG" jirafs-$TAG.dmg
+          RELEASE_NOTES="Release notes for $TAG"
+          ASSET="jirafs-$TAG.dmg"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+            gh release edit "$TAG" --title "Release $TAG" --notes "$RELEASE_NOTES"
+          else
+            gh release create "$TAG" --title "Release $TAG" --notes "$RELEASE_NOTES" "$ASSET"
+          fi
 
   homebrew:
     needs: release
