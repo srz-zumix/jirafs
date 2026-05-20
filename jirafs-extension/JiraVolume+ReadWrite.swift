@@ -19,6 +19,7 @@ extension JiraVolume: FSVolume.ReadWriteOperations {
                     self.logger.warning("read: cachedData nil for \(String(describing: node.kind), privacy: .public)")
                     r.value(0, FSKitError.notFound); return
                 }
+                guard offset >= 0 else { r.value(0, nil); return }
                 let start = Int(offset)
                 self.logger.info("read: data.count=\(data.count) start=\(start) length=\(length)")
                 guard start < data.count else { r.value(0, nil); return }

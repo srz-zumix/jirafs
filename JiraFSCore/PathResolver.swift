@@ -79,16 +79,6 @@ public enum PathResolver {
         for (n, k) in childKinds(of: parent) where n == name {
             return k
         }
-        if case .issue(let key) = parent {
-            switch name {
-            case "summary.txt": return .summary(issueKey: key)
-            case "description.md": return .description(issueKey: key)
-            case "metadata.json": return .metadata(issueKey: key)
-            case "comments": return .commentsDir(issueKey: key)
-            case "attachments": return .attachmentsDir(issueKey: key)
-            default: return nil
-            }
-        }
         return nil
     }
 }

@@ -295,7 +295,8 @@ public enum IssueFileBuilder {
         }
     }
 
-    public static func projectMeta(_ project: JiraProject) -> Data {        let dict: [String: Any] = [
+    public static func projectMeta(_ project: JiraProject) -> Data {
+        let dict: [String: Any] = [
             "id": project.id,
             "key": project.key,
             "name": project.name,
