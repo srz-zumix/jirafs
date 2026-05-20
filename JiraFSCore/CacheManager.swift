@@ -71,13 +71,23 @@ public actor CacheManager {
         baseCachesDir.appendingPathComponent("jirafs", isDirectory: true)
     }
 
+    /// Returns the caches base URL of the FSKit extension container.
+    ///
+    /// The extension runs sandboxed under
+    /// `~/Library/Containers/com.zumix.jirafs.fskit/Data/Library/Caches/`.
+    /// Both the host app (unsandboxed) and the extension itself resolve to
+    /// the same physical path using this helper.
+    public static func extensionCachesBaseURL() -> URL {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Containers/com.zumix.jirafs.fskit/Data/Library/Caches",
+                                    isDirectory: true)
+    }
+
     /// Deletes all cached files for the given instance. Safe to call from the host app.
     /// - Returns: Number of files deleted.
     @discardableResult
     public static func clearCache(for instanceName: String) -> Int {
-        guard let baseCachesDir = try? FileManager.default.url(
-            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
-        else { return 0 }
+        let baseCachesDir = extensionCachesBaseURL()
         let dir = cacheDirectory(for: instanceName, baseCachesDir: baseCachesDir)
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil) else { return 0 }
@@ -200,7 +210,9 @@ public actor CacheManager {
 
     // MARK: - Disk helpers
 
-    /// On-disk envelope: nonce(12) + expiry(8, big-endian unix timestamp) + ciphertext
+    /// On-disk format: `AES.GCM.SealedBox.combined` = nonce(12) + ciphertext + tag(16).
+    /// The decrypted payload is: expiry(8, big-endian UInt64 unix timestamp) + JSON-encoded value.
+    /// The expiry is inside the encrypted payload — it is NOT a plaintext field in the file.
     private func diskSet<T: Codable>(key: String, value: T, ttl: TimeInterval) {
         guard let dir = cacheDir, let encKey = encryptionKey else { return }
         guard let plaintext = try? JSONEncoder().encode(value) else { return }

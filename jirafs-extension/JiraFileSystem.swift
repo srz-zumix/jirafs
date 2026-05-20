@@ -27,12 +27,10 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             let (instanceName, config, auth, allowedProjectKeys, ttl, pagination, diskCacheEnabled, htmlEnabled) =
                 try JiraFileSystem.lookupInstance(hostname: hostname)
             let client = JiraRESTClient(config: config, auth: auth)
-            let cachesDir: URL? = {
-                guard let base = try? FileManager.default.url(
-                    for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                else { return nil }
-                return CacheManager.cacheDirectory(for: instanceName, baseCachesDir: base)
-            }()
+            let cachesDir: URL? = diskCacheEnabled
+                ? CacheManager.cacheDirectory(for: instanceName,
+                                              baseCachesDir: CacheManager.extensionCachesBaseURL())
+                : nil
             let cache = CacheManager(diskEnabled: diskCacheEnabled, cachesDir: cachesDir)
             if diskCacheEnabled {
                 Task { await cache.evictExpiredDiskEntries() }
