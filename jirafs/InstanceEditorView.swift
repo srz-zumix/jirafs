@@ -313,7 +313,7 @@ struct InstanceEditorView: View {
         guard let url = URL(string: urlString) else { return }
         if !token.isEmpty {
             do {
-                let account = method == .apiToken ? email : "pat"
+                let account = method == .apiToken ? (email.isEmpty ? "api_token" : email) : "pat"
                 try KeychainManager().setPassword(token, instanceName: name, account: account)
             } catch {
                 print("Keychain save failed: \(error)")

@@ -82,6 +82,15 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             // Zero-byte file — presence in the listing is all Spotlight checks for.
             data = Data()
         case .configFile:
+            // Intentionally returns an empty JSON object rather than the real
+            // config file contents.
+            //
+            // Rationale: /.jirafs/config.json is visible to any process that
+            // can read the mount point. Exposing the actual config would leak
+            // the JIRA instance URL, user email, allowedProjectKeys, etc.
+            // Auth tokens/PATs are stored in Keychain (not in config.json),
+            // so the risk is limited, but we keep this as an opaque placeholder
+            // for now until a deliberate decision is made to expose the config.
             data = Data("{}\n".utf8)
         default:
             return

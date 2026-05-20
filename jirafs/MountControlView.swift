@@ -145,11 +145,28 @@ struct MountControlView: View {
 
     // MARK: - Actions
 
+    /// Returns the URL host only if it is present and consists entirely of
+    /// characters that are safe to embed in a single-quoted shell argument
+    /// (`[A-Za-z0-9._-]`). Returns `nil` for missing, empty, or unsafe hosts.
+    ///
+    /// We validate rather than escape because the host is passed inside a
+    /// privileged `/bin/sh -c` command; any shell metacharacter (`;`, `$`, …)
+    /// could execute arbitrary code as root. Valid JIRA hostnames never contain
+    /// such characters, so rejection is the right response.
+    private var safeHost: String? {
+        guard let host = entry.url.host, !host.isEmpty else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-"))
+        guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return host
+    }
+
     // The command shown to users as a fallback when mount fails.
     private var manualMountCommand: String {
-        let host = entry.url.host ?? entry.url.absoluteString
+        guard let host = safeHost else {
+            return "# Error: JIRA URL has no valid hostname — check your instance configuration"
+        }
         let path = entry.effectiveMountPath.replacingOccurrences(of: "'", with: "'\\''")
-        return "sudo /sbin/mount -F -t jirafs -o ro jira://\(host) '\(path)'"
+        return "sudo /sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(path)'"
     }
 
     private func performMount() async {
@@ -157,7 +174,10 @@ struct MountControlView: View {
         errorMessage = nil
         defer { isBusy = false }
         let path = entry.effectiveMountPath
-        let host = entry.url.host ?? entry.url.absoluteString
+        guard let host = safeHost else {
+            errorMessage = "Invalid JIRA URL: hostname is missing or contains unsafe characters. Check your instance configuration."
+            return
+        }
         // Create the mount point as the current user (no root needed).
         do {
             try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
@@ -166,7 +186,7 @@ struct MountControlView: View {
             return
         }
         let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
-        let mountCmd = "/sbin/mount -F -t jirafs -o ro jira://\(host) '\(escapedPath)'"
+        let mountCmd = "/sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(escapedPath)'"
         do {
             try await runPrivileged(mountCmd)
             // Wait briefly for the kernel to register the volume before checking.

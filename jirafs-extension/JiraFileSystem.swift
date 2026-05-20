@@ -149,7 +149,8 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         switch entry.auth.method {
         case .apiToken:
             let email = entry.auth.email ?? ""
-            let token = try keychain.password(instanceName: entry.name, account: email)
+            let account = email.isEmpty ? "api_token" : email
+            let token = try keychain.password(instanceName: entry.name, account: account)
             auth = APITokenAuth(email: email, token: token)
         case .pat:
             let token = try keychain.password(instanceName: entry.name, account: "pat")

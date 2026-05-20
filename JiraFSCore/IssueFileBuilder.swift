@@ -21,29 +21,29 @@ public enum IssueFileBuilder {
         var dict: [String: Any] = [
             "key": issue.key,
             "id": issue.id,
-            "type": issue.fields.issueType?.name as Any? ?? NSNull(),
-            "status": issue.fields.status?.name as Any? ?? NSNull(),
-            "priority": issue.fields.priority?.name as Any? ?? NSNull(),
+            "type": jsonOrNull(issue.fields.issueType?.name),
+            "status": jsonOrNull(issue.fields.status?.name),
+            "priority": jsonOrNull(issue.fields.priority?.name),
             "labels": issue.fields.labels ?? [],
             "components": (issue.fields.components ?? []).compactMap { $0.name },
-            "created": issue.fields.created as Any? ?? NSNull(),
-            "updated": issue.fields.updated as Any? ?? NSNull(),
-            "resolution": issue.fields.resolution?.name as Any? ?? NSNull(),
-            "parent": issue.fields.parent?.key as Any? ?? NSNull(),
+            "created": jsonOrNull(issue.fields.created),
+            "updated": jsonOrNull(issue.fields.updated),
+            "resolution": jsonOrNull(issue.fields.resolution?.name),
+            "parent": jsonOrNull(issue.fields.parent?.key),
             "subtasks": (issue.fields.subtasks ?? []).compactMap { $0.key },
         ]
         if let a = assignee {
             dict["assignee"] = [
-                "displayName": a.displayName as Any? ?? NSNull(),
-                "emailAddress": a.emailAddress as Any? ?? NSNull(),
+                "displayName": jsonOrNull(a.displayName),
+                "emailAddress": jsonOrNull(a.emailAddress),
             ]
         } else {
             dict["assignee"] = NSNull()
         }
         if let r = reporter {
             dict["reporter"] = [
-                "displayName": r.displayName as Any? ?? NSNull(),
-                "emailAddress": r.emailAddress as Any? ?? NSNull(),
+                "displayName": jsonOrNull(r.displayName),
+                "emailAddress": jsonOrNull(r.emailAddress),
             ]
         } else {
             dict["reporter"] = NSNull()
@@ -53,9 +53,9 @@ public enum IssueFileBuilder {
                 let direction = link.outwardIssue != nil ? "outward" : "inward"
                 let other = link.outwardIssue ?? link.inwardIssue
                 return [
-                    "type": link.type.name as Any? ?? NSNull(),
+                    "type": jsonOrNull(link.type.name),
                     "direction": direction,
-                    "key": other?.key as Any? ?? NSNull(),
+                    "key": jsonOrNull(other?.key),
                 ]
             }
         }
@@ -69,6 +69,16 @@ public enum IssueFileBuilder {
         }
         let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
+    }
+
+    /// Returns the value as `Any` when non-nil, otherwise `NSNull()`.
+    /// Use this instead of `x as Any? ?? NSNull()`: the `as Any?` cast can
+    /// leave an `Optional<T>` boxed inside `Any` when the compiler retains the
+    /// outer optional, which `JSONSerialization` cannot encode and causes the
+    /// entire serialization to throw (producing an empty `Data()` result).
+    private static func jsonOrNull<T>(_ value: T?) -> Any {
+        guard let v = value else { return NSNull() }
+        return v
     }
 
     private static func jsonValueToAny(_ value: JSONValue) -> Any {
@@ -300,8 +310,8 @@ public enum IssueFileBuilder {
             "id": project.id,
             "key": project.key,
             "name": project.name,
-            "projectTypeKey": project.projectTypeKey as Any? ?? NSNull(),
-            "lead": project.lead?.displayName as Any? ?? NSNull(),
+            "projectTypeKey": jsonOrNull(project.projectTypeKey),
+            "lead": jsonOrNull(project.lead?.displayName),
         ]
         let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
