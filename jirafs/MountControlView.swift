@@ -155,7 +155,7 @@ struct MountControlView: View {
     /// such characters, so rejection is the right response.
     private var safeHost: String? {
         guard let host = entry.url.host, !host.isEmpty else { return nil }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-"))
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
         guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
         return host
     }

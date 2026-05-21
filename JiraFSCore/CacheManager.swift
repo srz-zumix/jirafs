@@ -164,8 +164,12 @@ public actor CacheManager {
         guard diskEnabled else { return nil }
         // Large binaries (> dataMemoThreshold) are disk-only; skip memory
         // repopulation to avoid heap pressure from large concurrent allocations.
-        guard let (box, _): (DataBox, Date) = diskGet(key: key) else { return nil }
-        return Data(base64Encoded: box.base64)
+        guard let (box, expiry): (DataBox, Date) = diskGet(key: key) else { return nil }
+        guard let data = Data(base64Encoded: box.base64) else { return nil }
+        if data.count <= Self.dataMemoThreshold {
+            storage[key] = Entry(value: data, expiresAt: expiry)
+        }
+        return data
     }
 
     /// Returns a `Data` value even if expired (stale-while-revalidate).
@@ -173,8 +177,12 @@ public actor CacheManager {
         if let entry = storage[key], let v = entry.value as? Data { return v }
         guard diskEnabled else { return nil }
         // Skip memory repopulation for the same reason as get(_:as:Data.Type).
-        guard let (box, _): (DataBox, Date) = diskGetStale(key: key) else { return nil }
-        return Data(base64Encoded: box.base64)
+        guard let (box, expiry): (DataBox, Date) = diskGetStale(key: key) else { return nil }
+        guard let data = Data(base64Encoded: box.base64) else { return nil }
+        if data.count <= Self.dataMemoThreshold {
+            storage[key] = Entry(value: data, expiresAt: expiry)
+        }
+        return data
     }
 
     public func set(_ key: String, value: Data, ttl: TimeInterval) {
