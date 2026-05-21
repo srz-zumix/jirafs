@@ -194,22 +194,31 @@ enum ADFRenderer {
     }
 
     private static func renderTable(_ rows: [JSONValue]) -> String {
+        // First pass: determine the maximum column count across all rows.
+        let maxColumns = rows.reduce(0) { max, row -> Int in
+            guard case .object(let obj) = row,
+                  case .array(let cells) = obj["content"] ?? .null else { return max }
+            return Swift.max(max, cells.count)
+        }
+        guard maxColumns > 0 else { return "" }
         var lines: [String] = []
-        var columns = 0
         for (i, row) in rows.enumerated() {
             guard case .object(let obj) = row,
                   case .array(let cells) = obj["content"] ?? .null else { continue }
-            columns = max(columns, cells.count)
-            let texts = cells.map { cell -> String in
+            var texts = cells.map { cell -> String in
                 if case .object(let cobj) = cell,
                    case .array(let inner) = cobj["content"] ?? .null {
                     return inner.map(renderBlock).joined().trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 return ""
             }
+            // Pad rows that have fewer cells than the widest row.
+            if texts.count < maxColumns {
+                texts += Array(repeating: "", count: maxColumns - texts.count)
+            }
             lines.append("| " + texts.joined(separator: " | ") + " |")
             if i == 0 {
-                lines.append("|" + Array(repeating: " --- ", count: texts.count).joined(separator: "|") + "|")
+                lines.append("|" + Array(repeating: " --- ", count: maxColumns).joined(separator: "|") + "|")
             }
         }
         return lines.joined(separator: "\n")

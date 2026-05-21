@@ -9,7 +9,22 @@ private let keychainLogger = Logger(subsystem: "com.zumix.jirafs", category: "ke
 /// Items live in the shared Keychain Access Group so the host app and the
 /// FSKit extension can both read them.
 public struct KeychainManager: Sendable {
-    public static let accessGroup = "KPZ4FUM7GD.com.zumix.jirafs.shared"
+    /// The shared Keychain access group, resolved at runtime from the process's own
+    /// embedded entitlements (`keychain-access-groups`). This means the correct
+    /// team prefix is used regardless of which developer/team signs the binary.
+    /// Falls back to the original hard-coded value if entitlement reading fails
+    /// (e.g. in unit-test targets that run without a signing identity).
+    public static let accessGroup: String = {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task, "keychain-access-groups" as CFString, nil),
+              let groups = value as? [String],
+              let group = groups.first(where: { $0.hasSuffix(".com.zumix.jirafs.shared") })
+        else {
+            return "KPZ4FUM7GD.com.zumix.jirafs.shared"
+        }
+        return group
+    }()
     public static let servicePrefix = "com.zumix.jirafs"
 
     public init() {}

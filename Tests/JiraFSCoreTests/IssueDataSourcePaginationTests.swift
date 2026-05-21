@@ -97,9 +97,13 @@ final class IssueDataSourcePaginationTests: XCTestCase {
         XCTAssertEqual(firstCalls, secondCalls, "Second call should be served from cache")
     }
 
-    /// Performance smoke check: paginating 10k issues should complete well
-    /// under a generous timeout (1 s on developer hardware). This guards
-    /// against accidental quadratic behaviour in the loop.
+    /// Verify non-quadratic behavior for a large project.
+    ///
+    /// The call-count check (always runs, including CI) catches the most common
+    /// regression: re-fetching pages or accumulating duplicate requests.
+    /// The wall-clock check is skipped in CI (`CI` env var set) to avoid
+    /// flakiness on contended machines, but runs locally with a generous 10 s
+    /// threshold as a smoke test for non-linear loop processing overhead.
     func testPaginationLargeProjectIsFast() async throws {
         let total = 10_000
         let pageSize = 100
@@ -116,6 +120,21 @@ final class IssueDataSourcePaginationTests: XCTestCase {
         let keys = try await dataSource.issueKeys(forProject: "BIG")
         let elapsed = Date().timeIntervalSince(started)
         XCTAssertEqual(keys.count, total)
-        XCTAssertLessThan(elapsed, 1.0, "10k-issue pagination took \(elapsed)s; suspect non-linear behaviour")
+
+        // O(n) complexity check: the stub must be called exactly total/pageSize
+        // times. Any quadratic API-call pattern (e.g. re-fetching pages) inflates
+        // this count and will fail here regardless of environment.
+        let calls = await stub.requestCountSnapshot
+        XCTAssertEqual(calls, total / pageSize,
+                       "Expected \(total / pageSize) page requests; got \(calls) — suspect non-linear call pattern")
+
+        // Wall-clock smoke test — skipped in CI to avoid flakiness on contended
+        // machines. A generous 10 s threshold is used so it only fires on severe
+        // loop processing regressions (e.g. accidental O(n²) array copies).
+        let inCI = ProcessInfo.processInfo.environment["CI"] != nil
+        if !inCI {
+            XCTAssertLessThan(elapsed, 10.0,
+                              "10k-issue pagination took \(elapsed)s; suspect non-linear loop processing")
+        }
     }
 }

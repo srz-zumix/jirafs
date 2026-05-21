@@ -12,8 +12,11 @@ private let cacheLogger = Logger(subsystem: "com.zumix.jirafs", category: "cache
 /// **Disk layer** (opt-in via `diskEnabled`): persists entries as
 /// AES-GCM-encrypted files under `cachesDir/jirafs/`.
 /// - The encryption key is stored as `.cache.key` (raw 32 bytes) inside the
-///   cache directory. That directory is inside the FSKit extension's sandbox
-///   container, which macOS prevents other processes from accessing.
+///   cache directory. The directory is created with mode `0700` and the key
+///   file with `0600` (owner-only read/write). When running as the FSKit
+///   extension the directory is also inside the sandbox container, giving
+///   defence-in-depth. On shared or non-sandboxed systems the POSIX
+///   permissions are the primary access control.
 ///   Note: FSKit extensions run as system daemons and cannot call
 ///   `SecItemAdd`, so Keychain storage is not available in this context.
 /// - File names are the SHA-256 hash of the cache key, so no JIRA path
@@ -47,7 +50,8 @@ public actor CacheManager {
     public init(diskEnabled: Bool = false, cachesDir: URL? = nil) {
         self.diskEnabled = diskEnabled
         if diskEnabled, let dir = cachesDir {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                     attributes: [.posixPermissions: 0o700])
             self.cacheDir = dir
             self.encryptionKey = CacheManager.loadOrCreateEncryptionKey(in: dir)
             cacheLogger.info("CacheManager init: diskEnabled=true hasKey=\(self.encryptionKey != nil)")
@@ -146,16 +150,20 @@ public actor CacheManager {
 
     // MARK: - Data overloads (Data is not Codable by itself in generic context)
 
+    /// Values at or below this size are also kept in the memory cache for fast
+    /// repeated reads (e.g. small icons, text files). Larger binaries are
+    /// disk-only to avoid heap pressure from huge concurrent allocations
+    /// alongside AES-GCM operations.
+    static let dataMemoThreshold = 256 * 1024  // 256 KB
+
     public func get(_ key: String, as type: Data.Type) -> Data? {
         if let entry = storage[key] {
             if entry.expiresAt > Date(), let v = entry.value as? Data { return v }
             return nil
         }
         guard diskEnabled else { return nil }
-        // Attachment binaries can be large (MB–hundreds of MB). Storing them in
-        // the memory cache alongside ongoing AES-GCM allocations causes heap
-        // pressure that can corrupt the malloc free list. Disk cache alone is
-        // sufficient as a warm-up for binary data; skip memory repopulation here.
+        // Large binaries (> dataMemoThreshold) are disk-only; skip memory
+        // repopulation to avoid heap pressure from large concurrent allocations.
         guard let (box, _): (DataBox, Date) = diskGet(key: key) else { return nil }
         return Data(base64Encoded: box.base64)
     }
@@ -170,7 +178,12 @@ public actor CacheManager {
     }
 
     public func set(_ key: String, value: Data, ttl: TimeInterval) {
-        storage[key] = Entry(value: value, expiresAt: Date().addingTimeInterval(ttl))
+        let expiry = Date().addingTimeInterval(ttl)
+        // Small values go into memory for fast repeated reads; large binaries
+        // are disk-only to avoid heap pressure (see dataMemoThreshold).
+        if value.count <= Self.dataMemoThreshold {
+            storage[key] = Entry(value: value, expiresAt: expiry)
+        }
         if diskEnabled {
             diskSet(key: key, value: DataBox(base64: value.base64EncodedString()), ttl: ttl)
         }
@@ -307,8 +320,11 @@ public actor CacheManager {
     // MARK: - Key management
     //
     // The 256-bit AES-GCM key is stored as a raw 32-byte file (.cache.key)
-    // inside the cache directory. macOS sandbox prevents any other process
-    // from reading the extension's container, so this is safe.
+    // inside the cache directory. The directory is created with mode 0700 and
+    // the key file itself is written with mode 0600 (owner-only read/write).
+    // When running as the FSKit extension the directory is additionally inside
+    // the macOS sandbox container. On shared or non-sandboxed systems the POSIX
+    // permissions are the primary access control.
     // FSKit extensions run as system daemons and cannot call SecItemAdd,
     // making Keychain storage unavailable in this context.
 
@@ -322,6 +338,7 @@ public actor CacheManager {
         let keyData = newKey.withUnsafeBytes { Data($0) }
         do {
             try keyData.write(to: keyURL, options: [.atomic, .completeFileProtection])
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
             cacheLogger.info("loadOrCreateEncryptionKey: generated and saved new key")
         } catch {
             cacheLogger.error("loadOrCreateEncryptionKey: write failed \(error, privacy: .public)")

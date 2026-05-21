@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import FSKit
 import JiraAPI
 import JiraFSCore
@@ -122,9 +123,15 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     static func deterministicUUID(for key: String) -> UUID {
-        var bytes = Array<UInt8>(repeating: 0, count: 16)
-        for (i, b) in Array(key.utf8).enumerated() { bytes[i % 16] ^= b }
-        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+        // Derive a UUID from SHA-256 so different keys have negligible collision risk.
+        // Version/variant bits are set per RFC 4122 §4.3 (name-based UUID, version 5).
+        var bytes = Array(SHA256.hash(data: Data(key.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50   // version 5
+        bytes[8] = (bytes[8] & 0x3f) | 0x80   // RFC 4122 variant
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2],  bytes[3],
+                           bytes[4], bytes[5], bytes[6],  bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11],
+                           bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
     /// Resolve the instance matching `hostname` (falls back to the first entry).
