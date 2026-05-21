@@ -67,7 +67,18 @@ public actor IssueDataSource {
         self.cache = cache
         self.ttl = ttl
         self.maxResults = maxResults
-        self.allowedProjectKeys = allowedProjectKeys
+        // Normalize: trim whitespace, uppercase, de-duplicate, then nil-ify if empty.
+        // This ensures keys from manual config.json edits (or any external source)
+        // match JIRA's canonical uppercase project keys regardless of how they were stored.
+        if let raw = allowedProjectKeys {
+            var seen = Set<String>()
+            let normalized = raw
+                .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+            self.allowedProjectKeys = normalized.isEmpty ? nil : normalized
+        } else {
+            self.allowedProjectKeys = nil
+        }
         self.limiter = limiter
     }
 
@@ -228,9 +239,14 @@ public actor IssueDataSource {
         let cacheKey = "issues/\(project)"
         // Snapshot current key list before the refresh so we can detect
         // additions or deletions after the API response comes back.
-        let oldKeys = await cache.get(cacheKey, as: [String].self)
-                   ?? await cache.getStale(cacheKey, as: [String].self)
-                   ?? []
+        // Note: `await` cannot appear to the right of `??` (autoclosure restriction),
+        // so we evaluate fresh and stale in two separate steps.
+        let oldKeys: [String]
+        if let fresh = await cache.get(cacheKey, as: [String].self) {
+            oldKeys = fresh
+        } else {
+            oldKeys = await cache.getStale(cacheKey, as: [String].self) ?? []
+        }
         guard let newKeys = try? await fetchAndCacheIssueKeys(forProject: project) else {
             finishRefresh(cacheKey); return
         }

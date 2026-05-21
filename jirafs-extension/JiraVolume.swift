@@ -42,11 +42,29 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
             state.nextID &+= 1
             return id
         }
+        // Gate: the task body suspends here until taskStorage.tasks[id] has been
+        // set by the caller below. Without this, a fast-completing body's `defer`
+        // could remove a not-yet-inserted entry; the subsequent insertion would
+        // then leave a stale completed task permanently in the dictionary.
+        // Two orderings are handled:
+        //   (A) task starts first  → stores the continuation; signal() resumes it.
+        //   (B) signal() runs first → sets `go = true`; task resumes immediately.
+        let gate = OSAllocatedUnfairLock(
+            initialState: (cont: Optional<CheckedContinuation<Void, Never>>.none, go: false))
         let task = Task<Void, Never> {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                gate.withLock { s in
+                    if s.go { c.resume() } else { s.cont = c }
+                }
+            }
             defer { self.taskStorage.withLock { $0.tasks.removeValue(forKey: id) } }
             await body()
         }
         taskStorage.withLock { $0.tasks[id] = task }
+        gate.withLock { s in
+            s.go = true
+            s.cont?.resume()
+        }
         return task
     }
 

@@ -29,6 +29,7 @@ struct InstanceEditorView: View {
     /// changed ⇒ existing credential can no longer be found).
     private let originalMethod: Configuration.AuthEntry.Method?
     private let originalEmail: String?
+    @EnvironmentObject private var monitor: MountStatusMonitor
     let onSave: (Configuration.InstanceEntry) -> Void
     let onCancel: () -> Void
 
@@ -63,6 +64,24 @@ struct InstanceEditorView: View {
                 .padding(.bottom, 12)
 
             Divider()
+
+            // Warning banner: shown when the instance is already mounted.
+            // Changes to connection, auth, or mount options require remounting.
+            if let instName = originalName, monitor.mountedStates[instName] == true {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("This instance is currently mounted. Changes take effect after remounting.")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .font(.callout)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.1))
+
+                Divider()
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -345,10 +364,11 @@ struct InstanceEditorView: View {
             }
         }
         let auth = Configuration.AuthEntry(method: method, email: method == .apiToken ? email : nil)
+        var _seen = Set<String>()
         let parsedKeys = projectFilter
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && _seen.insert($0).inserted }
         let entry = Configuration.InstanceEntry(
             name: name, type: edition, url: url, auth: auth,
             mountPath: mountPath.isEmpty ? nil : mountPath,

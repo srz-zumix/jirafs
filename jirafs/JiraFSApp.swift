@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 @main
 struct JiraFSApp: App {
@@ -25,6 +26,8 @@ struct JiraFSApp: App {
 /// Unmounts all jirafs volumes when the app quits so fskitd is left in a
 /// clean state and the next launch can mount without hitting extensionKit error 2.
 final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
+    private let logger = Logger(subsystem: "com.zumix.jirafs", category: "AppDelegate")
+
     func applicationWillTerminate(_ notification: Notification) {
         let config = AppConfig.load()
         let fm = FileManager.default
@@ -36,8 +39,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             let targetURL = URL(fileURLWithPath: entry.effectiveMountPath,
                                 isDirectory: true).standardized
             guard mountedURLs.contains(targetURL) else { continue }
-            // Best-effort synchronous unmount; no auth dialog at quit time.
-            _ = NSWorkspace.shared.unmountAndEjectDevice(atPath: entry.effectiveMountPath)
+            // Try non-privileged NSWorkspace unmount first.
+            do {
+                try NSWorkspace.shared.unmountAndEjectDevice(at: targetURL)
+                logger.info("Unmounted \(entry.name, privacy: .public) via NSWorkspace")
+            } catch {
+                // Fallback: synchronous diskutil without sudo.
+                // FSKit volumes are user-owned (fskitd runs as the user), so this
+                // should succeed without requiring root privileges.
+                logger.warning("NSWorkspace unmount failed for \(entry.name, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying via diskutil")
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+                proc.arguments = ["unmount", "force", entry.effectiveMountPath]
+                try? proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 {
+                    logger.info("Unmounted \(entry.name, privacy: .public) via diskutil")
+                } else {
+                    logger.error("diskutil unmount failed for \(entry.name, privacy: .public) (exit \(proc.terminationStatus))")
+                }
+            }
         }
     }
 }
