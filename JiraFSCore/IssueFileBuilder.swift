@@ -157,7 +157,7 @@ public enum IssueFileBuilder {
         </style>
         </head>
         <body>
-        <h1><a href="\(issueURL.absoluteString)">\(issue.key)</a>: \(summary)</h1>
+        <h1><a href="\(escapeHTML(issueURL.absoluteString))">\(escapeHTML(issue.key))</a>: \(summary)</h1>
         <div class="meta-grid">
         """
 
@@ -171,7 +171,7 @@ public enum IssueFileBuilder {
             html += "<span class=\"meta-label\">Status</span><span><span class=\"badge status\">\(escapeHTML(statusName))</span></span>\n"
         }
         if let p = f.priority?.name {
-            let cls = "badge priority-\(p.lowercased())"
+            let cls = "badge priority-\(safeCSSIdentifier(p.lowercased()))"
             html += "<span class=\"meta-label\">Priority</span><span><span class=\"\(cls)\">\(escapeHTML(p))</span></span>\n"
         }
         if let a = f.assignee?.displayName { row("Assignee", escapeHTML(a)) }
@@ -199,7 +199,7 @@ public enum IssueFileBuilder {
             for s in subtasks {
                 if let k = s.key {
                     let u = baseURL.appendingPathComponent("browse/\(k)")
-                    html += "<li><a href=\"\(u.absoluteString)\">\(escapeHTML(k))</a></li>\n"
+                    html += "<li><a href=\"\(escapeHTML(u.absoluteString))\">\(escapeHTML(k))</a></li>\n"
                 }
             }
             html += "</ul>\n"
@@ -215,7 +215,7 @@ public enum IssueFileBuilder {
                 let typeName = link.type.name ?? dir
                 let key = other?.key ?? "?"
                 let u = baseURL.appendingPathComponent("browse/\(key)")
-                html += "<li>\(escapeHTML(typeName)): <a href=\"\(u.absoluteString)\">\(escapeHTML(key))</a></li>\n"
+                html += "<li>\(escapeHTML(typeName)): <a href=\"\(escapeHTML(u.absoluteString))\">\(escapeHTML(key))</a></li>\n"
             }
             html += "</ul>\n"
         }
@@ -284,6 +284,18 @@ public enum IssueFileBuilder {
          .replacingOccurrences(of: "<", with: "&lt;")
          .replacingOccurrences(of: ">", with: "&gt;")
          .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    /// Strips any character that is not a lowercase letter, digit, hyphen, or
+    /// underscore so the result is safe as a CSS class name / identifier.
+    private static func safeCSSIdentifier(_ s: String) -> String {
+        s.unicodeScalars
+         .filter { ($0.value >= 0x61 && $0.value <= 0x7a)  // a-z
+                || ($0.value >= 0x30 && $0.value <= 0x39)  // 0-9
+                || $0.value == 0x2d                        // -
+                || $0.value == 0x5f }                      // _
+         .map { String($0) }
+         .joined()
     }
 
     private static func customFieldText(_ v: JSONValue) -> String {

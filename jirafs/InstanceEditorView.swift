@@ -25,6 +25,10 @@ struct InstanceEditorView: View {
     @State private var verifyState: VerifyState = .idle
 
     private let originalName: String?
+    /// Stored to detect when the Keychain account key changes (method or email
+    /// changed ⇒ existing credential can no longer be found).
+    private let originalMethod: Configuration.AuthEntry.Method?
+    private let originalEmail: String?
     let onSave: (Configuration.InstanceEntry) -> Void
     let onCancel: () -> Void
 
@@ -34,6 +38,8 @@ struct InstanceEditorView: View {
         onCancel: @escaping () -> Void
     ) {
         self.originalName = initial?.name
+        self.originalMethod = initial?.auth.method
+        self.originalEmail = initial?.auth.email
         _name = State(initialValue: initial?.name ?? "")
         _urlString = State(initialValue: initial?.url.absoluteString ?? "https://example.atlassian.net")
         _edition = State(initialValue: initial?.type ?? .cloud)
@@ -87,7 +93,7 @@ struct InstanceEditorView: View {
                         }
                         fieldRow("Token") {
                             SecureField(
-                                token.isEmpty && originalName != nil
+                                token.isEmpty && originalName != nil && !keychainKeyChanged
                                     ? "leave blank to keep current"
                                     : "required",
                                 text: $token
@@ -222,13 +228,31 @@ struct InstanceEditorView: View {
         }
     }
 
+    /// True when any Keychain key field (instance name, auth method, or email)
+    /// has changed from its saved value, meaning the existing Keychain entry
+    /// cannot be reused and a new token must be entered.
+    private var keychainKeyChanged: Bool {
+        guard originalName != nil,
+              let origMethod = originalMethod else { return false }
+        if name != originalName { return true }
+        if method != origMethod { return true }
+        if method == .apiToken {
+            let origAcc = (originalEmail ?? "").isEmpty ? "api_token" : (originalEmail ?? "")
+            let newAcc  = email.isEmpty ? "api_token" : email
+            if newAcc != origAcc { return true }
+        }
+        return false
+    }
+
     private var isValid: Bool {
-        !name.isEmpty && URL(string: urlString) != nil && (!token.isEmpty || originalName != nil)
+        !name.isEmpty && URL(string: urlString) != nil
+            && (!token.isEmpty || (originalName != nil && !keychainKeyChanged))
     }
 
     /// Verify is possible when URL is set and a token is available (entered or stored).
     private var canVerify: Bool {
-        URL(string: urlString) != nil && (!token.isEmpty || originalName != nil)
+        URL(string: urlString) != nil
+            && (!token.isEmpty || (originalName != nil && !keychainKeyChanged))
     }
 
     @MainActor

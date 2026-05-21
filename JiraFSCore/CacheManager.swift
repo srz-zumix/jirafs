@@ -124,19 +124,19 @@ public actor CacheManager {
     /// Returns `nil` only when no entry exists at all.
     public func getStale<T: Codable & Sendable>(_ key: String, as type: T.Type) -> T? {
         if let entry = storage[key], let v = entry.value as? T {
-            cacheLogger.info("getStale memHit: \(key, privacy: .public)")
+            cacheLogger.info("getStale memHit: \(key, privacy: .private)")
             return v
         }
         guard diskEnabled else {
-            cacheLogger.info("getStale diskDisabled: \(key, privacy: .public)")
+            cacheLogger.info("getStale diskDisabled: \(key, privacy: .private)")
             return nil
         }
-        cacheLogger.info("getStale diskLookup: \(key, privacy: .public)")
+        cacheLogger.info("getStale diskLookup: \(key, privacy: .private)")
         guard let (value, expiry): (T, Date) = diskGetStale(key: key) else {
-            cacheLogger.info("getStale diskResult=nil key=\(key, privacy: .public)")
+            cacheLogger.info("getStale diskResult=nil key=\(key, privacy: .private)")
             return nil
         }
-        cacheLogger.info("getStale diskResult=hit key=\(key, privacy: .public)")
+        cacheLogger.info("getStale diskResult=hit key=\(key, privacy: .private)")
         storage[key] = Entry(value: value, expiresAt: expiry)
         return value
     }
@@ -266,32 +266,32 @@ public actor CacheManager {
     /// Like `diskGet` but skips the expiry check — for stale-while-revalidate.
     private func diskGetStale<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {
         guard let dir = cacheDir, let encKey = encryptionKey else {
-            cacheLogger.info("diskGetStale: no dir or key for \(key, privacy: .public)")
+            cacheLogger.info("diskGetStale: no dir or key for \(key, privacy: .private)")
             return nil
         }
         let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
         let fileExists = FileManager.default.fileExists(atPath: fileURL.path)
         cacheLogger.info("diskGetStale: file=\(fileURL.lastPathComponent, privacy: .public) exists=\(fileExists)")
         guard let combined = try? Data(contentsOf: fileURL) else {
-            cacheLogger.info("diskGetStale: read failed for \(key, privacy: .public)")
+            cacheLogger.info("diskGetStale: read failed for \(key, privacy: .private)")
             return nil
         }
         guard let sealedBox = try? AES.GCM.SealedBox(combined: combined) else {
-            cacheLogger.info("diskGetStale: sealedBox failed for \(key, privacy: .public)")
+            cacheLogger.info("diskGetStale: sealedBox failed for \(key, privacy: .private)")
             return nil
         }
         guard let payload = try? AES.GCM.open(sealedBox, using: encKey) else {
-            cacheLogger.info("diskGetStale: decrypt failed (wrong key?) for \(key, privacy: .public)")
+            cacheLogger.info("diskGetStale: decrypt failed (wrong key?) for \(key, privacy: .private)")
             return nil
         }
         guard payload.count > 8 else { return nil }
         let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
         let expiry = Date(timeIntervalSince1970: TimeInterval(expiryTimestamp))
         guard let decoded = try? JSONDecoder().decode(T.self, from: payload.dropFirst(8)) else {
-            cacheLogger.info("diskGetStale: decode=fail for \(key, privacy: .public)")
+            cacheLogger.info("diskGetStale: decode=fail for \(key, privacy: .private)")
             return nil
         }
-        cacheLogger.info("diskGetStale: decode=ok for \(key, privacy: .public)")
+        cacheLogger.info("diskGetStale: decode=ok for \(key, privacy: .private)")
         return (decoded, expiry)
     }
 

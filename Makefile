@@ -25,7 +25,7 @@ APPEX_PATH      = /Applications/jirafs.app/Contents/Extensions/jirafs-extension.
 
 # マウント用（make mount INSTANCE=hoge.atlassian.net PATH=~/jirafs/hoge
 INSTANCE       ?=
-PATH_ARG       ?= ~/jirafs
+PATH_ARG       ?= $(HOME)/jirafs
 
 XCODEBUILD = DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild \
 	-project jirafs.xcodeproj \
