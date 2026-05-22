@@ -17,6 +17,7 @@ permissions: {}
 jobs:
   release:
     runs-on: macos-15
+    environment: prod
     permissions:
       contents: write
       id-token: write
@@ -90,6 +91,7 @@ jobs:
   homebrew:
     needs: release
     runs-on: ubuntu-latest
+    environment: homebrew-tap
     permissions:
       contents: read
     env:
