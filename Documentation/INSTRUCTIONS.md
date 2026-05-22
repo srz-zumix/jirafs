@@ -102,17 +102,13 @@ jirafs/
     <string>jirafs</string>
     <key>FSSupportsURLMounting</key>
     <true/>
-    <key>FSMatchingURLSchemes</key>
+    <key>FSSupportedSchemes</key>
     <array>
         <string>jira</string>
-        <string>https</string>
     </array>
 </dict>
 ```
-
-> `https` スキームは他システムと競合しうるため、ホストアプリ側で `jira://` へ正規化することを推奨。
->
-> **Phase 1 注意**: FSKit 15.4 SDK に URL ベース `FSResource` サブクラスが未公開のため、`loadResource` は渡された URL を使わずホストアプリの `config.json` の先頭インスタンスを使用する。複数インスタンス選択は将来拡張予定。
+> `loadResource` は `JiraFileSystem+ServerURL.m` 経由で `jira://` URL のホスト名を取得し、`config.json` の中から `url.host` が一致するインスタンスを選択する（一致なしの場合は先頭インスタンスにフォールバック）。複数インスタンスを並行利用する場合は、それぞれ異なるホスト名の `jira://` URL でマウントする。
 
 #### Keychain Access Group (両ターゲット共通)
 

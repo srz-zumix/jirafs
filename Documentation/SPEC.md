@@ -254,7 +254,7 @@ GET /rest/api/{ver}/attachment/content/{id}        # 添付ファイルダウン
 
 | メソッド | 実装内容 |
 |---|---|
-| `loadResource(resource:options:replyHandler:)` | リソースから JiraVolume を生成 (現状は `config.json` 先頭インスタンスを使用) |
+| `loadResource(resource:options:replyHandler:)` | `jira://` URL のホスト名で `config.json` の対応インスタンスを選択し JiraVolume を生成（一致なしは先頭にフォールバック） |
 | `unloadResource(resource:options:replyHandler:)` | リソース解放・キャッシュクリア |
 | `probeResource(resource:replyHandler:)` | リソースが有効な JIRA 設定を持つか検証 (deterministic UUID で `FSContainerIdentifier` 返却) |
 | `didFinishLoading()` | 初期化完了処理 |
@@ -407,7 +407,7 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 
 ### URL スキーム
 
-`Info.plist` の `FSMatchingURLSchemes` には `jira` と `https` を登録するが、`https` は他のシステムと競合する可能性があるため、ホストアプリ側で **`jira://` への正規化を推奨**する。Finder からのドラッグ & ドロップによる利便性のため `https` も許容する。
+`Info.plist` の `FSSupportedSchemes` には `jira` のみを登録する。マウントコマンドは `jira://<host>` 形式で発行する。
 
 
 ## 設定ファイル (config.json)
