@@ -254,7 +254,7 @@ public actor CacheManager {
         guard let sealedBox = try? AES.GCM.SealedBox(combined: combined) else { return nil }
         guard let payload = try? AES.GCM.open(sealedBox, using: encKey) else { return nil }
         guard payload.count > 8 else { return nil }
-        let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).bigEndian }
         let expiry = Date(timeIntervalSince1970: TimeInterval(expiryTimestamp))
         // Do NOT delete expired files here — diskGetStale() needs them for stale-while-revalidate.
         // Expired entries are cleaned up lazily by evictExpiredDiskEntries().
@@ -285,7 +285,7 @@ public actor CacheManager {
             return nil
         }
         guard payload.count > 8 else { return nil }
-        let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        let expiryTimestamp = payload.prefix(8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).bigEndian }
         let expiry = Date(timeIntervalSince1970: TimeInterval(expiryTimestamp))
         guard let decoded = try? JSONDecoder().decode(T.self, from: payload.dropFirst(8)) else {
             cacheLogger.info("diskGetStale: decode=fail for \(key, privacy: .private)")
@@ -315,7 +315,7 @@ public actor CacheManager {
               let sealedBox = try? AES.GCM.SealedBox(combined: envelope),
               let payload = try? AES.GCM.open(sealedBox, using: encKey),
               payload.count > 8 else { return nil }
-        let ts = payload.prefix(8).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
+        let ts = payload.prefix(8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self).bigEndian }
         return Date(timeIntervalSince1970: TimeInterval(ts))
     }
 
