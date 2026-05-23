@@ -11,6 +11,23 @@ on:
       publish:
         default: false
         type: boolean
+    secrets:
+      MACOS_CERTIFICATE:
+        required: true
+      MACOS_CERTIFICATE_PWD:
+        required: true
+      APPLE_ID:
+        required: true
+      APPLE_APP_SPECIFIC_PASSWORD:
+        required: true
+      TEAM_ID:
+        required: true
+      HOMEBREW_TAP_TOKEN:
+        required: true
+      MY_ACTIONS_APP_CLIENT_ID:
+        required: true
+      MY_ACTIONS_APP_PRIVATE_KEY:
+        required: true
 
 permissions: {}
 
