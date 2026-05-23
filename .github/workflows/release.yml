@@ -77,7 +77,8 @@ jobs:
             -allowProvisioningUpdates \
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8 \
             -authenticationKeyID "${APP_STORE_CONNECT_KEY_ID}" \
-            -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}"
+            -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}" \
+            CODE_SIGN_IDENTITY="Developer ID Application"
 
       - name: Prepare Export Options
         env:
