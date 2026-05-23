@@ -1,0 +1,23 @@
+name: tagpr
+on:
+  push:
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - uses: ruby/setup-ruby@09a7688d3b55cf0e976497ff046b70949eeaccfd # v1.288.0
+    - run: bundle install
+    - uses: Songmu/tagpr@b3fb89424646b06c8aa460f50307c60b6a541425 # v1.17.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
