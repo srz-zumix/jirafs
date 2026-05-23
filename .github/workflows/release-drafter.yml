@@ -38,3 +38,4 @@ jobs:
     with:
       publish: true
       ref: ${{ needs.draft_release.outputs.tag_name }}
+    secrets: inherit
