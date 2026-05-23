@@ -64,33 +64,26 @@ jobs:
           p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
           p12-password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
 
-      - name: Download Provisioning Profile (jirafs)
-        uses: Apple-Actions/download-provisioning-profiles@c62019de00bb4395ed414e4a17c98f4e279636de # v6.0.0
-        with:
-          bundle-id: com.zumix.jirafs
-          profile-type: MAC_APP_DIRECT
-          issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          api-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-
-      - name: Download Provisioning Profile (jirafs-extension)
-        uses: Apple-Actions/download-provisioning-profiles@c62019de00bb4395ed414e4a17c98f4e279636de # v6.0.0
-        with:
-          bundle-id: com.zumix.jirafs.fskit
-          profile-type: MAC_APP_DIRECT
-          issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          api-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      - name: Set up App Store Connect API Key
+        env:
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8
 
       - name: Install create-dmg
         run: brew install create-dmg
 
       - name: Build and Archive
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           xcodebuild -project jirafs.xcodeproj -scheme jirafs -configuration Release -archivePath build/jirafs.xcarchive archive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Developer ID Application" \
-            DEVELOPMENT_TEAM=KPZ4FUM7GD
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8 \
+            -authenticationKeyID "${APP_STORE_CONNECT_KEY_ID}" \
+            -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}"
 
       - name: Prepare Export Options
         env:
@@ -99,9 +92,16 @@ jobs:
           sed "s/TEAM_ID_PLACEHOLDER/$TEAM_ID/g" exportOptions.plist > exportOptions_modified.plist
 
       - name: Export Archive
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           xcodebuild -exportArchive -archivePath build/jirafs.xcarchive -exportPath build/jirafs \
-            -exportOptionsPlist exportOptions_modified.plist
+            -exportOptionsPlist exportOptions_modified.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8 \
+            -authenticationKeyID "${APP_STORE_CONNECT_KEY_ID}" \
+            -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}"
 
       - name: Notarize App
         env:
