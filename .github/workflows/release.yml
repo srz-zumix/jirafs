@@ -22,6 +22,12 @@ on:
         required: true
       TEAM_ID:
         required: true
+      APP_STORE_CONNECT_API_KEY:
+        required: true
+      APP_STORE_CONNECT_KEY_ID:
+        required: true
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: true
       MY_ACTIONS_APP_CLIENT_ID:
         required: true
       MY_ACTIONS_APP_PRIVATE_KEY:
@@ -78,7 +84,9 @@ jobs:
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8 \
             -authenticationKeyID "${APP_STORE_CONNECT_KEY_ID}" \
             -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}" \
-            CODE_SIGN_IDENTITY="Developer ID Application"
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM=KPZ4FUM7GD
 
       - name: Prepare Export Options
         env:
@@ -87,8 +95,16 @@ jobs:
           sed "s/TEAM_ID_PLACEHOLDER/$TEAM_ID/g" exportOptions.plist > exportOptions_modified.plist
 
       - name: Export Archive
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: |
-          xcodebuild -exportArchive -archivePath build/jirafs.xcarchive -exportPath build/jirafs -exportOptionsPlist exportOptions_modified.plist
+          xcodebuild -exportArchive -archivePath build/jirafs.xcarchive -exportPath build/jirafs \
+            -exportOptionsPlist exportOptions_modified.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8 \
+            -authenticationKeyID "${APP_STORE_CONNECT_KEY_ID}" \
+            -authenticationKeyIssuerID "${APP_STORE_CONNECT_ISSUER_ID}"
 
       - name: Notarize App
         env:
