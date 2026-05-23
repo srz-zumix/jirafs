@@ -59,4 +59,5 @@
 	releaseBranch = main
 	versionFile = VERSION
 	postVersionCommand = v=$(cat VERSION) && for p in jirafs/Info.plist jirafs-extension/Info.plist; do sed -i "/<key>CFBundleShortVersionString<\\/key>/{n; s|<string>.*</string>|<string>$v</string>|}" "$p"; done
-	release = true
+	changelog = false
+	release = false
