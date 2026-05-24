@@ -6,5 +6,14 @@
 	<string>developer-id</string>
 	<key>teamID</key>
 	<string>TEAM_ID_PLACEHOLDER</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.zumix.jirafs</key>
+		<string>jirafs Developer ID</string>
+		<key>com.zumix.jirafs.fskit</key>
+		<string>jirafs Extension Developer ID</string>
+	</dict>
 </dict>
 </plist>
