@@ -37,6 +37,8 @@ jobs:
   release:
     runs-on: macos-15
     environment: prod
+    outputs:
+      sha256: ${{ steps.sha256.outputs.sha256 }}
     permissions:
       contents: write
       id-token: write
@@ -125,6 +127,10 @@ jobs:
         run: |
           create-dmg --volname "jirafs" --volicon "jirafs/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png" --window-pos 200 120 --window-size 800 400 --icon-size 100 --icon "jirafs.app" 200 190 --hide-extension "jirafs.app" --app-drop-link 600 185 "jirafs-$TAG.dmg" "build/jirafs/"
 
+      - name: Compute SHA256
+        id: sha256
+        run: echo "sha256=$(shasum -a 256 "jirafs-$TAG.dmg" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         run: |
           RELEASE_NOTES="Release notes for $TAG"
@@ -132,7 +138,7 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
-            gh release edit "$TAG" --title "Release $TAG" --notes "$RELEASE_NOTES"
+            gh release edit "$TAG" --draft=false
           else
             gh release create "$TAG" --title "Release $TAG" --notes "$RELEASE_NOTES" "$ASSET"
           fi
@@ -153,17 +159,12 @@ jobs:
           repository: srz-zumix/homebrew-tap
           persist-credentials: false
 
-      - name: Download DMG from GitHub Release
-        run: |
-          gh release download "$TAG" \
-            --repo "${{ github.repository }}" \
-            --pattern "jirafs-$TAG.dmg"
-
       - name: Update Homebrew Tap
         if: github.event_name == 'push' || inputs.publish
+        env:
+          SHA256: ${{ needs.release.outputs.sha256 }}
         run: |
           VERSION="${TAG#v}"
-          SHA256=$(shasum -a 256 "jirafs-$TAG.dmg" | awk '{print $1}')
 
           mkdir -p Casks
           sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SHA256}}/$SHA256/g" \
