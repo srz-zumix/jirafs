@@ -27,7 +27,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  prepare_release_branch:
+  bump_version_pr:
     needs: draft_release
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
