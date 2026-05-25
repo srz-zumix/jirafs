@@ -27,6 +27,44 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Update version files and create PR
+        env:
+          TAG: ${{ steps.release-drafter.outputs.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          BRANCH="release/$TAG"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin "$BRANCH" 2>/dev/null && git checkout "$BRANCH" || git checkout -b "$BRANCH"
+
+          echo "$VERSION" > VERSION
+          for p in jirafs/Info.plist jirafs-extension/Info.plist; do
+            sed -i "/<key>CFBundleShortVersionString<\/key>/{n; s|<string>.*</string>|<string>$VERSION</string>|}" "$p"
+          done
+
+          git add VERSION jirafs/Info.plist jirafs-extension/Info.plist
+          if git diff --staged --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Bump version to $TAG"
+          git push origin "$BRANCH" --force
+
+          if ! gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh pr create \
+              --title "Release $TAG" \
+              --body "Bump version to $TAG" \
+              --base main \
+              --head "$BRANCH"
+          fi
+
   publish_release:
     needs: draft_release
     uses: ./.github/workflows/release.yml
