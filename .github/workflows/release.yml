@@ -159,6 +159,12 @@ jobs:
           repository: srz-zumix/homebrew-tap
           persist-credentials: false
 
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          path: jirafs
+          ref: ${{ env.TAG }}
+
       - name: Update Homebrew Tap
         if: github.event_name == 'push' || inputs.publish
         env:
@@ -168,16 +174,16 @@ jobs:
 
           mkdir -p Casks
           sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{SHA256}}/$SHA256/g" \
-            .github/homebrew/jirafs.rb.tmpl > Casks/jirafs.rb
+            ./jirafs/.github/homebrew/jirafs.rb.tmpl > Casks/jirafs.rb
 
       - name: Check for diff
         id: check-diff
         if: github.event_name == 'push' || inputs.publish
         run: |
           if git diff --quiet -- Casks/jirafs.rb; then
-            echo "diff=0" >> "$GITHUB_OUTPUT"
+            echo "diff=0" >> "${GITHUB_OUTPUT}"
           else
-            echo "diff=1" >> "$GITHUB_OUTPUT"
+            echo "diff=1" >> "${GITHUB_OUTPUT}"
           fi
 
       - uses: actions/create-github-app-token@v3
