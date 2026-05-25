@@ -204,5 +204,6 @@ jobs:
         with:
           commit_message: "Update jirafs Homebrew Tap for $TAG"
           github_token: ${{ steps.app-token.outputs.token }}
+          repository: srz-zumix/homebrew-tap
           files: |
             Casks/jirafs.rb
