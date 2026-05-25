@@ -27,6 +27,58 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Update version files
+        id: update-version
+        env:
+          TAG: ${{ steps.release-drafter.outputs.tag_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          BRANCH="release/$TAG"
+
+          for p in jirafs/Info.plist jirafs-extension/Info.plist; do
+            sed -i "/<key>CFBundleShortVersionString<\/key>/{n; s|<string>.*</string>|<string>$VERSION</string>|}" "$p"
+          done
+
+          if git diff --quiet; then
+            echo "No changes"
+            echo "diff=0" >> $GITHUB_OUTPUT
+          else
+            echo "diff=1" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit changes
+        uses: suzuki-shunsuke/commit-action@06e3b49d4706498d325d29bd85adc82ecf2f5d8f # v1.0.0
+        if: steps.update-version.outputs.diff == '1'
+        env:
+          BRANCH: "release/${{ steps.release-drafter.outputs.tag_name }}"
+        with:
+          commit_message: "Bump version to ${{ steps.release-drafter.outputs.tag_name }}"
+          branch: ${{ env.BRANCH }}
+          force_push: true
+          files: |
+            jirafs/Info.plist
+            jirafs-extension/Info.plist
+
+      - name: Create pull request
+        if: steps.update-version.outputs.diff == '1'
+        env:
+          TAG: ${{ steps.release-drafter.outputs.tag_name }}
+          BRANCH: "release/${{ steps.release-drafter.outputs.tag_name }}"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh pr create \
+              --title "Release $TAG" \
+              --body "Bump version to $TAG" \
+              --base main \
+              --head "$BRANCH"
+          fi
+
   publish_release:
     needs: draft_release
     uses: ./.github/workflows/release.yml
