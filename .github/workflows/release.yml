@@ -180,7 +180,8 @@ jobs:
         id: check-diff
         if: github.event_name == 'push' || inputs.publish
         run: |
-          if git diff --quiet -- Casks/jirafs.rb; then
+          git add Casks/jirafs.rb
+          if git diff --exit-code --cached -- Casks/jirafs.rb; then
             echo "diff=0" >> "${GITHUB_OUTPUT}"
           else
             echo "diff=1" >> "${GITHUB_OUTPUT}"

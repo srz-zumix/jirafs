@@ -1,17 +1,17 @@
 # jirafs Makefile
 # 使い方: make <target>
 #
-#   make build      ビルド（署名付き）
-#   make install    ビルド → /Applications/ にインストール
-#   make register   fskitd 再起動 → 拡張を pluginkit 再登録
-#   make reinstall  install + register を一括実行（入れ替え時の標準手順）
-#   make open       ホストアプリを起動
-#   make mount      設定ファイルをコピーしてマウント（INSTANCE/PATH を指定）
-#   make unmount    アンマウント（PATH を指定）
-#   make test       ユニットテスト
-#   make generate   xcodegen でプロジェクト再生成
-#   make clean      DerivedData を削除
-#   make log        fskitd / 拡張のログをストリーム表示
+#   make build          ビルド（署名付き）
+#   make install        ビルド → /Applications/ にインストール（USE_BREW=1 で Homebrew 経由）
+#   make register       fskitd 再起動 → 拡張を pluginkit 再登録
+#   make reinstall      install + register を一括実行（入れ替え時の標準手順）
+#   make open           ホストアプリを起動
+#   make mount          設定ファイルをコピーしてマウント（INSTANCE/PATH を指定）
+#   make unmount        アンマウント（PATH を指定）
+#   make test           ユニットテスト
+#   make generate       xcodegen でプロジェクト再生成
+#   make clean          DerivedData を削除
+#   make log            fskitd / 拡張のログをストリーム表示
 
 # ──────────────────────────────────────────
 # 設定（必要に応じて上書き可能）
@@ -22,6 +22,11 @@ CONFIGURATION  ?= Debug
 DERIVED_DATA   ?= build/DerivedData
 APP_PATH        = $(DERIVED_DATA)/Build/Products/$(CONFIGURATION)/jirafs.app
 APPEX_PATH      = /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
+
+# USE_BREW=1 で Homebrew 経由インストール、0（デフォルト）でローカルビルド
+USE_BREW       ?= 0
+HOMEBREW_TAP   ?= srz-zumix/tap
+HOMEBREW_CASK  ?= jirafs
 
 # マウント用（make mount INSTANCE=hoge.atlassian.net PATH=~/jirafs/hoge
 INSTANCE       ?=
@@ -34,7 +39,7 @@ XCODEBUILD = DEVELOPER_DIR=$(DEVELOPER_DIR) xcodebuild \
 	-derivedDataPath $(DERIVED_DATA) \
 	-allowProvisioningUpdates
 
-.PHONY: build install register reinstall open mount unmount remount fix-fskitd test generate clean log help
+.PHONY: build install _install_local _install_brew register reinstall open mount unmount remount fix-fskitd test generate clean log help
 
 help: ## Display this help screen
 	@grep -E '^[a-zA-Z][a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sed -e 's/^GNUmakefile://' | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -48,12 +53,21 @@ build: ## 署名付きビルド（-allowProvisioningUpdates）
 		| grep -v appintentsmetadataprocessor
 
 # ──────────────────────────────────────────
-# インストール（ビルド後 /Applications/ へコピー）
+# インストール（ビルド後 /Applications/ へコピー、または Homebrew 経由）
 # ──────────────────────────────────────────
-install: build ## ビルド → /Applications/jirafs.app にインストール
+_install_local: build
 	sudo rm -rf /Applications/jirafs.app
 	sudo cp -R "$(APP_PATH)" /Applications/
-	@echo "✓ Installed /Applications/jirafs.app"
+	@echo "✓ Installed /Applications/jirafs.app (local build)"
+
+_install_brew:
+	@if brew list --cask $(HOMEBREW_CASK) &>/dev/null; then \
+		brew upgrade --cask $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
+	else \
+		brew install --cask $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
+	fi
+
+install: _install_$(if $(filter 1,$(USE_BREW)),brew,local) ## ビルド → /Applications/jirafs.app にインストール（USE_BREW=1 で Homebrew 経由）
 
 # ──────────────────────────────────────────
 # fskitd 再起動 + 拡張再登録
