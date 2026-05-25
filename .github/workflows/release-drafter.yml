@@ -61,7 +61,6 @@ jobs:
           commit_message: "Bump version to ${{ steps.release-drafter.outputs.tag_name }}"
           branch: ${{ env.BRANCH }}
           force_push: true
-          use_base_tree: false
           files: |
             jirafs/Info.plist
             jirafs-extension/Info.plist
