@@ -97,13 +97,25 @@ jobs:
             -exportOptionsPlist exportOptions_modified.plist
 
       - name: Notarize App
+        timeout-minutes: 90
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
           ditto -c -k --keepParent build/jirafs/jirafs.app build/jirafs/jirafs.zip
-          xcrun notarytool submit build/jirafs/jirafs.zip --apple-id $APPLE_ID --password $APPLE_APP_SPECIFIC_PASSWORD --team-id $TEAM_ID --wait
+          NOTARIZE_OUTPUT=$(xcrun notarytool submit build/jirafs/jirafs.zip \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$TEAM_ID" \
+            --wait --timeout 1h --output-format json)
+          echo "$NOTARIZE_OUTPUT"
+          STATUS=$(echo "$NOTARIZE_OUTPUT" | jq -r '.status')
+          SUBMISSION_ID=$(echo "$NOTARIZE_OUTPUT" | jq -r '.id')
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "Notarization failed: $STATUS"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$TEAM_ID"
+            exit 1
+          fi
 
       - name: Staple Notarization
         run: |
