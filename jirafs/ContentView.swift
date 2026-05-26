@@ -46,6 +46,7 @@ struct ContentView: View {
     @StateObject private var model = InstanceListModel()
     @State private var showingAddEditor = false
     @State private var editingInstance: Configuration.InstanceEntry?
+    @State private var showingCacheSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -66,6 +67,13 @@ struct ContentView: View {
                         showingAddEditor = true
                     } label: {
                         Label("Add", systemImage: "plus")
+                    }
+                }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        showingCacheSettings = true
+                    } label: {
+                        Label("Cache Settings", systemImage: "clock.arrow.2.circlepath")
                     }
                 }
             }
@@ -102,6 +110,11 @@ struct ContentView: View {
                 editingInstance = nil
             } onCancel: {
                 editingInstance = nil
+            }
+        }
+        .sheet(isPresented: $showingCacheSettings) {
+            CacheSettingsView(ttl: $model.configuration.cache) {
+                model.save()
             }
         }
 
