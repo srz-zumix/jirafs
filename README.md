@@ -8,12 +8,14 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 ## Features
 
 - Supports both JIRA Cloud and Server
-- **1 mount = 1 JIRA instance** — simple, predictable mapping
+- **Multiple JIRA instances** — mount each instance at its own path simultaneously
+- **Per-instance project filtering** — expose all projects or limit to specific project keys
 - Issues represented as directories (`summary.txt`, `description.md`, `metadata.json`, `comments/`, `attachments/`)
 - Browse JIRA data with standard UNIX tools (`ls`, `cat`, `grep`, `find`, …)
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
+- Optional `issue.html` formatted view per issue
 
 ## Requirements
 
@@ -23,8 +25,10 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 
 ## Filesystem Layout
 
+Each JIRA instance is mounted at its own path (configurable, default `~/jirafs/<name>`).
+
 ```text
-~/jirafs/
+~/jirafs/myinstance/
 └── projects/
     └── PROJ/
         └── issues/
@@ -51,24 +55,27 @@ See [Development Guide](Documentation/INSTRUCTIONS.md).
 
 ## Usage
 
-Mount from the host app UI or the command line.
+Configure JIRA instances in the host app (jirafs.app), then mount from the command line or via the app UI.
 
 ```bash
-# Create the mount point
-mkdir ~/jirafs
+# Mount a JIRA instance (path is configured per instance in the app)
+mkdir -p ~/jirafs/myinstance
+sudo mount -F -t jirafs -o ro jira://mycompany.atlassian.net ~/jirafs/myinstance
 
-# Mount (read-only recommended)
-mount -F -t jirafs -o ro jira://mycompany.atlassian.net ~/jirafs
+# Multiple instances can be mounted simultaneously
+mkdir -p ~/jirafs/work ~/jirafs/personal
+sudo mount -F -t jirafs -o ro jira://work.atlassian.net ~/jirafs/work
+sudo mount -F -t jirafs -o ro jira://personal.atlassian.net ~/jirafs/personal
 
 # Access JIRA data
-ls ~/jirafs/projects/
-cat ~/jirafs/projects/PROJ/issues/PROJ-1/summary.txt
+ls ~/jirafs/myinstance/projects/
+cat ~/jirafs/myinstance/projects/PROJ/issues/PROJ-1/summary.txt
 
 # Unmount
-umount ~/jirafs
+sudo diskutil unmount ~/jirafs/myinstance
 ```
 
-> To use multiple JIRA instances simultaneously, mount each one at a separate path.
+Project filtering and other options (disk cache, HTML view) are configured per instance in the host app.
 
 ## Documentation
 
