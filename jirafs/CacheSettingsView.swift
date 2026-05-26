@@ -15,6 +15,12 @@ struct CacheSettingsView: View {
         self._draft = State(initialValue: ttl.wrappedValue)
     }
 
+    // MARK: - Constants
+    /// Valid TTL range (seconds). Values outside this range are clamped on input and on save.
+    /// Lower bound 0 disables caching for that entry type; upper bound caps at 24 hours.
+    private static let ttlMin: TimeInterval = 0
+    private static let ttlMax: TimeInterval = 86_400  // 24 h
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Cache Settings")
@@ -66,7 +72,14 @@ struct CacheSettingsView: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    ttl = draft
+                    // Clamp all fields as defense-in-depth before committing.
+                    var committed = draft
+                    committed.projects         = max(Self.ttlMin, min(Self.ttlMax, committed.projects))
+                    committed.issues           = max(Self.ttlMin, min(Self.ttlMax, committed.issues))
+                    committed.issueDetail      = max(Self.ttlMin, min(Self.ttlMax, committed.issueDetail))
+                    committed.attachments      = max(Self.ttlMin, min(Self.ttlMax, committed.attachments))
+                    committed.attachmentBinary = max(Self.ttlMin, min(Self.ttlMax, committed.attachmentBinary))
+                    ttl = committed
                     onSave()
                     dismiss()
                 }
@@ -82,13 +95,17 @@ struct CacheSettingsView: View {
 
     @ViewBuilder
     private func ttlRow(_ label: String, value: Binding<TimeInterval>) -> some View {
+        let clamped = Binding<TimeInterval>(
+            get: { value.wrappedValue },
+            set: { value.wrappedValue = max(Self.ttlMin, min(Self.ttlMax, $0.rounded())) }
+        )
         HStack(spacing: 0) {
             Text(label)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(width: 90, alignment: .trailing)
                 .padding(.trailing, 10)
-            TextField("", value: value, format: .number)
+            TextField("", value: clamped, format: .number.precision(.fractionLength(0)))
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.trailing)
                 .frame(width: 80)
@@ -108,7 +125,7 @@ struct CacheSettingsView: View {
 
     private func formatMinutes(_ seconds: TimeInterval) -> String {
         let mins = seconds / 60
-        if mins < 1 { return "\(Int(seconds))s" }
+        if mins < 1 { return "\(Int(seconds.rounded()))s" }
         if mins == mins.rounded(.toNearestOrAwayFromZero) && mins == Double(Int(mins)) {
             return "\(Int(mins)) min"
         }
