@@ -23,7 +23,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 
 ## Filesystem Layout
 
-```
+```text
 ~/jirafs/
 └── projects/
     └── PROJ/
@@ -36,6 +36,18 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
                 ├── comments/          # Comment files
                 └── attachments/       # Attached files
 ```
+
+## Installation
+
+### Homebrew (recommended)
+
+```bash
+brew install srz-zumix/tap/jirafs
+```
+
+### Build from source
+
+See [Development Guide](Documentation/INSTRUCTIONS.md).
 
 ## Usage
 
