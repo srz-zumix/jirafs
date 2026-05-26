@@ -62,9 +62,9 @@ _install_local: build
 
 _install_brew:
 	@if brew list --cask $(HOMEBREW_CASK) &>/dev/null; then \
-		brew upgrade --cask $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
+		brew upgrade --cask --force $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
 	else \
-		brew install --cask $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
+		brew install --cask --force $(HOMEBREW_TAP)/$(HOMEBREW_CASK); \
 	fi
 
 install: _install_$(if $(filter 1,$(USE_BREW)),brew,local) ## ビルド → /Applications/jirafs.app にインストール（USE_BREW=1 で Homebrew 経由）
