@@ -43,6 +43,14 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
         logger.info("loadPayload: fetching kind=\(String(describing: node.kind), privacy: .public)")
         let data: Data
         switch node.kind {
+        case .agentsGuide, .issuesAgentsGuide:
+            guard let url = Bundle.main.url(forResource: "AGENTS", withExtension: "md"),
+                  let fileData = try? Data(contentsOf: url)
+            else {
+                logger.error("loadPayload: AGENTS.md not found in bundle")
+                return
+            }
+            data = fileData
         case .summary(let key):
             data = IssueFileBuilder.summary(try await dataSource.issue(key: key))
         case .description(let key):

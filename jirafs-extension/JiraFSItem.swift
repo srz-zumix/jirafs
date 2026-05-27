@@ -37,6 +37,8 @@ final class JiraFSItem: FSItem, @unchecked Sendable {
             let canonical: String
             switch kind {
             case .root:                             canonical = "root"
+            case .agentsGuide:                      canonical = "agentsGuide"
+            case .issuesAgentsGuide(let project):   canonical = "issuesAgentsGuide:\(project)"
             case .projectsDir:                      canonical = "projectsDir"
             case .configFile:                       canonical = "configFile"
             case .configDir:                        canonical = "configDir"

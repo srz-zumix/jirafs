@@ -3,6 +3,8 @@ import Foundation
 /// Identifies what JIRA resource a filesystem path maps to.
 public enum FSNodeKind: Hashable, Sendable {
     case root
+    case agentsGuide               // /AGENTS.md
+    case issuesAgentsGuide(project: String) // /projects/{KEY}/issues/AGENTS.md
     case metadataNeverIndex          // /.metadata_never_index (prevents Spotlight indexing)
     case configDir                   // /.jirafs
     case configFile                  // /.jirafs/config.json
@@ -48,6 +50,7 @@ public enum PathResolver {
         case .root:
             return [
                 ("projects", .projectsDir),
+                ("AGENTS.md", .agentsGuide),
                 (".jirafs", .configDir),
                 (".metadata_never_index", .metadataNeverIndex),
             ]
@@ -59,6 +62,10 @@ public enum PathResolver {
             return [
                 (".project.json", .projectMeta(key: key)),
                 ("issues", .issuesDir(project: key)),
+            ]
+        case .issuesDir(let project):
+            return [
+                ("AGENTS.md", .issuesAgentsGuide(project: project)),
             ]
         case .issue(let key):
             return [
