@@ -3,6 +3,18 @@ import FSKit
 import JiraAPI
 import JiraFSCore
 
+/// Parses a JIRA ISO 8601 date string (with or without fractional seconds).
+/// JIRA Cloud/Server returns dates like "2023-01-15T10:30:00.000+0000".
+private func parseJiraDate(_ s: String?) -> Date? {
+    guard let s else { return nil }
+    let f1 = ISO8601DateFormatter()
+    f1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let d = f1.date(from: s) { return d }
+    let f2 = ISO8601DateFormatter()
+    f2.formatOptions = [.withInternetDateTime]
+    return f2.date(from: s)
+}
+
 @available(macOS 15.4, *)
 extension JiraVolume: FSVolume.OpenCloseOperations {
     func openItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
@@ -52,11 +64,17 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             }
             data = fileData
         case .summary(let key):
-            data = IssueFileBuilder.summary(try await dataSource.issue(key: key))
+            let issue = try await dataSource.issue(key: key)
+            data = IssueFileBuilder.summary(issue)
+            applyIssueTimes(issue, to: node)
         case .description(let key):
-            data = IssueFileBuilder.description(try await dataSource.issue(key: key))
+            let issue = try await dataSource.issue(key: key)
+            data = IssueFileBuilder.description(issue)
+            applyIssueTimes(issue, to: node)
         case .metadata(let key):
-            data = IssueFileBuilder.metadata(try await dataSource.issue(key: key))
+            let issue = try await dataSource.issue(key: key)
+            data = IssueFileBuilder.metadata(issue)
+            applyIssueTimes(issue, to: node)
         case .projectMeta(let key):
             data = IssueFileBuilder.projectMeta(try await dataSource.project(key: key))
         case .comment(let issueKey, let index):
@@ -66,7 +84,10 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             guard index >= 1 && index <= comments.count else {
                 throw JiraAPIError.notFound
             }
-            data = IssueFileBuilder.commentBody(comments[index - 1])
+            let comment = comments[index - 1]
+            data = IssueFileBuilder.commentBody(comment)
+            if let mtime = parseJiraDate(comment.updated) { node.cachedMTime = mtime }
+            node.cachedBirthTime = parseJiraDate(comment.created) ?? node.cachedMTime
         case .attachment(let issueKey, let attachmentId):
             let atts = try await dataSource.attachments(issueKey: issueKey)
             // Match by stable attachment id — immune to filename sanitization
@@ -75,6 +96,10 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
                 throw JiraAPIError.notFound
             }
             data = try await dataSource.attachmentData(attachment)
+            if let ts = parseJiraDate(attachment.created) {
+                node.cachedMTime = ts
+                node.cachedBirthTime = ts
+            }
         case .issueHtml(let key):
             async let issueResult    = dataSource.issue(key: key)
             async let commentsResult = dataSource.comments(issueKey: key)
@@ -86,6 +111,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             let fieldNames = await fieldNamesResult
             let baseURL    = await dataSource.client.config.baseURL
             data = IssueFileBuilder.html(issue, comments: comments, attachments: atts, baseURL: baseURL, fieldNames: fieldNames)
+            applyIssueTimes(issue, to: node)
         case .metadataNeverIndex:
             // Zero-byte file — presence in the listing is all Spotlight checks for.
             data = Data()
@@ -106,5 +132,12 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
         logger.info("loadPayload: loaded kind=\(String(describing: node.kind), privacy: .public) bytes=\(data.count)")
         node.cachedData = data
         node.cachedSize = UInt64(data.count)
+    }
+
+    /// Sets `cachedMTime` and `cachedBirthTime` on `node` from the issue's
+    /// `updated` and `created` timestamps.
+    private func applyIssueTimes(_ issue: JiraIssue, to node: JiraFSItem) {
+        if let mtime = parseJiraDate(issue.fields.updated) { node.cachedMTime = mtime }
+        node.cachedBirthTime = parseJiraDate(issue.fields.created) ?? node.cachedMTime
     }
 }

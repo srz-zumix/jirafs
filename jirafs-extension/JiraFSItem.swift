@@ -18,6 +18,7 @@ final class JiraFSItem: FSItem, @unchecked Sendable {
     // simple struct (Double-backed) whose assignment is effectively atomic on 64-bit
     // platforms, so a torn read/write is not possible.
     nonisolated(unsafe) var cachedMTime: Date = Date()
+    nonisolated(unsafe) var cachedBirthTime: Date = Date()
 
     init(kind: FSNodeKind) {
         self.kind = kind
