@@ -330,7 +330,9 @@ struct MountControlView: View {
         if let pipe = commPipe {
             var buf = [CChar](repeating: 0, count: 512)
             while fgets(&buf, 512, pipe) != nil {
-                lines.append(String(cString: buf).trimmingCharacters(in: .newlines))
+                // fgets writes a NUL-terminated C string; decode only up to NUL.
+                let bytes = buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                lines.append(String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .newlines))
             }
             fclose(pipe)
         }

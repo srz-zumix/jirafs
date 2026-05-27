@@ -57,7 +57,7 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
                     if s.go { c.resume() } else { s.cont = c }
                 }
             }
-            defer { self.taskStorage.withLock { $0.tasks.removeValue(forKey: id) } }
+            defer { _ = self.taskStorage.withLock { $0.tasks.removeValue(forKey: id) } }
             await body()
         }
         taskStorage.withLock { $0.tasks[id] = task }

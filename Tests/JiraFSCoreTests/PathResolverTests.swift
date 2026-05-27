@@ -4,7 +4,13 @@ import XCTest
 final class PathResolverTests: XCTestCase {
     func testRootHasProjectsAndConfig() {
         let kids = PathResolver.childKinds(of: .root)
-        XCTAssertEqual(kids.map(\.name), ["projects", ".jirafs", ".metadata_never_index"])
+        XCTAssertEqual(kids.map(\.name), ["projects", "AGENTS.md", ".jirafs", ".metadata_never_index"])
+    }
+
+    func testIssuesDirHasAgentsGuide() {
+        let kids = PathResolver.childKinds(of: .issuesDir(project: "ABC"))
+        XCTAssertEqual(kids.map(\.name), ["AGENTS.md"])
+        XCTAssertEqual(kids.first?.kind, .issuesAgentsGuide(project: "ABC"))
     }
 
     func testIssueChildren() {

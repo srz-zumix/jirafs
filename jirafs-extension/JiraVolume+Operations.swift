@@ -208,6 +208,9 @@ extension JiraVolume: FSVolume.Operations {
         // it received from enumerateDirectory, so we can construct the kind
         // directly without re-fetching and scanning the full issue list (O(N²)).
         if case .issuesDir(let project) = parent {
+            if name == "AGENTS.md" {
+                return .issuesAgentsGuide(project: project)
+            }
             let prefix = project + "-"
             guard name.hasPrefix(prefix),
                   name.dropFirst(prefix.count).allSatisfy(\.isNumber),
@@ -231,7 +234,9 @@ extension JiraVolume: FSVolume.Operations {
         case .issuesDir(let project):
             do {
                 let keys = try await dataSource.issueKeys(forProject: project)
-                return keys.map { ($0, FSNodeKind.issue(key: $0)) }
+                var kids = PathResolver.childKinds(of: kind)
+                kids.append(contentsOf: keys.map { ($0, FSNodeKind.issue(key: $0)) })
+                return kids
             } catch {
                 // API failure (e.g. invalid JSON, network error, permission denied).
                 // Return an empty listing so Finder shows the directory as empty
