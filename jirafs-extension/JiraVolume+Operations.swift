@@ -304,7 +304,7 @@ extension JiraVolume: FSVolume.Operations {
         attrs.modifyTime = node.cachedMTime.timespec
         attrs.changeTime = node.cachedMTime.timespec
         attrs.accessTime = node.cachedMTime.timespec
-        attrs.birthTime = node.cachedMTime.timespec
+        attrs.birthTime = node.cachedBirthTime.timespec
         attrs.mode = node.kind.isDirectory ? 0o040555 : 0o100444
         attrs.type = node.kind.isDirectory ? .directory : .file
         return attrs
