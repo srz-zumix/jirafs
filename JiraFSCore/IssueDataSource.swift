@@ -186,30 +186,36 @@ public actor IssueDataSource {
     }
 
     /// Pre-warm the in-memory cache from disk so Finder browsing is fast
-    /// immediately after mount. Loads projects list and all issue key lists
-    /// sequentially in the background; individual issue details remain lazy.
+    /// immediately after mount. Reads from disk only (stale-OK, no network).
+    ///
+    /// On a warm disk cache this populates memory in milliseconds.
+    /// On a cold disk cache this is a no-op — Finder's first `enumerateDirectory`
+    /// call will trigger a lazy network fetch instead.
+    ///
+    /// Deliberately avoids falling through to network so the FSKit mount reply
+    /// is never blocked by API I/O. Network refreshes are handled by
+    /// `postWarmUpRefresh()`, which runs after `reply(nil)`.
     public func warmUp() async {
-        guard let projects = try? await self.projects() else { return }
+        guard let projects = await cache.getStale("projects", as: [JiraProject].self) else { return }
         for project in projects {
-            _ = try? await self.issueKeys(forProject: project.key)
+            _ = await cache.getStale("issues/\(project.key)", as: [String].self)
         }
     }
 
     /// Schedule background API fetches for all known projects immediately
-    /// after `warmUp()`. The cache at this point may be stale disk data;
-    /// this call ensures the in-memory cache is populated with fresh network
-    /// data as soon as possible after mount, without blocking the reply.
+    /// after `warmUp()`. The cache at this point may be stale disk data or
+    /// empty (cold disk); this call ensures the in-memory cache is populated
+    /// with fresh network data as soon as possible after mount, without
+    /// blocking the reply.
     ///
-    /// Skips projects whose issue-key list is already fresh in L1 — this avoids
-    /// a redundant round-trip when `warmUp()` just performed a cold-cache fetch
-    /// and stored fresh data moments ago.
+    /// Skips projects whose issue-key list is already fresh — avoids a
+    /// redundant round-trip if the data was already fresh on disk.
     public func postWarmUpRefresh() async {
         guard let projects = try? await self.projects() else { return }
         for project in projects {
             let key = "issues/\(project.key)"
             // cache.get() returns non-nil only for unexpired (fresh) entries.
-            // If the data is fresh, warmUp() already did the network fetch;
-            // scheduling another refresh here would be a wasted API call.
+            // Stale or absent entries proceed to a background refresh.
             if await cache.get(key, as: [String].self) != nil { continue }
             scheduleRefresh(key) { await self.bgRefreshIssueKeys(project: project.key) }
         }

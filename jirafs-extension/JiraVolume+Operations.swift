@@ -86,6 +86,9 @@ extension JiraVolume: FSVolume.Operations {
         let r = SendableBox(reply)
         makeTask {
             await self.dataSource.synchronize()
+            // issueEntriesCache is separate from CacheManager, so it must be
+            // cleared here too; otherwise stale directory listings survive a sync.
+            self.itemsLock.withLock { self.issueEntriesCache.removeAll() }
             r.value(nil)
         }
     }
@@ -174,7 +177,10 @@ extension JiraVolume: FSVolume.Operations {
                 // iterating and skipping, which is O(N) per call and O(N²) total
                 // when FSKit paginates a large directory (e.g. 30,000 issues require
                 // ~70 enumerateDirectory calls at ~430 entries/buffer).
-                let start = min(Int(cookie.rawValue), entries.count)
+                // Int(clamping:) avoids a trap when FSKit passes a cookie whose
+                // rawValue exceeds Int.max — the result is clamped to entries.count,
+                // returning an empty slice rather than crashing the extension.
+                let start = min(Int(clamping: cookie.rawValue), entries.count)
                 for (offset, (name, kind)) in entries[start...].enumerated() {
                     let index = UInt64(start + offset + 1)
                     let child = self.item(for: kind)
