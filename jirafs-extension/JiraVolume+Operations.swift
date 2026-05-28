@@ -260,12 +260,20 @@ extension JiraVolume: FSVolume.Operations {
             return PathResolver.childKinds(of: kind)
         case .issuesDir(let project):
             do {
-                // Return the cached entry array if available (O(1)) to avoid
-                // rebuilding 30,000+ tuples on every pagination call.
+                // Always call dataSource.issueKeys() so the stale-while-revalidate
+                // chain remains active: once the TTL elapses, the call detects stale
+                // data, schedules bgRefreshIssueKeys, which fires onIssueKeysRefreshed
+                // and invalidates issueEntriesCache. Without this call, issueEntriesCache
+                // would short-circuit the refresh chain and issue listings would grow
+                // stale indefinitely after the first TTL period.
+                let keys = try await dataSource.issueKeys(forProject: project)
+                // Return the pre-built tuple array if valid (O(1)) to avoid
+                // rebuilding a 30,000+ element [(String, FSNodeKind)] array on
+                // every enumerateDirectory pagination call (~70 calls per full ls).
+                // Invalidated by onIssueKeysRefreshed when the key set changes.
                 if let cached = itemsLock.withLock({ issueEntriesCache[project] }) {
                     return cached
                 }
-                let keys = try await dataSource.issueKeys(forProject: project)
                 var kids = PathResolver.childKinds(of: kind)
                 kids.append(contentsOf: keys.map { ($0, FSNodeKind.issue(key: $0)) })
                 itemsLock.withLock { issueEntriesCache[project] = kids }
