@@ -309,7 +309,8 @@ extension JiraVolume: FSVolume.Operations {
                 // Return the pre-built tuple array if valid (O(1)) to avoid
                 // rebuilding a 30,000+ element [(String, FSNodeKind)] array on
                 // every enumerateDirectory pagination call (~70 calls per full ls).
-                // Invalidated by onIssueKeysRefreshed when the key set changes.
+                // Invalidated by onIssueKeysRefreshed after each successful
+                // background refresh.
                 if let cached = itemsLock.withLock({ issueEntriesCache[project] }) {
                     return cached
                 }
