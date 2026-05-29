@@ -248,16 +248,20 @@ extension JiraVolume: FSVolume.Operations {
                   name.dropFirst(prefix.count).allSatisfy(\.isNumber),
                   !name.dropFirst(prefix.count).isEmpty
             else { return nil }
-            // Use the pre-built Set for O(1) existence check when available.
-            // Falls back to an O(N) issueKeys() scan only before the first full
-            // enumeration of this project (Set is populated by children(of:)).
+            // Always call through the TTL-aware issueKeys() so the
+            // stale-while-revalidate chain fires even for direct-path lookups
+            // (e.g. `cd KEY-123` without a preceding `ls`). The in-memory cache
+            // makes this O(1) when hot; bypassing it would leave issueKeysSet
+            // stale indefinitely if the directory is never re-enumerated.
+            let keys = try await dataSource.issueKeys(forProject: project)
+            // Use the pre-built Set for O(1) membership test when available.
+            // issueKeysSet is invalidated alongside issueEntriesCache by
+            // onIssueKeysRefreshed, so it always reflects the same snapshot as
+            // the keys array we just received. If it was cleared by a concurrent
+            // refresh, fall back to an O(N) scan of the fresh array.
             if let keySet = itemsLock.withLock({ issueKeysSet[project] }) {
                 return keySet.contains(name) ? .issue(key: name) : nil
             }
-            // Set not yet populated — validate via issueKeys() array scan.
-            // Prevents deleted/inaccessible tickets from being reachable via
-            // direct path (`cd HA-1`) despite not appearing in listings.
-            let keys = try await dataSource.issueKeys(forProject: project)
             guard keys.contains(name) else { return nil }
             return .issue(key: name)
         }
@@ -286,7 +290,21 @@ extension JiraVolume: FSVolume.Operations {
                 // issueKeys() call. If a background refresh fires onIssueKeysRefreshed
                 // while we await, the generation will have advanced and we must
                 // not store the entry array built from the now-stale key snapshot.
-                let genBefore = itemsLock.withLock { issueEntriesGeneration[project, default: 0] }
+                //
+                // We must also *register* the key in issueEntriesGeneration here
+                // (under the lock) so that a concurrent synchronize() — which
+                // bumps only keys already present in the dict — will bump this
+                // project even if it has never been enumerated before. Without
+                // this, synchronize() can clear the caches and return while
+                // genBefore is still 0 and issueEntriesGeneration[project] is
+                // still absent, so the post-await generation check compares
+                // 0 == 0 and stores stale data.
+                let genBefore = itemsLock.withLock { () -> Int in
+                    if issueEntriesGeneration[project] == nil {
+                        issueEntriesGeneration[project] = 0
+                    }
+                    return issueEntriesGeneration[project]!
+                }
                 let keys = try await dataSource.issueKeys(forProject: project)
                 // Return the pre-built tuple array if valid (O(1)) to avoid
                 // rebuilding a 30,000+ element [(String, FSNodeKind)] array on
