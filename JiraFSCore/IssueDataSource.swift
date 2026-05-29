@@ -42,17 +42,20 @@ public actor IssueDataSource {
     /// should share one network round-trip instead of each issuing their own.
     private var pendingIssueKeysFetch: [String: Task<[String], Error>] = [:]
 
-    /// Called on the actor's executor whenever the issue key list for a project
-    /// changes after a background refresh. The parameter is the project key.
+    /// Called on the actor's executor after every successful background refresh of
+    /// the issue key list for a project. The parameter is the project key.
     /// `JiraVolume` uses this to update the directory's `cachedMTime` so that
     /// Finder's kqueue watcher fires and the directory listing auto-refreshes.
-    public var onIssueKeysChanged: (@Sendable (String) -> Void)?
+    /// Fired regardless of whether the key set actually changed, to ensure Finder
+    /// never shows a stale partial listing.
+    public var onIssueKeysRefreshed: (@Sendable (String) -> Void)?
 
-    /// Sets the handler invoked when the issue key list for any project changes
-    /// after a background refresh. This is an async setter because `IssueDataSource`
-    /// is an actor — the property can only be mutated on the actor's executor.
-    public func setIssueKeysChangedHandler(_ handler: @escaping @Sendable (String) -> Void) {
-        onIssueKeysChanged = handler
+    /// Sets the handler invoked after every successful background refresh of the
+    /// issue key list for any project. This is an async setter because
+    /// `IssueDataSource` is an actor — the property can only be mutated on the
+    /// actor's executor.
+    public func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        onIssueKeysRefreshed = handler
     }
 
     public init(
@@ -183,30 +186,36 @@ public actor IssueDataSource {
     }
 
     /// Pre-warm the in-memory cache from disk so Finder browsing is fast
-    /// immediately after mount. Loads projects list and all issue key lists
-    /// sequentially in the background; individual issue details remain lazy.
+    /// immediately after mount. Reads from disk only (stale-OK, no network).
+    ///
+    /// On a warm disk cache this populates memory in milliseconds.
+    /// On a cold disk cache this is a no-op — Finder's first `enumerateDirectory`
+    /// call will trigger a lazy network fetch instead.
+    ///
+    /// Deliberately avoids falling through to network so the FSKit mount reply
+    /// is never blocked by API I/O. Network refreshes are handled by
+    /// `postWarmUpRefresh()`, which runs after `reply(nil)`.
     public func warmUp() async {
-        guard let projects = try? await self.projects() else { return }
+        guard let projects = await cache.getStale("projects", as: [JiraProject].self) else { return }
         for project in projects {
-            _ = try? await self.issueKeys(forProject: project.key)
+            _ = await cache.getStale("issues/\(project.key)", as: [String].self)
         }
     }
 
     /// Schedule background API fetches for all known projects immediately
-    /// after `warmUp()`. The cache at this point may be stale disk data;
-    /// this call ensures the in-memory cache is populated with fresh network
-    /// data as soon as possible after mount, without blocking the reply.
+    /// after `warmUp()`. The cache at this point may be stale disk data or
+    /// empty (cold disk); this call ensures the in-memory cache is populated
+    /// with fresh network data as soon as possible after mount, without
+    /// blocking the reply.
     ///
-    /// Skips projects whose issue-key list is already fresh in L1 — this avoids
-    /// a redundant round-trip when `warmUp()` just performed a cold-cache fetch
-    /// and stored fresh data moments ago.
+    /// Skips projects whose issue-key list is already fresh — avoids a
+    /// redundant round-trip if the data was already fresh on disk.
     public func postWarmUpRefresh() async {
         guard let projects = try? await self.projects() else { return }
         for project in projects {
             let key = "issues/\(project.key)"
             // cache.get() returns non-nil only for unexpired (fresh) entries.
-            // If the data is fresh, warmUp() already did the network fetch;
-            // scheduling another refresh here would be a wasted API call.
+            // Stale or absent entries proceed to a background refresh.
             if await cache.get(key, as: [String].self) != nil { continue }
             scheduleRefresh(key) { await self.bgRefreshIssueKeys(project: project.key) }
         }
@@ -237,23 +246,15 @@ public actor IssueDataSource {
 
     private func bgRefreshIssueKeys(project: String) async {
         let cacheKey = "issues/\(project)"
-        // Snapshot current key list before the refresh so we can detect
-        // additions or deletions after the API response comes back.
-        // Note: `await` cannot appear to the right of `??` (autoclosure restriction),
-        // so we evaluate fresh and stale in two separate steps.
-        let oldKeys: [String]
-        if let fresh = await cache.get(cacheKey, as: [String].self) {
-            oldKeys = fresh
-        } else {
-            oldKeys = await cache.getStale(cacheKey, as: [String].self) ?? []
-        }
-        guard let newKeys = try? await fetchAndCacheIssueKeys(forProject: project) else {
+        guard (try? await fetchAndCacheIssueKeys(forProject: project)) != nil else {
             finishRefresh(cacheKey); return
         }
         finishRefresh(cacheKey)
-        if Set(newKeys) != Set(oldKeys) {
-            onIssueKeysChanged?(project)
-        }
+        // Always notify so Finder re-enumerates after every refresh cycle.
+        // Without this, a partial initial enumeration (large directory) would
+        // leave Finder with a stale incomplete listing if no keys were added
+        // or removed since the last refresh.
+        onIssueKeysRefreshed?(project)
     }
 
     private func bgRefreshIssue(key: String) async {

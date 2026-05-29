@@ -39,25 +39,43 @@ extension JiraVolume: FSVolume.Operations {
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
+        // Wrap reply so it can be captured by the async task below.
+        let r = SendableBox(reply)
         makeTask {
             // Wire change notifications before warming up so that any stale-while-revalidate
             // refresh that fires during warmUp() already has the handler in place.
-            await self.dataSource.setIssueKeysChangedHandler { [weak self] projectKey in
+            await self.dataSource.setIssueKeysRefreshedHandler { [weak self] projectKey in
                 guard let self else { return }
                 // Update the issuesDir mtime so Finder's kqueue watcher sees the
                 // change and re-enumerates the directory automatically.
+                // Called after every successful background refresh (not only on
+                // key-set change) to prevent stale partial listings in Finder.
                 let node = self.item(for: .issuesDir(project: projectKey))
                 node.cachedMTime = Date()
-                self.logger.info("issueKeys changed project=\(projectKey, privacy: .public): mtime updated")
+                // Invalidate the enumeration entries cache and bump the
+                // generation so any in-flight children() call that captured
+                // the old generation will not overwrite the cleared cache.
+                self.itemsLock.withLock {
+                    self.issueEntriesCache[projectKey] = nil
+                    self.issueKeysSet[projectKey] = nil
+                    self.issueEntriesGeneration[projectKey, default: 0] += 1
+                }
+                self.logger.info("issueKeys refreshed project=\(projectKey, privacy: .public): mtime updated, entries cache invalidated")
             }
-            // Phase 1: fast pre-warm from disk cache so Finder browsing is instant.
+            // Phase 1: warm from disk cache BEFORE replying to FSKit.
+            // On a warm disk cache (the common case on every mount after the first),
+            // this only reads disk — it completes in tens of milliseconds.
+            // Delaying reply(nil) until after warmUp() ensures that Finder's very
+            // first enumerateDirectory call hits a populated memory cache, preventing
+            // the race condition where Finder caches an empty listing because it
+            // enumerated the directory before warmUp had a chance to load any data.
             await self.dataSource.warmUp()
-            // Phase 2: immediately schedule background API fetches for all projects
-            // so fresh data arrives as soon as possible after mount, without blocking
-            // the mount reply.
+            // Signal FSKit that the mount is complete now that the cache is warm.
+            r.value(nil)
+            // Phase 2: schedule background API fetches for all projects so fresh
+            // data arrives as soon as possible after mount, without blocking Finder.
             await self.dataSource.postWarmUpRefresh()
         }
-        reply(nil)
     }
 
     func unmount(replyHandler reply: @escaping () -> Void) {
@@ -73,6 +91,16 @@ extension JiraVolume: FSVolume.Operations {
         let r = SendableBox(reply)
         makeTask {
             await self.dataSource.synchronize()
+            // issueEntriesCache is separate from CacheManager, so it must be
+            // cleared here too; otherwise stale directory listings survive a sync.
+            // Bump all generations so in-flight children() calls don't overwrite.
+            self.itemsLock.withLock {
+                self.issueEntriesCache.removeAll()
+                self.issueKeysSet.removeAll()
+                for key in self.issueEntriesGeneration.keys {
+                    self.issueEntriesGeneration[key, default: 0] += 1
+                }
+            }
             r.value(nil)
         }
     }
@@ -157,10 +185,16 @@ extension JiraVolume: FSVolume.Operations {
             do {
                 let entries = try await self.children(of: parent.kind)
                 self.logger.info("enumerateDirectory got \(entries.count) entries for kind=\(String(describing: parent.kind), privacy: .public)")
-                var index: UInt64 = 0
-                for (name, kind) in entries {
-                    index += 1
-                    if index <= cookie.rawValue { continue }
+                // Use O(1) array slicing to jump to the cookie position instead of
+                // iterating and skipping, which is O(N) per call and O(N²) total
+                // when FSKit paginates a large directory (e.g. 30,000 issues require
+                // ~70 enumerateDirectory calls at ~430 entries/buffer).
+                // Int(clamping:) avoids a trap when FSKit passes a cookie whose
+                // rawValue exceeds Int.max — the result is clamped to entries.count,
+                // returning an empty slice rather than crashing the extension.
+                let start = min(Int(clamping: cookie.rawValue), entries.count)
+                for (offset, (name, kind)) in entries[start...].enumerated() {
+                    let index = UInt64(start + offset + 1)
                     let child = self.item(for: kind)
                     let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
                     let nextCookie = FSDirectoryCookie(rawValue: index)
@@ -204,18 +238,31 @@ extension JiraVolume: FSVolume.Operations {
     // MARK: - Helpers
 
     private func resolveChild(parent: FSNodeKind, name: String) async throws -> FSNodeKind? {
-        // Fast path for issuesDir: the kernel only calls lookupItem with names
-        // it received from enumerateDirectory, so we can construct the kind
-        // directly without re-fetching and scanning the full issue list (O(N²)).
         if case .issuesDir(let project) = parent {
             if name == "AGENTS.md" {
                 return .issuesAgentsGuide(project: project)
             }
+            // Quick reject: must match PROJECT-NNN before hitting the cache.
             let prefix = project + "-"
             guard name.hasPrefix(prefix),
                   name.dropFirst(prefix.count).allSatisfy(\.isNumber),
                   !name.dropFirst(prefix.count).isEmpty
             else { return nil }
+            // Always call through the TTL-aware issueKeys() so the
+            // stale-while-revalidate chain fires even for direct-path lookups
+            // (e.g. `cd KEY-123` without a preceding `ls`). The in-memory cache
+            // makes this O(1) when hot; bypassing it would leave issueKeysSet
+            // stale indefinitely if the directory is never re-enumerated.
+            let keys = try await dataSource.issueKeys(forProject: project)
+            // Use the pre-built Set for O(1) membership test when available.
+            // issueKeysSet is invalidated alongside issueEntriesCache by
+            // onIssueKeysRefreshed, so it always reflects the same snapshot as
+            // the keys array we just received. If it was cleared by a concurrent
+            // refresh, fall back to an O(N) scan of the fresh array.
+            if let keySet = itemsLock.withLock({ issueKeysSet[project] }) {
+                return keySet.contains(name) ? .issue(key: name) : nil
+            }
+            guard keys.contains(name) else { return nil }
             return .issue(key: name)
         }
         let kids = try await children(of: parent)
@@ -233,9 +280,50 @@ extension JiraVolume: FSVolume.Operations {
             return PathResolver.childKinds(of: kind)
         case .issuesDir(let project):
             do {
+                // Always call dataSource.issueKeys() so the stale-while-revalidate
+                // chain remains active: once the TTL elapses, the call detects stale
+                // data, schedules bgRefreshIssueKeys, which fires onIssueKeysRefreshed
+                // and invalidates issueEntriesCache. Without this call, issueEntriesCache
+                // would short-circuit the refresh chain and issue listings would grow
+                // stale indefinitely after the first TTL period.
+                // Capture the current invalidation generation before the async
+                // issueKeys() call. If a background refresh fires onIssueKeysRefreshed
+                // while we await, the generation will have advanced and we must
+                // not store the entry array built from the now-stale key snapshot.
+                //
+                // We must also *register* the key in issueEntriesGeneration here
+                // (under the lock) so that a concurrent synchronize() — which
+                // bumps only keys already present in the dict — will bump this
+                // project even if it has never been enumerated before. Without
+                // this, synchronize() can clear the caches and return while
+                // genBefore is still 0 and issueEntriesGeneration[project] is
+                // still absent, so the post-await generation check compares
+                // 0 == 0 and stores stale data.
+                let genBefore = itemsLock.withLock { () -> Int in
+                    if issueEntriesGeneration[project] == nil {
+                        issueEntriesGeneration[project] = 0
+                    }
+                    return issueEntriesGeneration[project]!
+                }
                 let keys = try await dataSource.issueKeys(forProject: project)
+                // Return the pre-built tuple array if valid (O(1)) to avoid
+                // rebuilding a 30,000+ element [(String, FSNodeKind)] array on
+                // every enumerateDirectory pagination call (~70 calls per full ls).
+                // Invalidated by onIssueKeysRefreshed after each successful
+                // background refresh.
+                if let cached = itemsLock.withLock({ issueEntriesCache[project] }) {
+                    return cached
+                }
                 var kids = PathResolver.childKinds(of: kind)
                 kids.append(contentsOf: keys.map { ($0, FSNodeKind.issue(key: $0)) })
+                // Only store if the generation has not advanced (i.e. no refresh
+                // invalidated the cache while issueKeys() was in flight).
+                itemsLock.withLock {
+                    if issueEntriesGeneration[project, default: 0] == genBefore {
+                        issueEntriesCache[project] = kids
+                        issueKeysSet[project] = Set(keys)
+                    }
+                }
                 return kids
             } catch {
                 // API failure (e.g. invalid JSON, network error, permission denied).
@@ -309,6 +397,7 @@ extension JiraVolume: FSVolume.Operations {
         attrs.type = node.kind.isDirectory ? .directory : .file
         return attrs
     }
+
 }
 
 @available(macOS 15.4, *)

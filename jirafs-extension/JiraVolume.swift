@@ -17,8 +17,28 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
 
     /// Cache of currently-known items (keyed by identifier raw value) so we
     /// can hand the same instance back to FSKit consistently.
-    private let itemsLock = NSLock()
+    let itemsLock = NSLock()
     private var items: [UInt64: JiraFSItem] = [:]
+
+    /// Cached directory entry arrays for each project's issuesDir, keyed by
+    /// project key. Avoids rebuilding the O(N) tuple array on every
+    /// enumerateDirectory pagination call (30,000+ issues require ~70 calls).
+    /// Invalidated by onIssueKeysRefreshed after each successful refresh.
+    /// Protected by itemsLock.
+    var issueEntriesCache: [String: [(String, FSNodeKind)]] = [:]
+
+    /// Monotonically increasing invalidation counter per project.
+    /// Incremented by onIssueKeysRefreshed alongside the cache clear.
+    /// children(of:) captures the generation before the async issueKeys() call
+    /// and refuses to store a rebuilt entry array if the counter has advanced,
+    /// preventing a stale key snapshot from overwriting a newer valid cache.
+    /// Protected by itemsLock.
+    var issueEntriesGeneration: [String: Int] = [:]
+
+    /// Per-project Set of issue keys for O(1) existence checks in resolveChild.
+    /// Built and invalidated together with issueEntriesCache.
+    /// Protected by itemsLock.
+    var issueKeysSet: [String: Set<String>] = [:]
 
     // MARK: - Task lifecycle tracking
 
