@@ -23,7 +23,7 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
     /// Cached directory entry arrays for each project's issuesDir, keyed by
     /// project key. Avoids rebuilding the O(N) tuple array on every
     /// enumerateDirectory pagination call (30,000+ issues require ~70 calls).
-    /// Invalidated by onIssueKeysRefreshed when the key list changes.
+    /// Invalidated by onIssueKeysRefreshed after each successful refresh.
     /// Protected by itemsLock.
     var issueEntriesCache: [String: [(String, FSNodeKind)]] = [:]
 
