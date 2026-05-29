@@ -20,6 +20,9 @@ struct MountControlView: View {
     @EnvironmentObject private var monitor: MountStatusMonitor
     @State private var isBusy = false
     @State private var errorMessage: String?
+    /// true when the last mount failure was caused by the extension being
+    /// disabled in System Settings; triggers a settings link in the error panel.
+    @State private var showExtensionSettingsLink = false
 
     private var isMounted: Bool { monitor.mountedStates[entry.name] ?? false }
 
@@ -65,6 +68,20 @@ struct MountControlView: View {
                             .buttonStyle(.borderless)
                             .foregroundStyle(.secondary)
                             .help("Copy error message")
+                        }
+                        // Extension-disabled shortcut button
+                        if showExtensionSettingsLink {
+                            Button {
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            } label: {
+                                Label("Open Extension Settings", systemImage: "gear")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(.orange)
                         }
                         // Manual fallback command
                         VStack(alignment: .leading, spacing: 2) {
@@ -172,6 +189,7 @@ struct MountControlView: View {
     private func performMount() async {
         isBusy = true
         errorMessage = nil
+        showExtensionSettingsLink = false
         defer { isBusy = false }
         let path = entry.effectiveMountPath
         guard let host = safeHost else {
@@ -195,6 +213,11 @@ struct MountControlView: View {
             if !isMounted {
                 errorMessage = "Mount command completed but volume is not visible. Check fskitd and pluginkit registration."
             }
+        } catch MountError.scriptFailed(let msg) where Self.isModuleDisabledError(msg) {
+            // The extension exists but is turned off in System Settings.
+            // fskitd restart won't help here; the user must enable it manually.
+            showExtensionSettingsLink = true
+            errorMessage = "The jirafs extension is disabled. Go to System Settings › General › Login Items & Extensions, find jirafs under \"File System Extensions\", and turn it on. Then click Mount again."
         } catch MountError.scriptFailed(let msg) where Self.isExtensionKitError(msg) {
             // fskitd is holding stale state from a previous run — kill it so launchd
             // restarts it and re-registers the extension, then mount again.
@@ -244,6 +267,10 @@ struct MountControlView: View {
     }
 
     // MARK: - Helpers
+
+    private static func isModuleDisabledError(_ msg: String) -> Bool {
+        msg.contains("is disabled") || msg.contains("Unable to invoke task")
+    }
 
     private static func isExtensionKitError(_ msg: String) -> Bool {
         msg.contains("extensionKit") || msg.contains("not found") || msg.contains("error 2")
