@@ -52,9 +52,14 @@ extension JiraVolume: FSVolume.Operations {
                 // key-set change) to prevent stale partial listings in Finder.
                 let node = self.item(for: .issuesDir(project: projectKey))
                 node.cachedMTime = Date()
-                // Invalidate the enumeration entries cache so the next
-                // enumerateDirectory call rebuilds with the updated key list.
-                self.itemsLock.withLock { self.issueEntriesCache[projectKey] = nil }
+                // Invalidate the enumeration entries cache and bump the
+                // generation so any in-flight children() call that captured
+                // the old generation will not overwrite the cleared cache.
+                self.itemsLock.withLock {
+                    self.issueEntriesCache[projectKey] = nil
+                    self.issueKeysSet[projectKey] = nil
+                    self.issueEntriesGeneration[projectKey, default: 0] += 1
+                }
                 self.logger.info("issueKeys refreshed project=\(projectKey, privacy: .public): mtime updated, entries cache invalidated")
             }
             // Phase 1: warm from disk cache BEFORE replying to FSKit.
@@ -88,7 +93,14 @@ extension JiraVolume: FSVolume.Operations {
             await self.dataSource.synchronize()
             // issueEntriesCache is separate from CacheManager, so it must be
             // cleared here too; otherwise stale directory listings survive a sync.
-            self.itemsLock.withLock { self.issueEntriesCache.removeAll() }
+            // Bump all generations so in-flight children() calls don't overwrite.
+            self.itemsLock.withLock {
+                self.issueEntriesCache.removeAll()
+                self.issueKeysSet.removeAll()
+                for key in self.issueEntriesGeneration.keys {
+                    self.issueEntriesGeneration[key, default: 0] += 1
+                }
+            }
             r.value(nil)
         }
     }
@@ -236,11 +248,15 @@ extension JiraVolume: FSVolume.Operations {
                   name.dropFirst(prefix.count).allSatisfy(\.isNumber),
                   !name.dropFirst(prefix.count).isEmpty
             else { return nil }
-            // Verify the key exists in JIRA. issueKeys() is served from the
-            // in-memory cache after the first fetch, so this is fast even for
-            // large projects. Without this check, deleted/inaccessible tickets
-            // (e.g. HA-1, HA-2) would be reachable via direct path (`cd HA-1`)
-            // despite not appearing in directory listings.
+            // Use the pre-built Set for O(1) existence check when available.
+            // Falls back to an O(N) issueKeys() scan only before the first full
+            // enumeration of this project (Set is populated by children(of:)).
+            if let keySet = itemsLock.withLock({ issueKeysSet[project] }) {
+                return keySet.contains(name) ? .issue(key: name) : nil
+            }
+            // Set not yet populated — validate via issueKeys() array scan.
+            // Prevents deleted/inaccessible tickets from being reachable via
+            // direct path (`cd HA-1`) despite not appearing in listings.
             let keys = try await dataSource.issueKeys(forProject: project)
             guard keys.contains(name) else { return nil }
             return .issue(key: name)
@@ -266,6 +282,11 @@ extension JiraVolume: FSVolume.Operations {
                 // and invalidates issueEntriesCache. Without this call, issueEntriesCache
                 // would short-circuit the refresh chain and issue listings would grow
                 // stale indefinitely after the first TTL period.
+                // Capture the current invalidation generation before the async
+                // issueKeys() call. If a background refresh fires onIssueKeysRefreshed
+                // while we await, the generation will have advanced and we must
+                // not store the entry array built from the now-stale key snapshot.
+                let genBefore = itemsLock.withLock { issueEntriesGeneration[project, default: 0] }
                 let keys = try await dataSource.issueKeys(forProject: project)
                 // Return the pre-built tuple array if valid (O(1)) to avoid
                 // rebuilding a 30,000+ element [(String, FSNodeKind)] array on
@@ -276,7 +297,14 @@ extension JiraVolume: FSVolume.Operations {
                 }
                 var kids = PathResolver.childKinds(of: kind)
                 kids.append(contentsOf: keys.map { ($0, FSNodeKind.issue(key: $0)) })
-                itemsLock.withLock { issueEntriesCache[project] = kids }
+                // Only store if the generation has not advanced (i.e. no refresh
+                // invalidated the cache while issueKeys() was in flight).
+                itemsLock.withLock {
+                    if issueEntriesGeneration[project, default: 0] == genBefore {
+                        issueEntriesCache[project] = kids
+                        issueKeysSet[project] = Set(keys)
+                    }
+                }
                 return kids
             } catch {
                 // API failure (e.g. invalid JSON, network error, permission denied).

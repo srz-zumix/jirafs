@@ -27,6 +27,19 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
     /// Protected by itemsLock.
     var issueEntriesCache: [String: [(String, FSNodeKind)]] = [:]
 
+    /// Monotonically increasing invalidation counter per project.
+    /// Incremented by onIssueKeysRefreshed alongside the cache clear.
+    /// children(of:) captures the generation before the async issueKeys() call
+    /// and refuses to store a rebuilt entry array if the counter has advanced,
+    /// preventing a stale key snapshot from overwriting a newer valid cache.
+    /// Protected by itemsLock.
+    var issueEntriesGeneration: [String: Int] = [:]
+
+    /// Per-project Set of issue keys for O(1) existence checks in resolveChild.
+    /// Built and invalidated together with issueEntriesCache.
+    /// Protected by itemsLock.
+    var issueKeysSet: [String: Set<String>] = [:]
+
     // MARK: - Task lifecycle tracking
 
     /// Storage for in-flight task handles, protected by an async-safe lock.
