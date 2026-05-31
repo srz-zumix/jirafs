@@ -1,6 +1,6 @@
 import Foundation
 
-/// Sanitizes JIRA-derived strings so they're safe to use as filesystem
+/// Sanitizes Atlassian-derived strings so they're safe to use as filesystem
 /// component names. Prevents path traversal and removes characters illegal on
 /// macOS/HFS+/APFS.
 public enum FileNameSanitizer {

@@ -1,0 +1,77 @@
+import Foundation
+
+/// Confluence edition. Cloud uses REST API v2 (`/wiki/api/v2/`) with cursor
+/// pagination; Data Center / Server uses REST API v1 (`/rest/api/`) with
+/// start/limit pagination.
+public enum ConfluenceEdition: String, Codable, Sendable {
+    case cloud
+    case dataCenter
+
+    /// `true` when the instance speaks the Cloud v2 REST dialect.
+    public var isCloud: Bool { self == .cloud }
+}
+
+/// The body representation requested when fetching a page.
+public enum ConfluenceBodyFormat: String, Codable, Sendable {
+    /// Confluence storage format (XHTML). Available on both Cloud and DC.
+    case storage
+    /// Atlassian Document Format (JSON). Cloud only.
+    case atlasDocFormat = "atlas_doc_format"
+}
+
+/// Configuration for a single Confluence instance.
+public struct ConfluenceInstanceConfig: Sendable, Equatable {
+    public let name: String
+    public let baseURL: URL
+    public let edition: ConfluenceEdition
+
+    public init(name: String, baseURL: URL, edition: ConfluenceEdition) {
+        self.name = name
+        self.baseURL = baseURL
+        self.edition = edition
+    }
+}
+
+/// A page of results plus an opaque cursor for fetching the next page.
+public struct ConfluencePageList<Element: Sendable>: Sendable {
+    public let items: [Element]
+    /// Opaque pagination cursor. `nil` means there are no further pages.
+    public let nextCursor: String?
+
+    public init(items: [Element], nextCursor: String?) {
+        self.items = items
+        self.nextCursor = nextCursor
+    }
+}
+
+/// Common Confluence REST client interface used by the FSKit volume.
+public protocol ConfluenceClient: Sendable {
+    var config: ConfluenceInstanceConfig { get }
+
+    /// Lists spaces, one page at a time. Pass the previous result's
+    /// `nextCursor` to continue; `nil` starts at the beginning.
+    func listSpaces(cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceSpace>
+
+    /// Lists the **root** (top-level) pages of a space. The whole space is
+    /// passed because Cloud keys pages by `space.id` while Data Center keys
+    /// them by `space.key`. Only pages with status `current` are returned.
+    func listRootPages(space: ConfluenceSpace, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluencePage>
+
+    /// Lists archived root pages of a space (`status=archived`).
+    func listArchivedRootPages(space: ConfluenceSpace, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluencePage>
+
+    /// Lists the direct child pages of a page (status `current` only).
+    func listChildPages(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluencePage>
+
+    /// Lists archived direct child pages of a page.
+    func listArchivedChildPages(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluencePage>
+
+    /// Fetches a single page including its body in the requested format.
+    func getPage(id: String, bodyFormat: ConfluenceBodyFormat) async throws -> ConfluencePage
+
+    func listComments(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceComment>
+    func listAttachments(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceAttachment>
+    func listLabels(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceLabel>
+
+    func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data
+}

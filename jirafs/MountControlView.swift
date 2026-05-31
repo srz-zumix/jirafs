@@ -3,6 +3,7 @@ import AppKit
 import Security
 import JiraAPI
 import JiraFSCore
+import ConfluenceFSCore
 
 /// Displays mount status and provides Mount / Unmount buttons.
 ///
@@ -14,9 +15,42 @@ import JiraFSCore
 /// **Unmount** first tries `NSWorkspace.unmountAndEjectDevice(at:)` (no
 /// privileges needed when the current user owns the mount), and falls back to
 /// `/usr/sbin/diskutil unmount force` via the same privileged API.
+/// Product-agnostic description of a mountable volume, so the same mount UI
+/// serves both JIRA (`jira://` · `jirafs`) and Confluence (`confluence://` ·
+/// `confluencefs`) instances.
+struct MountDescriptor: Equatable {
+    let name: String
+    let host: String?
+    let mountPath: String
+    /// URL scheme used by the FSKit extension, e.g. `jira` or `confluence`.
+    let scheme: String
+    /// FSKit module name passed to `mount -t`, e.g. `jirafs` or `confluencefs`.
+    let fsType: String
+    /// Human-readable extension name used in error messages.
+    let extensionLabel: String
+
+    init(jira entry: Configuration.InstanceEntry) {
+        name = entry.name
+        host = entry.url.host
+        mountPath = entry.effectiveMountPath
+        scheme = "jira"
+        fsType = "jirafs"
+        extensionLabel = "jirafs"
+    }
+
+    init(confluence entry: ConfluenceConfiguration.InstanceEntry) {
+        name = entry.name
+        host = entry.url.host
+        mountPath = entry.effectiveMountPath
+        scheme = "confluence"
+        fsType = "confluencefs"
+        extensionLabel = "confluencefs"
+    }
+}
+
 @MainActor
 struct MountControlView: View {
-    let entry: Configuration.InstanceEntry
+    let descriptor: MountDescriptor
     @EnvironmentObject private var monitor: MountStatusMonitor
     @State private var isBusy = false
     @State private var errorMessage: String?
@@ -24,7 +58,7 @@ struct MountControlView: View {
     /// disabled in System Settings; triggers a settings link in the error panel.
     @State private var showExtensionSettingsLink = false
 
-    private var isMounted: Bool { monitor.mountedStates[entry.name] ?? false }
+    private var isMounted: Bool { monitor.mountedStates[descriptor.name] ?? false }
 
     var body: some View {
         GroupBox {
@@ -38,7 +72,7 @@ struct MountControlView: View {
                         Text(isMounted ? "Mounted" : "Not mounted")
                             .font(.callout.weight(.medium))
                             .foregroundStyle(isMounted ? .primary : .secondary)
-                        Text(entry.effectiveMountPath)
+                        Text(descriptor.mountPath)
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -132,7 +166,7 @@ struct MountControlView: View {
 
                     Button {
                         NSWorkspace.shared.open(
-                            URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true))
+                            URL(fileURLWithPath: descriptor.mountPath, isDirectory: true))
                     } label: {
                         Label("Show in Finder", systemImage: "folder")
                     }
@@ -171,7 +205,7 @@ struct MountControlView: View {
     /// could execute arbitrary code as root. Valid JIRA hostnames never contain
     /// such characters, so rejection is the right response.
     private var safeHost: String? {
-        guard let host = entry.url.host, !host.isEmpty else { return nil }
+        guard let host = descriptor.host, !host.isEmpty else { return nil }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
         guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
         return host
@@ -180,10 +214,10 @@ struct MountControlView: View {
     // The command shown to users as a fallback when mount fails.
     private var manualMountCommand: String {
         guard let host = safeHost else {
-            return "# Error: JIRA URL has no valid hostname — check your instance configuration"
+            return "# Error: URL has no valid hostname — check your instance configuration"
         }
-        let path = entry.effectiveMountPath.replacingOccurrences(of: "'", with: "'\\''")
-        return "sudo /sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(path)'"
+        let path = descriptor.mountPath.replacingOccurrences(of: "'", with: "'\\''")
+        return "sudo /sbin/mount -F -t \(descriptor.fsType) -o ro '\(descriptor.scheme)://\(host)' '\(path)'"
     }
 
     private func performMount() async {
@@ -191,9 +225,9 @@ struct MountControlView: View {
         errorMessage = nil
         showExtensionSettingsLink = false
         defer { isBusy = false }
-        let path = entry.effectiveMountPath
+        let path = descriptor.mountPath
         guard let host = safeHost else {
-            errorMessage = "Invalid JIRA URL: hostname is missing or contains unsafe characters. Check your instance configuration."
+            errorMessage = "Invalid URL: hostname is missing or contains unsafe characters. Check your instance configuration."
             return
         }
         // Create the mount point as the current user (no root needed).
@@ -204,7 +238,7 @@ struct MountControlView: View {
             return
         }
         let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
-        let mountCmd = "/sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(escapedPath)'"
+        let mountCmd = "/sbin/mount -F -t \(descriptor.fsType) -o ro '\(descriptor.scheme)://\(host)' '\(escapedPath)'"
         do {
             try await runPrivileged(mountCmd)
             // Wait briefly for the kernel to register the volume before checking.
@@ -217,7 +251,7 @@ struct MountControlView: View {
             // The extension exists but is turned off in System Settings.
             // fskitd restart won't help here; the user must enable it manually.
             showExtensionSettingsLink = true
-            errorMessage = "The jirafs extension is disabled. Go to System Settings › General › Login Items & Extensions, find jirafs under \"File System Extensions\", and turn it on. Then click Mount again."
+            errorMessage = "The \(descriptor.extensionLabel) extension is disabled. Go to System Settings › General › Login Items & Extensions, find \(descriptor.extensionLabel) under \"File System Extensions\", and turn it on. Then click Mount again."
         } catch MountError.scriptFailed(let msg) where Self.isExtensionKitError(msg) {
             // fskitd is holding stale state from a previous run — kill it so launchd
             // restarts it and re-registers the extension, then mount again.
@@ -246,7 +280,7 @@ struct MountControlView: View {
         isBusy = true
         errorMessage = nil
         defer { isBusy = false }
-        let url = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true)
+        let url = URL(fileURLWithPath: descriptor.mountPath, isDirectory: true)
         // Try the non-privileged route first (works when current user owns the mount).
         if (try? NSWorkspace.shared.unmountAndEjectDevice(at: url)) != nil {
             try? await Task.sleep(for: .seconds(1))
@@ -254,7 +288,7 @@ struct MountControlView: View {
             return
         }
         // Fallback: privileged diskutil.
-        let escapedPath = entry.effectiveMountPath.replacingOccurrences(of: "'", with: "'\\''")
+        let escapedPath = descriptor.mountPath.replacingOccurrences(of: "'", with: "'\\''")
         do {
             try await runPrivileged("/usr/sbin/diskutil unmount force '\(escapedPath)'")
             try? await Task.sleep(for: .seconds(1))

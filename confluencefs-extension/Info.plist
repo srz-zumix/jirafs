@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>jirafs</string>
+	<string>confluencefs</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -41,19 +41,19 @@
 		<dict/>
 		<key>FSPersonalities</key>
 		<dict>
-			<key>jirafsPersonality</key>
+			<key>confluencefsPersonality</key>
 			<dict>
 				<key>FSName</key>
-				<string>jirafs</string>
+				<string>confluencefs</string>
 				<key>FSfileObjectsAreCaseSensitive</key>
 				<false/>
 			</dict>
 		</dict>
 		<key>FSShortName</key>
-		<string>jirafs</string>
+		<string>confluencefs</string>
 		<key>FSSupportedSchemes</key>
 		<array>
-			<string>jira</string>
+			<string>confluence</string>
 		</array>
 		<key>FSSupportsBlockResources</key>
 		<false/>

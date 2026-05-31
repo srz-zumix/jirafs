@@ -14,6 +14,8 @@
 		<string>jirafs Developer ID</string>
 		<key>com.zumix.jirafs.fskit</key>
 		<string>jirafs Extension Developer ID</string>
+		<key>com.zumix.jirafs.confluencefs.fskit</key>
+		<string>confluencefs Extension Developer ID</string>
 	</dict>
 </dict>
 </plist>

@@ -3,7 +3,7 @@ import os
 
 private let authLogger = Logger(subsystem: "com.zumix.jirafs", category: "auth")
 
-/// JIRA Cloud API Token (HTTP Basic with `email:token`).
+/// Atlassian Cloud API Token (HTTP Basic with `email:token`).
 public struct APITokenAuth: AuthProvider {
     public let email: String
     public let token: String
@@ -17,7 +17,7 @@ public struct APITokenAuth: AuthProvider {
         authLogger.debug("authorize: email=\(self.email, privacy: .private) token_len=\(self.token.count)")
         let raw = "\(email):\(token)"
         guard let data = raw.data(using: .utf8) else {
-            throw JiraAPIError.missingCredentials
+            throw AtlassianError.missingCredentials
         }
         let encoded = data.base64EncodedString()
         request.setValue("Basic \(encoded)", forHTTPHeaderField: "Authorization")

@@ -1,4 +1,5 @@
 import Foundation
+import AtlassianCore
 
 /// Implements `JiraClient` against the JIRA REST API.
 ///

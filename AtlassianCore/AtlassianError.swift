@@ -1,7 +1,8 @@
 import Foundation
 
-/// Errors thrown by the JIRA API client. Mapped to `POSIXError` at the FSKit boundary.
-public enum JiraAPIError: Error, Sendable, Equatable {
+/// Errors thrown by Atlassian API clients (JIRA / Confluence).
+/// Mapped to `POSIXError` at the FSKit boundary.
+public enum AtlassianError: Error, Sendable, Equatable {
     case invalidURL
     case unauthorized
     case forbidden
