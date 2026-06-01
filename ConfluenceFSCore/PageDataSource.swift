@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AtlassianCore
 import ConfluenceAPI
 
@@ -29,6 +30,7 @@ public actor PageDataSource {
     /// When `true`, archived pages are included in page listings.
     public let includeArchived: Bool
     private let limiter: RateLimiter
+    private let logger = AtlassianLog.logger("confluence-datasource")
 
     private var refreshing: Set<String> = []
 
@@ -234,6 +236,9 @@ public actor PageDataSource {
             cursor = result.nextCursor
             guardCount += 1
         } while cursor != nil && guardCount < 1000
+        if cursor != nil {
+            logger.warning("fetchAll: pagination guard limit (1000 pages) reached; \(items.count) items collected so far. Some items may be missing.")
+        }
         return items
     }
 }
