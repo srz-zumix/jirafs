@@ -1,6 +1,6 @@
 # jirafs
 
-Mount your JIRA and Confluence data as a macOS filesystem.  
+Mount your JIRA and Confluence data as a macOS filesystem.
 Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnaryFileSystem), jirafs exposes JIRA projects/issues and Confluence spaces/pages as ordinary files and directories accessible with any standard tool.
 
 > 日本語ドキュメントは [README.ja.md](README.ja.md) を参照してください。

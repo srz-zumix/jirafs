@@ -62,4 +62,3 @@ enum AppConfig {
         try config.save(to: confluenceConfigURL())
     }
 }
-

@@ -619,4 +619,3 @@ diskutil unmount force ~/confluencefs/myinstance
 - read-only のみ (ページ編集は未対応)
 - storage 形式 → Markdown 変換は主要タグのみ対応 (非対応タグは raw fallback)
 - 大規模スペース (数千ページ) ではページツリーの遅延読み込みに依存
-
