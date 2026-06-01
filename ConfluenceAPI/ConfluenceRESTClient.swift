@@ -206,7 +206,15 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         let start = page.start ?? 0
         let size = page.size ?? page.results.count
         let limit = page.limit ?? size
-        let hasNext = page.links?.next != nil || (limit > 0 && size >= limit)
+        // Prefer the server-provided `_links.next`: when the envelope is present
+        // its absence reliably marks the last page. Only fall back to the
+        // size>=limit heuristic when no links envelope was returned at all.
+        let hasNext: Bool
+        if let links = page.links {
+            hasNext = links.next != nil
+        } else {
+            hasNext = limit > 0 && size >= limit
+        }
         let nextCursor = hasNext ? String(start + size) : nil
         return ConfluencePageList(items: page.results.map(transform), nextCursor: nextCursor)
     }

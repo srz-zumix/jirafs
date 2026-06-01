@@ -43,10 +43,11 @@ extension ConfluenceVolume: FSVolume.Operations {
         reply(nil)
         // Background warmup: pre-cache spaces and root-page lists so the first
         // `ls spaces/` and `ls spaces/KEY/pages/` are served from cache.
-        Task {
+        // Tracked via makeTask so cancelAllTasks() (called on unmount) stops it.
+        makeTask {
             do {
-                let spaces = try await dataSource.spaces()
-                logger.info("warmup: \(spaces.count, privacy: .public) spaces")
+                let spaces = try await self.dataSource.spaces()
+                self.logger.info("warmup: \(spaces.count, privacy: .public) spaces")
                 await withTaskGroup(of: Void.self) { group in
                     for space in spaces {
                         let s = space
@@ -55,9 +56,9 @@ extension ConfluenceVolume: FSVolume.Operations {
                         }
                     }
                 }
-                logger.info("warmup complete")
+                self.logger.info("warmup complete")
             } catch {
-                logger.debug("warmup failed: \(error, privacy: .public)")
+                self.logger.debug("warmup failed: \(error, privacy: .public)")
             }
         }
     }
@@ -240,7 +241,8 @@ extension ConfluenceVolume: FSVolume.Operations {
                 kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId)))
             }
             // Background: pre-cache grandchildren so the next level of ls is fast.
-            Task {
+            // Tracked via makeTask so cancelAllTasks() (called on unmount) stops it.
+            makeTask {
                 await withTaskGroup(of: Void.self) { group in
                     for entry in entries {
                         let id = entry.page.id

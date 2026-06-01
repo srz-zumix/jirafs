@@ -69,12 +69,12 @@ public enum ADFRenderer {
             return "```\(lang)\n\(renderPlain(inner))\n```\n"
         case "blockquote":
             let body = inner.map(renderBlock).joined()
-            return body.split(separator: "\n").map { "> \($0)" }.joined(separator: "\n") + "\n"
+            return body.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n") + "\n"
         case "rule":
             return "---\n"
         case "panel":
             let body = inner.map(renderBlock).joined()
-            return body.split(separator: "\n").map { "> \($0)" }.joined(separator: "\n") + "\n"
+            return body.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n") + "\n"
         case "table":
             return renderTable(inner) + "\n"
         case "mediaSingle", "mediaGroup":
@@ -84,7 +84,14 @@ public enum ADFRenderer {
                 if case .string(let s) = attrs["alt"] ?? .null { return s }
                 return ""
             }()
-            return "![\(alt)](attachment)\n"
+            // `alt` is often set to the original filename by Confluence Cloud.
+            // When available, emit a relative link into the sibling `.attachments/`
+            // directory so that markdown viewers and the HTML view can resolve it.
+            // Fall back to a generic placeholder when alt is absent.
+            if alt.isEmpty {
+                return "![](attachment)\n"
+            }
+            return "![\(alt)](.attachments/\(alt))\n"
         default:
             return renderInline(inner) + "\n"
         }

@@ -109,7 +109,8 @@ struct CloudComment: Decodable {
         ConfluenceComment(
             id: id,
             body: body?.body(preferred: .storage),
-            authorDisplayName: version?.authorId,
+            authorDisplayName: nil,
+            authorId: version?.authorId,
             createdAt: version?.createdAt
         )
     }
@@ -245,6 +246,7 @@ struct DCComment: Decodable {
             id: id,
             body: body?.confluenceBody,
             authorDisplayName: history?.createdBy?.displayName ?? version?.by?.displayName,
+            authorId: nil,
             createdAt: history?.createdDate ?? version?.when
         )
     }

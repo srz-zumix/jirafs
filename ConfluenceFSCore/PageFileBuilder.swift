@@ -6,8 +6,8 @@ import ConfluenceAPI
 /// comment files) from Confluence models.
 public enum PageFileBuilder {
 
-    /// `page.md` — the page body rendered to Markdown, with a small front matter
-    /// header (title + version).
+    /// `page.md` — the page body rendered to Markdown, prefixed with a
+    /// `# title` heading.
     public static func body(_ page: ConfluencePage) -> Data {
         var out = "# \(page.title)\n\n"
         let md = ConfluenceContentRenderer.renderBody(page.body)
@@ -16,7 +16,7 @@ public enum PageFileBuilder {
         return Data(out.utf8)
     }
 
-    /// `metadata.json` — structured page metadata.
+    /// `.metadata.json` — structured page metadata.
     public static func metadata(_ page: ConfluencePage) -> Data {
         var dict: [String: Any] = [
             "id": page.id,
@@ -48,7 +48,7 @@ public enum PageFileBuilder {
 
     /// A single comment file in Markdown.
     public static func comment(_ comment: ConfluenceComment) -> Data {
-        let author = comment.authorDisplayName ?? "unknown"
+        let author = comment.authorLabel ?? "unknown"
         let created = comment.createdAt ?? ""
         var out = "**\(author)**"
         if !created.isEmpty { out += " — \(created)" }
@@ -61,7 +61,7 @@ public enum PageFileBuilder {
     /// File name for a comment: `NNN_author_date.md` (1-based index, zero-padded).
     public static func commentFileName(index: Int, comment: ConfluenceComment) -> String {
         let n = String(format: "%03d", index)
-        let author = FileNameSanitizer.sanitize(comment.authorDisplayName ?? "unknown")
+        let author = FileNameSanitizer.sanitize(comment.authorLabel ?? "unknown")
         let date = (comment.createdAt ?? "").prefix(10) // YYYY-MM-DD
         let stem = date.isEmpty ? "\(n)_\(author)" : "\(n)_\(author)_\(date)"
         return "\(stem).md"

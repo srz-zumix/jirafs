@@ -78,19 +78,30 @@ public struct ConfluencePage: Codable, Sendable, Equatable, Identifiable {
 public struct ConfluenceComment: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let body: ConfluenceBody?
+    /// Human-readable author name. Available on Data Center; nil on Cloud,
+    /// where only an opaque account id is returned (see `authorId`).
     public let authorDisplayName: String?
+    /// Opaque author account id, when a display name is not available.
+    public let authorId: String?
     public let createdAt: String?
 
     public init(
         id: String,
         body: ConfluenceBody? = nil,
         authorDisplayName: String? = nil,
+        authorId: String? = nil,
         createdAt: String? = nil
     ) {
         self.id = id
         self.body = body
         self.authorDisplayName = authorDisplayName
+        self.authorId = authorId
         self.createdAt = createdAt
+    }
+
+    /// Best label for the author: display name when known, else the account id.
+    public var authorLabel: String? {
+        authorDisplayName ?? authorId
     }
 }
 
