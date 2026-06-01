@@ -44,7 +44,7 @@ struct ConfluenceInstanceEditorView: View {
         self.originalMethod = initial?.auth.method
         self.originalEmail = initial?.auth.email
         _name = State(initialValue: initial?.name ?? "")
-        _urlString = State(initialValue: initial?.url.absoluteString ?? "https://example.atlassian.net/wiki")
+        _urlString = State(initialValue: initial?.url.absoluteString ?? "https://example.atlassian.net")
         _edition = State(initialValue: initial?.type ?? .cloud)
         _method = State(initialValue: initial?.auth.method ?? .apiToken)
         _email = State(initialValue: initial?.auth.email ?? "")
@@ -88,7 +88,7 @@ struct ConfluenceInstanceEditorView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     formSection("Connection") {
                         fieldRow("Name")        { TextField("My Confluence", text: $name) }
-                        fieldRow("URL")         { TextField("https://example.atlassian.net/wiki", text: $urlString) }
+                        fieldRow("URL")         { TextField("https://example.atlassian.net", text: $urlString) }
                         fieldRow("Edition") {
                             Picker("", selection: $edition) {
                                 Text("Cloud").tag(ConfluenceEdition.cloud)
