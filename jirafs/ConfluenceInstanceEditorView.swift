@@ -68,7 +68,7 @@ struct ConfluenceInstanceEditorView: View {
 
             Divider()
 
-            if let instName = originalName, monitor.mountedStates[instName] == true {
+            if let instName = originalName, monitor.mountedStates["confluence:\(instName)"] == true {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)

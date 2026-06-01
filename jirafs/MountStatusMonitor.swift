@@ -52,11 +52,11 @@ final class MountStatusMonitor: ObservableObject {
         var updated: [String: Bool] = [:]
         for entry in config.instances {
             let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
-            updated[entry.name] = mountedURLs.contains(targetURL)
+            updated["jira:\(entry.name)"] = mountedURLs.contains(targetURL)
         }
         for entry in confluenceConfig.instances {
             let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
-            updated[entry.name] = mountedURLs.contains(targetURL)
+            updated["confluence:\(entry.name)"] = mountedURLs.contains(targetURL)
         }
         mountedStates = updated
     }

@@ -159,7 +159,15 @@ public actor PageDataSource {
     }
 
     public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data {
-        try await client.downloadAttachment(attachment, range: range)
+        // Cache only full-file reads; partial reads (range != nil) are not cached.
+        guard range == nil else {
+            return try await limiter.run { try await self.client.downloadAttachment(attachment, range: range) }
+        }
+        let cacheKey = "attachment-bin/\(attachment.id)"
+        if let cached = await cache.get(cacheKey, as: Data.self) { return cached }
+        let value = try await limiter.run { try await self.client.downloadAttachment(attachment, range: nil) }
+        await cache.set(cacheKey, value: value, ttl: ttl.attachmentBinary)
+        return value
     }
 
     // MARK: - Naming

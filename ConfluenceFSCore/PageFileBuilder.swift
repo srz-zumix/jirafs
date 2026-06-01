@@ -2,7 +2,7 @@ import Foundation
 import AtlassianCore
 import ConfluenceAPI
 
-/// Builds the per-page file payloads (page.md, metadata.json, labels.txt,
+/// Builds the per-page file payloads (page.md, .metadata.json, .labels.txt,
 /// comment files) from Confluence models.
 public enum PageFileBuilder {
 

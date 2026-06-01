@@ -94,7 +94,7 @@ private struct MenuBarMenuContent: View {
                 .foregroundStyle(.secondary)
         } else {
             ForEach(rows, id: \.name) { row in
-                let mounted = monitor.mountedStates[row.name] ?? false
+                let mounted = monitor.mountedStates[(row.isConfluence ? "confluence" : "jira") + ":\(row.name)"] ?? false
                 HStack {
                     Image(systemName: mounted
                           ? "externaldrive.fill.badge.checkmark"

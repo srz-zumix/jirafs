@@ -58,7 +58,7 @@ struct MountControlView: View {
     /// disabled in System Settings; triggers a settings link in the error panel.
     @State private var showExtensionSettingsLink = false
 
-    private var isMounted: Bool { monitor.mountedStates[descriptor.name] ?? false }
+    private var isMounted: Bool { monitor.mountedStates["\(descriptor.scheme):\(descriptor.name)"] ?? false }
 
     var body: some View {
         GroupBox {

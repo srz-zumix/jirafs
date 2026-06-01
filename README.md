@@ -11,7 +11,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - **Multiple instances** — mount each JIRA/Confluence instance at its own path simultaneously
 - **Per-instance filtering** — expose all projects/spaces or limit to specific keys
 - JIRA issues represented as directories (`summary.txt`, `description.md`, `metadata.json`, `comments/`, `attachments/`)
-- Confluence pages represented as directories (`page.md`, `metadata.json`, `labels.txt`, `comments/`, `attachments/`) with child pages nested recursively
+- Confluence pages represented as directories (`page.md`, `.metadata.json`, `.labels.txt`, `.comments/`, `.attachments/`) with child pages nested recursively
 - Browse data with standard UNIX tools (`ls`, `cat`, `grep`, `find`, …)
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
@@ -53,10 +53,10 @@ Each Confluence instance is mounted at its own path (default `~/confluencefs/<na
             ├── Getting Started.html    # Formatted view (when htmlView is enabled)
             └── Getting Started/
                 ├── page.md             # Page body (Markdown)
-                ├── metadata.json       # Structured metadata
-                ├── labels.txt          # Labels
-                ├── comments/           # Comment files
-                ├── attachments/        # Attached files
+                ├── .metadata.json      # Structured metadata
+                ├── .labels.txt         # Labels
+                ├── .comments/          # Comment files
+                ├── .attachments/       # Attached files
                 └── Child Page/         # Child pages nested recursively
                     └── page.md
 ```

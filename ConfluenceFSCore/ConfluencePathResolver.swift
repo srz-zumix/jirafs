@@ -20,8 +20,8 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     case pageDir(spaceKey: String, pageId: String)   // .../{Title}/
     case pageHtml(spaceKey: String, pageId: String)  // .../{Title}.html (htmlView only)
     case pageBody(spaceKey: String, pageId: String)  // .../{Title}/page.md
-    case pageMeta(spaceKey: String, pageId: String)  // .../{Title}/metadata.json
-    case labels(spaceKey: String, pageId: String)    // .../{Title}/labels.txt
+    case pageMeta(spaceKey: String, pageId: String)  // .../{Title}/.metadata.json
+    case labels(spaceKey: String, pageId: String)    // .../{Title}/.labels.txt
     case commentsDir(spaceKey: String, pageId: String)
     case comment(spaceKey: String, pageId: String, index: Int) // 1-based, stable
     case attachmentsDir(spaceKey: String, pageId: String)

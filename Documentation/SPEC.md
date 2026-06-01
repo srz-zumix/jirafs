@@ -571,11 +571,11 @@ Keychain は JIRA と同じ共有アクセスグループ
     ├── {Page Title}.html          # htmlView:true のときのみ。フォルダの兄弟
     └── {Page Title}/
         ├── page.md                # # タイトル + 本文 (storage/ADF → Markdown)
-        ├── metadata.json          # 構造化メタデータ
-        ├── labels.txt             # ラベル一覧
-        ├── comments/
+        ├── .metadata.json         # 構造化メタデータ
+        ├── .labels.txt            # ラベル一覧
+        ├── .comments/
         │   └── NNN_author_date.md
-        ├── attachments/
+        ├── .attachments/
         ├── {Child Page Title}.html
         └── {Child Page Title}/    # 子ページ (再帰)
             └── ...

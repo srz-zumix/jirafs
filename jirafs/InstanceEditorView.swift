@@ -67,7 +67,7 @@ struct InstanceEditorView: View {
 
             // Warning banner: shown when the instance is already mounted.
             // Changes to connection, auth, or mount options require remounting.
-            if let instName = originalName, monitor.mountedStates[instName] == true {
+            if let instName = originalName, monitor.mountedStates["jira:\(instName)"] == true {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
