@@ -28,6 +28,14 @@
 				<string>jira</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Confluence File System</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>confluence</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>

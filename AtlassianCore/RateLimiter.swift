@@ -1,6 +1,6 @@
 import Foundation
 
-/// Wraps a `JiraClient` with retry-on-429 and exponential backoff for
+/// Wraps an async operation with retry-on-429 and exponential backoff for
 /// transient server errors.
 public actor RateLimiter {
     public let maxRetries: Int
@@ -16,7 +16,7 @@ public actor RateLimiter {
         while true {
             do {
                 return try await operation()
-            } catch let error as JiraAPIError {
+            } catch let error as AtlassianError {
                 attempt += 1
                 guard attempt <= maxRetries else { throw error }
                 switch error {

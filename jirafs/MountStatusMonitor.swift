@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import JiraFSCore
+import ConfluenceFSCore
 
 /// Periodically checks which configured JIRA instances are currently mounted
 /// and publishes the results so the menu bar and other UI can react.
@@ -43,6 +44,7 @@ final class MountStatusMonitor: ObservableObject {
 
     func refresh() {
         let config = AppConfig.load()
+        let confluenceConfig = AppConfig.loadConfluence()
         let mountedURLs = (FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: nil, options: []) ?? [])
             .map { $0.standardized }
@@ -50,7 +52,11 @@ final class MountStatusMonitor: ObservableObject {
         var updated: [String: Bool] = [:]
         for entry in config.instances {
             let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
-            updated[entry.name] = mountedURLs.contains(targetURL)
+            updated["jira:\(entry.name)"] = mountedURLs.contains(targetURL)
+        }
+        for entry in confluenceConfig.instances {
+            let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
+            updated["confluence:\(entry.name)"] = mountedURLs.contains(targetURL)
         }
         mountedStates = updated
     }

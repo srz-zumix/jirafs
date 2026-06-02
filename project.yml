@@ -26,14 +26,46 @@ packages:
     from: 0.4.0
 
 targets:
+  AtlassianCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: AtlassianCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.AtlassianCore
+        DEFINES_MODULE: YES
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+        SKIP_INSTALL: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   JiraAPI:
     type: framework
     platform: macOS
     sources:
       - path: JiraAPI
+    dependencies:
+      - target: AtlassianCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.JiraAPI
+        DEFINES_MODULE: YES
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+        SKIP_INSTALL: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+
+  ConfluenceAPI:
+    type: framework
+    platform: macOS
+    sources:
+      - path: ConfluenceAPI
+    dependencies:
+      - target: AtlassianCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.ConfluenceAPI
         DEFINES_MODULE: YES
         DYLIB_INSTALL_NAME_BASE: "@rpath"
         SKIP_INSTALL: YES
@@ -46,6 +78,7 @@ targets:
     sources:
       - path: JiraFSCore
     dependencies:
+      - target: AtlassianCore
       - target: JiraAPI
       - package: SwiftMarkdown
         product: Markdown
@@ -58,12 +91,31 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         GENERATE_INFOPLIST_FILE: YES
 
+  ConfluenceFSCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: ConfluenceFSCore
+    dependencies:
+      - target: AtlassianCore
+      - target: ConfluenceAPI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.ConfluenceFSCore
+        DEFINES_MODULE: YES
+        DYLIB_INSTALL_NAME_BASE: "@rpath"
+        SKIP_INSTALL: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: YES
+
   jirafs-extension:
     type: extensionkit-extension
     platform: macOS
     sources:
       - path: jirafs-extension
     dependencies:
+      - target: AtlassianCore
+        embed: true
       - target: JiraAPI
         embed: true
       - target: JiraFSCore
@@ -113,17 +165,82 @@ targets:
         Release:
           PROVISIONING_PROFILE_SPECIFIER: "jirafs Extension Developer ID"
 
+  confluencefs-extension:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: confluencefs-extension
+    dependencies:
+      - target: AtlassianCore
+        embed: true
+      - target: ConfluenceAPI
+        embed: true
+      - target: ConfluenceFSCore
+        embed: true
+    info:
+      path: confluencefs-extension/Info.plist
+      properties:
+        CFBundleDisplayName: confluencefs
+        CFBundleName: $(PRODUCT_NAME)
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          FSActivateOptionSyntax:
+            shortOptions: "o:"
+          FSCheckOptionSyntax:
+            shortOptions: "nqy"
+          FSFormatOptionSyntax:
+            shortOptions: "v"
+          FSMediaTypes: {}
+          FSPersonalities:
+            confluencefsPersonality:
+              FSName: confluencefs
+              FSfileObjectsAreCaseSensitive: false
+          FSSupportedSchemes:
+            - confluence
+          FSShortName: confluencefs
+          FSSupportsBlockResources: false
+          FSSupportsGenericURLResources: true
+          FSSupportsPathURLs: false
+          FSSupportsServerURLs: true
+          FSSupportsURLMounting: true
+    entitlements:
+      path: confluencefs-extension/confluencefs-extension.entitlements
+      properties:
+        com.apple.developer.fskit.fsmodule: true
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.zumix.jirafs.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.confluencefs.fskit
+        EXTENSIONKIT_EXTENSION: YES
+        SWIFT_OBJC_BRIDGING_HEADER: confluencefs-extension/confluencefs-extension-Bridging-Header.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
+      configs:
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: "confluencefs Extension Developer ID"
+
   jirafs:
     type: application
     platform: macOS
     sources:
       - path: jirafs
     dependencies:
+      - target: AtlassianCore
+        embed: true
       - target: JiraAPI
         embed: true
       - target: JiraFSCore
         embed: true
+      - target: ConfluenceAPI
+        embed: true
+      - target: ConfluenceFSCore
+        embed: true
       - target: jirafs-extension
+        embed: true
+      - target: confluencefs-extension
         embed: true
     info:
       path: jirafs/Info.plist
@@ -137,6 +254,9 @@ targets:
           - CFBundleURLName: JIRA File System
             CFBundleURLSchemes:
               - jira
+          - CFBundleURLName: Confluence File System
+            CFBundleURLSchemes:
+              - confluence
     entitlements:
       path: jirafs/jirafs.entitlements
       properties:
@@ -159,6 +279,7 @@ targets:
     sources:
       - path: Tests/JiraAPITests
     dependencies:
+      - target: AtlassianCore
       - target: JiraAPI
     settings:
       base:
@@ -172,11 +293,41 @@ targets:
     sources:
       - path: Tests/JiraFSCoreTests
     dependencies:
+      - target: AtlassianCore
       - target: JiraFSCore
       - target: JiraAPI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.JiraFSCoreTests
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+  ConfluenceAPITests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ConfluenceAPITests
+    dependencies:
+      - target: AtlassianCore
+      - target: ConfluenceAPI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.ConfluenceAPITests
+        GENERATE_INFOPLIST_FILE: YES
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+  ConfluenceFSCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ConfluenceFSCoreTests
+    dependencies:
+      - target: AtlassianCore
+      - target: ConfluenceAPI
+      - target: ConfluenceFSCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zumix.jirafs.ConfluenceFSCoreTests
         GENERATE_INFOPLIST_FILE: YES
         MACOSX_DEPLOYMENT_TARGET: "14.0"
 
@@ -193,5 +344,7 @@ schemes:
       targets:
         - JiraAPITests
         - JiraFSCoreTests
+        - ConfluenceAPITests
+        - ConfluenceFSCoreTests
     archive:
       config: Release

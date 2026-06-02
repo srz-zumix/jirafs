@@ -10,7 +10,7 @@ private let cacheLogger = Logger(subsystem: "com.zumix.jirafs", category: "cache
 /// values keyed by string. Expired entries are evicted on access.
 ///
 /// **Disk layer** (opt-in via `diskEnabled`): persists entries as
-/// AES-GCM-encrypted files under `cachesDir/jirafs/`.
+/// AES-GCM-encrypted files under `cachesDir`.
 /// - The encryption key is stored as `.cache.key` (raw 32 bytes) inside the
 ///   cache directory. The directory is created with mode `0700` and the key
 ///   file with `0600` (owner-only read/write). When running as the FSKit
@@ -19,7 +19,7 @@ private let cacheLogger = Logger(subsystem: "com.zumix.jirafs", category: "cache
 ///   permissions are the primary access control.
 ///   Note: FSKit extensions run as system daemons and cannot call
 ///   `SecItemAdd`, so Keychain storage is not available in this context.
-/// - File names are the SHA-256 hash of the cache key, so no JIRA path
+/// - File names are the SHA-256 hash of the cache key, so no path
 ///   information is visible on disk without the key.
 ///
 /// `synchronize()` clears both layers (called from `FSVolume.synchronize`).
@@ -65,34 +65,43 @@ public actor CacheManager {
     // MARK: - Static utilities
 
     /// Returns the per-instance cache directory URL (may not exist yet).
-    public static func cacheDirectory(for instanceName: String, baseCachesDir: URL) -> URL {
-        baseCachesDir.appendingPathComponent("jirafs", isDirectory: true)
+    public static func cacheDirectory(for instanceName: String, baseCachesDir: URL,
+                                      product: String = "jirafs") -> URL {
+        baseCachesDir.appendingPathComponent(product, isDirectory: true)
                      .appendingPathComponent(instanceName, isDirectory: true)
     }
 
-    /// Returns the base jirafs caches directory URL (may not exist yet).
-    public static func baseCacheDirectory(baseCachesDir: URL) -> URL {
-        baseCachesDir.appendingPathComponent("jirafs", isDirectory: true)
+    /// Returns the base product caches directory URL (may not exist yet).
+    public static func baseCacheDirectory(baseCachesDir: URL, product: String = "jirafs") -> URL {
+        baseCachesDir.appendingPathComponent(product, isDirectory: true)
     }
 
-    /// Returns the caches base URL of the FSKit extension container.
+    /// Returns the caches base URL for the **current process**.
     ///
-    /// The extension runs sandboxed under
-    /// `~/Library/Containers/com.zumix.jirafs.fskit/Data/Library/Caches/`.
-    /// Both the host app (unsandboxed) and the extension itself resolve to
-    /// the same physical path using this helper.
-    public static func extensionCachesBaseURL() -> URL {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library/Containers/com.zumix.jirafs.fskit/Data/Library/Caches",
-                                    isDirectory: true)
+    /// Use this in both the host app and FSKit extensions.
+    /// `FileManager.default.urls(for: .cachesDirectory)` resolves to the
+    /// process's own `Library/Caches` directory regardless of whether the
+    /// process is sandboxed (extension) or not (host app).
+    public static func processCachesBaseURL() -> URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Caches", isDirectory: true)
     }
 
-    /// Deletes all cached files for the given instance. Safe to call from the host app.
+    /// Deletes all cached files for the given instance.
+    ///
+    /// Safe to call from the host app. Constructs the path into the extension's
+    /// sandbox container using `NSHomeDirectory()`, which is the real user home
+    /// when called from the unsandboxed host app.
+    ///
     /// - Returns: Number of files deleted.
     @discardableResult
-    public static func clearCache(for instanceName: String) -> Int {
-        let baseCachesDir = extensionCachesBaseURL()
-        let dir = cacheDirectory(for: instanceName, baseCachesDir: baseCachesDir)
+    public static func clearCache(for instanceName: String, product: String = "jirafs",
+                                  containerBundleID: String = "com.zumix.jirafs.fskit") -> Int {
+        let baseCachesDir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Containers/\(containerBundleID)/Data/Library/Caches",
+                                    isDirectory: true)
+        let dir = cacheDirectory(for: instanceName, baseCachesDir: baseCachesDir, product: product)
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil) else { return 0 }
         var count = 0

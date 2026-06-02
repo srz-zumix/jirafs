@@ -30,7 +30,7 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             let client = JiraRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
                 ? CacheManager.cacheDirectory(for: instanceName,
-                                              baseCachesDir: CacheManager.extensionCachesBaseURL())
+                                              baseCachesDir: CacheManager.processCachesBaseURL())
                 : nil
             let cache = CacheManager(diskEnabled: diskCacheEnabled, cachesDir: cachesDir)
             if diskCacheEnabled {

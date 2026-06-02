@@ -523,3 +523,99 @@ umount ~/jirafs
 - Server 版の wiki markup → Markdown 変換の互換性 (見出し / リスト / リンク / 強調 / `{code}` / `{panel}` / `{quote}` のみ)
 - JIRA Cloud v3 の `/search/jql` エンドポイントを使用 (2024年以降推奨の API)
 - `searchIssues` (Server v2) は `GET /rest/api/2/search` を使用
+
+## Confluence 対応
+
+JIRA と同じ FSKit 基盤の上に、Confluence のページツリーをファイルシステムとして
+マウントする機能を提供する。JIRA 用拡張 (`jirafs-extension`) とは独立した別の
+App Extension (`confluencefs-extension`) として実装し、ホストアプリ (`jirafs`) が
+両方を埋め込む。
+
+### 共有フレームワーク構成
+
+Confluence 対応にあたり、認証・HTTP・キャッシュ・Keychain・ファイル名サニタイズ等の
+プロダクト非依存ロジックを `AtlassianCore` フレームワークに抽出した。
+
+| フレームワーク | 役割 | デプロイ |
+| --- | --- | --- |
+| `AtlassianCore` | 認証 (`AuthProvider` / `APITokenAuth` / `PATAuth`)、`HTTPTransport`、`RateLimiter`、`KeychainManager`、`CacheManager`、`FileNameSanitizer`、`ADFRenderer`、`AtlassianError` | 14.0 |
+| `ConfluenceAPI` | Confluence REST クライアント (`ConfluenceRESTClient`)、モデル、`ConfluenceEdition` | 14.0 |
+| `ConfluenceFSCore` | パス解決・キャッシュ連携・本文変換 (`ConfluencePathResolver` / `PageDataSource` / `PageFileBuilder` / `StorageFormatRenderer` / `ConfluenceConfiguration`) | 14.0 |
+| `confluencefs-extension` | FSKit App Extension (`ConfluenceFileSystem` / `ConfluenceVolume`) | 15.4 |
+
+### バンドル ID
+
+App Extension のバンドル ID は親アプリ (`com.zumix.jirafs`) の prefix が必須。
+
+- JIRA 拡張: `com.zumix.jirafs.fskit`
+- Confluence 拡張: `com.zumix.jirafs.confluencefs.fskit`
+
+### 認証 / エディション
+
+| エディション | API | 認証 |
+| --- | --- | --- |
+| Cloud | `/wiki/api/v2/` (カーソルページネーション) | API Token (email + token, Basic) |
+| Data Center | `/rest/api/` (start/limit ページネーション) | PAT (Bearer) |
+
+Keychain は JIRA と同じ共有アクセスグループ
+(`$(AppIdentifierPrefix)com.zumix.jirafs.shared`) を使用する。
+
+### ディレクトリ構造
+
+子ページは親ページのディレクトリ配下に再帰的にネストする。
+
+```
+/spaces/{SPACEKEY}/
+├── .space.json                    # スペースのメタデータ
+└── pages/
+    ├── {Page Title}.html          # htmlView:true のときのみ。フォルダの兄弟
+    └── {Page Title}/
+        ├── page.md                # # タイトル + 本文 (storage/ADF → Markdown)
+        ├── .metadata.json         # 構造化メタデータ
+        ├── .labels.txt            # ラベル一覧
+        ├── .comments/
+        │   └── NNN_author_date.md
+        ├── .attachments/
+        ├── {Child Page Title}.html
+        └── {Child Page Title}/    # 子ページ (再帰)
+            └── ...
+```
+
+ルート直下には `spaces/` のほか、`AGENTS.md` (エージェント向けガイド)、
+`.confluencefs/config.json`、`.metadata_never_index` を配置する。
+
+### 本文変換
+
+- Cloud storage 形式 (XHTML) → `StorageFormatRenderer` で Markdown 変換
+  (主要タグのみ対応、非対応は raw fallback マーカー付きで原文を保持)
+- Cloud `atlas_doc_format` (ADF) → `AtlassianCore.ADFRenderer` で Markdown 変換
+- `htmlView:true` の場合、各ページの兄弟として `{Title}.html` を生成
+  (storage は原 XHTML を、それ以外は Markdown を `<pre>` に埋め込む)
+
+### 設定ファイル
+
+Confluence 用設定は JIRA とは別の config.json に保存する。
+
+- パス: `~/Library/Containers/com.zumix.jirafs.confluencefs.fskit/Data/Library/Application Support/confluencefs/config.json`
+- スキーマ: `ConfluenceConfiguration` (`instances` の各要素は
+  `name` / `type` (cloud/dataCenter) / `url` / `auth` / `mountPath` /
+  `allowedSpaceKeys` / `diskCache` / `htmlView`)
+
+### マウント
+
+```bash
+# Cloud インスタンスをマウント (read-only)
+/sbin/mount -F -t confluencefs -o ro 'confluence://example.atlassian.net' ~/confluencefs/myinstance
+
+# アンマウント
+diskutil unmount force ~/confluencefs/myinstance
+```
+
+ホストアプリ (`jirafs`) の UI から JIRA / Confluence のインスタンスを
+それぞれ追加・編集・マウント・アンマウントできる。
+
+### 既知の制約 (Confluence)
+
+- read-only のみ (ページ編集は未対応)
+- storage 形式 → Markdown 変換は主要タグのみ対応 (非対応タグは raw fallback)
+- 大規模スペース (数千ページ) ではページツリーの遅延読み込みに依存

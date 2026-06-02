@@ -1,4 +1,5 @@
 import XCTest
+import AtlassianCore
 @testable import JiraFSCore
 
 final class FileNameSanitizerTests: XCTestCase {

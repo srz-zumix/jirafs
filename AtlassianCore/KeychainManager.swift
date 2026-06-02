@@ -4,7 +4,7 @@ import os
 
 private let keychainLogger = Logger(subsystem: "com.zumix.jirafs", category: "keychain")
 
-/// Wraps Keychain access for jirafs credentials.
+/// Wraps Keychain access for jirafs / confluencefs credentials.
 ///
 /// Items live in the shared Keychain Access Group so the host app and the
 /// FSKit extension can both read them.
@@ -40,7 +40,7 @@ public struct KeychainManager: Sendable {
     ) throws {
         let service = service(forInstance: instanceName)
         guard let data = password.data(using: .utf8) else {
-            throw JiraAPIError.missingCredentials
+            throw AtlassianError.missingCredentials
         }
 
         let query: [String: Any] = [
@@ -62,10 +62,10 @@ public struct KeychainManager: Sendable {
             insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
             let addStatus = SecItemAdd(insert as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
-                throw JiraAPIError.transport("Keychain add failed: \(addStatus)")
+                throw AtlassianError.transport("Keychain add failed: \(addStatus)")
             }
         } else if updateStatus != errSecSuccess {
-            throw JiraAPIError.transport("Keychain update failed: \(updateStatus)")
+            throw AtlassianError.transport("Keychain update failed: \(updateStatus)")
         }
     }
 
@@ -88,13 +88,13 @@ public struct KeychainManager: Sendable {
         guard status == errSecSuccess else {
             if status == errSecItemNotFound {
                 keychainLogger.error("Keychain item not found: service=\(service, privacy: .public) account=\(account, privacy: .private)")
-                throw JiraAPIError.missingCredentials
+                throw AtlassianError.missingCredentials
             }
             keychainLogger.error("Keychain read failed: \(status, privacy: .public)")
-            throw JiraAPIError.transport("Keychain read failed: \(status)")
+            throw AtlassianError.transport("Keychain read failed: \(status)")
         }
         guard let data = item as? Data, let string = String(data: data, encoding: .utf8) else {
-            throw JiraAPIError.missingCredentials
+            throw AtlassianError.missingCredentials
         }
         return string
     }
@@ -110,7 +110,7 @@ public struct KeychainManager: Sendable {
         ]
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
-            throw JiraAPIError.transport("Keychain delete failed: \(status)")
+            throw AtlassianError.transport("Keychain delete failed: \(status)")
         }
     }
 }

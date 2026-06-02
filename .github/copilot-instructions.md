@@ -50,6 +50,7 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装。
 - ホスト/拡張は `MACOSX_DEPLOYMENT_TARGET=15.4`、`JiraAPI` / `JiraFSCore` / Tests は `14.0` を維持
 - Swift 6 strict concurrency 準拠。FSKit reply handler を `Task` でキャプチャするときは `SendableBox(reply)` でラップ
 - `actor` 内の `while` ループで mutable var をクロージャに渡す前に `let` で不変コピーを取る
+- `*/Info.plist` の `CFBundleShortVersionString` / `CFBundleVersion` は `.github/workflows/release-drafter.yml` が自動更新するため、Agent は変更しないこと
 
 ### CI / GitHub Actions
 

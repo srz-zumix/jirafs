@@ -30,33 +30,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     func applicationWillTerminate(_ notification: Notification) {
         let config = AppConfig.load()
+        let confluenceConfig = AppConfig.loadConfluence()
         let fm = FileManager.default
         let mountedURLs = (fm.mountedVolumeURLs(
             includingResourceValuesForKeys: nil, options: []) ?? [])
             .map { $0.standardized }
 
-        for entry in config.instances {
-            let targetURL = URL(fileURLWithPath: entry.effectiveMountPath,
+        let mountPoints: [(name: String, path: String)] =
+            config.instances.map { ($0.name, $0.effectiveMountPath) }
+            + confluenceConfig.instances.map { ($0.name, $0.effectiveMountPath) }
+
+        for instance in mountPoints {
+            let targetURL = URL(fileURLWithPath: instance.path,
                                 isDirectory: true).standardized
             guard mountedURLs.contains(targetURL) else { continue }
             // Try non-privileged NSWorkspace unmount first.
             do {
                 try NSWorkspace.shared.unmountAndEjectDevice(at: targetURL)
-                logger.info("Unmounted \(entry.name, privacy: .public) via NSWorkspace")
+                logger.info("Unmounted \(instance.name, privacy: .public) via NSWorkspace")
             } catch {
                 // Fallback: synchronous diskutil without sudo.
                 // FSKit volumes are user-owned (fskitd runs as the user), so this
                 // should succeed without requiring root privileges.
-                logger.warning("NSWorkspace unmount failed for \(entry.name, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying via diskutil")
+                logger.warning("NSWorkspace unmount failed for \(instance.name, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying via diskutil")
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-                proc.arguments = ["unmount", "force", entry.effectiveMountPath]
+                proc.arguments = ["unmount", "force", instance.path]
                 try? proc.run()
                 proc.waitUntilExit()
                 if proc.terminationStatus == 0 {
-                    logger.info("Unmounted \(entry.name, privacy: .public) via diskutil")
+                    logger.info("Unmounted \(instance.name, privacy: .public) via diskutil")
                 } else {
-                    logger.error("diskutil unmount failed for \(entry.name, privacy: .public) (exit \(proc.terminationStatus))")
+                    logger.error("diskutil unmount failed for \(instance.name, privacy: .public) (exit \(proc.terminationStatus))")
                 }
             }
         }
@@ -80,19 +85,23 @@ private struct MenuBarMenuContent: View {
     var body: some View {
         // Per-instance status rows
         let config = AppConfig.load()
-        if config.instances.isEmpty {
+        let confluenceConfig = AppConfig.loadConfluence()
+        let rows: [(name: String, isConfluence: Bool)] =
+            config.instances.map { ($0.name, false) }
+            + confluenceConfig.instances.map { ($0.name, true) }
+        if rows.isEmpty {
             Text("No instances configured")
                 .foregroundStyle(.secondary)
         } else {
-            ForEach(config.instances) { entry in
-                let mounted = monitor.mountedStates[entry.name] ?? false
+            ForEach(rows, id: \.name) { row in
+                let mounted = monitor.mountedStates[(row.isConfluence ? "confluence" : "jira") + ":\(row.name)"] ?? false
                 HStack {
                     Image(systemName: mounted
                           ? "externaldrive.fill.badge.checkmark"
                           : "externaldrive.badge.xmark")
                         .foregroundStyle(mounted ? .green : .secondary)
                         .imageScale(.small)
-                    Text(entry.name)
+                    Text(row.name)
                     Spacer()
                     Text(mounted ? "Mounted" : "Not mounted")
                         .foregroundStyle(mounted ? .green : .secondary)

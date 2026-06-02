@@ -1,21 +1,25 @@
 import SwiftUI
-import JiraAPI
-import JiraFSCore
+import AtlassianCore
+import ConfluenceAPI
+import ConfluenceFSCore
 
-struct InstanceEditorView: View {
+/// Editor for a Confluence instance, mirroring `InstanceEditorView` but driven
+/// by `ConfluenceConfiguration` (spaces instead of projects, `confluence://`
+/// scheme, Cloud / Data Center editions).
+struct ConfluenceInstanceEditorView: View {
     @State private var name: String
     @State private var urlString: String
-    @State private var edition: JiraEdition
-    @State private var method: Configuration.AuthEntry.Method
+    @State private var edition: ConfluenceEdition
+    @State private var method: ConfluenceConfiguration.AuthEntry.Method
     @State private var email: String
     @State private var token: String
     @State private var mountPath: String
     @State private var diskCache: Bool
     @State private var htmlView: Bool
-    /// Comma-separated project keys to allow. Empty string = all projects.
-    @State private var projectFilter: String
+    @State private var includeArchived: Bool
+    /// Comma-separated space keys to allow. Empty string = all spaces.
+    @State private var spaceFilter: String
 
-    // MARK: Verify state
     private enum VerifyState: Equatable {
         case idle
         case running
@@ -25,17 +29,15 @@ struct InstanceEditorView: View {
     @State private var verifyState: VerifyState = .idle
 
     private let originalName: String?
-    /// Stored to detect when the Keychain account key changes (method or email
-    /// changed ⇒ existing credential can no longer be found).
-    private let originalMethod: Configuration.AuthEntry.Method?
+    private let originalMethod: ConfluenceConfiguration.AuthEntry.Method?
     private let originalEmail: String?
     @EnvironmentObject private var monitor: MountStatusMonitor
-    let onSave: (Configuration.InstanceEntry) -> Void
+    let onSave: (ConfluenceConfiguration.InstanceEntry) -> Void
     let onCancel: () -> Void
 
     init(
-        initial: Configuration.InstanceEntry?,
-        onSave: @escaping (Configuration.InstanceEntry) -> Void,
+        initial: ConfluenceConfiguration.InstanceEntry?,
+        onSave: @escaping (ConfluenceConfiguration.InstanceEntry) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.originalName = initial?.name
@@ -50,24 +52,23 @@ struct InstanceEditorView: View {
         _mountPath = State(initialValue: initial?.mountPath ?? "")
         _diskCache = State(initialValue: initial?.diskCache ?? true)
         _htmlView  = State(initialValue: initial?.htmlView ?? false)
-        let keys = initial?.allowedProjectKeys ?? []
-        _projectFilter = State(initialValue: keys.joined(separator: ", "))
+        _includeArchived = State(initialValue: initial?.includeArchived ?? false)
+        let keys = initial?.allowedSpaceKeys ?? []
+        _spaceFilter = State(initialValue: keys.joined(separator: ", "))
         self.onSave = onSave
         self.onCancel = onCancel
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(originalName == nil ? "New Instance" : "Edit Instance")
+            Text(originalName == nil ? "New Confluence Instance" : "Edit Confluence Instance")
                 .font(.title2.bold())
                 .padding([.horizontal, .top])
                 .padding(.bottom, 12)
 
             Divider()
 
-            // Warning banner: shown when the instance is already mounted.
-            // Changes to connection, auth, or mount options require remounting.
-            if let instName = originalName, monitor.mountedStates["jira:\(instName)"] == true {
+            if let instName = originalName, monitor.mountedStates["confluence:\(instName)"] == true {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -86,12 +87,12 @@ struct InstanceEditorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     formSection("Connection") {
-                        fieldRow("Name")        { TextField("My JIRA", text: $name) }
+                        fieldRow("Name")        { TextField("My Confluence", text: $name) }
                         fieldRow("URL")         { TextField("https://example.atlassian.net", text: $urlString) }
                         fieldRow("Edition") {
                             Picker("", selection: $edition) {
-                                Text("Cloud").tag(JiraEdition.cloud)
-                                Text("Server").tag(JiraEdition.server)
+                                Text("Cloud").tag(ConfluenceEdition.cloud)
+                                Text("Data Center").tag(ConfluenceEdition.dataCenter)
                             }
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,8 +102,8 @@ struct InstanceEditorView: View {
                     formSection("Authentication") {
                         fieldRow("Method") {
                             Picker("", selection: $method) {
-                                Text("API Token").tag(Configuration.AuthEntry.Method.apiToken)
-                                Text("PAT").tag(Configuration.AuthEntry.Method.pat)
+                                Text("API Token").tag(ConfluenceConfiguration.AuthEntry.Method.apiToken)
+                                Text("PAT").tag(ConfluenceConfiguration.AuthEntry.Method.pat)
                             }
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,7 +124,7 @@ struct InstanceEditorView: View {
                     formSection("Mount") {
                         fieldRow("Path") {
                             TextField(
-                                "~/jirafs/\(name.isEmpty ? "<name>" : name)",
+                                "~/confluencefs/\(name.isEmpty ? "<name>" : name)",
                                 text: $mountPath
                             )
                             .help("Directory where the volume will be mounted. Tilde (~) is supported.")
@@ -133,28 +134,35 @@ struct InstanceEditorView: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .help("Persist cached JIRA data to disk (AES-GCM encrypted). Survives fskitd restarts.")
+                                .help("Persist cached Confluence data to disk (AES-GCM encrypted). Survives fskitd restarts.")
                         }
                         fieldRow("HTML View") {
                             Toggle("", isOn: $htmlView)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .help("Add issue.html to each issue directory — a formatted view with all fields, comments, and attachments.")
+                                .help("Add a sibling {Title}.html file next to each page directory — a formatted view of the page body.")
+                        }
+                        fieldRow("Archived Pages") {
+                            Toggle("", isOn: $includeArchived)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .help("Include archived pages in directory listings. Off by default.")
                         }
                     }
 
-                    formSection("Projects") {
+                    formSection("Spaces") {
                         fieldRow("Filter") {
-                            TextField("ALL (e.g. PROJ, ALPHA)", text: $projectFilter)
-                            .help("Comma-separated project keys to expose. Leave blank to show all projects.")
+                            TextField("ALL (e.g. DEV, DOCS)", text: $spaceFilter)
+                            .help("Comma-separated space keys to expose. Leave blank to show all spaces.")
                         }
                         .overlay(alignment: .bottom) { Color.clear }
                         HStack(spacing: 4) {
                             Image(systemName: "info.circle")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text("Leave blank to show all projects. Keys are case-insensitive.")
+                            Text("Leave blank to show all spaces. Keys are case-insensitive.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -168,7 +176,6 @@ struct InstanceEditorView: View {
 
             Divider()
 
-            // Verify result banner
             if verifyState != .idle {
                 HStack(spacing: 6) {
                     switch verifyState {
@@ -247,9 +254,6 @@ struct InstanceEditorView: View {
         }
     }
 
-    /// True when any Keychain key field (instance name, auth method, or email)
-    /// has changed from its saved value, meaning the existing Keychain entry
-    /// cannot be reused and a new token must be entered.
     private var keychainKeyChanged: Bool {
         guard originalName != nil,
               let origMethod = originalMethod else { return false }
@@ -268,7 +272,6 @@ struct InstanceEditorView: View {
             && (!token.isEmpty || (originalName != nil && !keychainKeyChanged))
     }
 
-    /// Verify is possible when URL is set and a token is available (entered or stored).
     private var canVerify: Bool {
         URL(string: urlString) != nil
             && (!token.isEmpty || (originalName != nil && !keychainKeyChanged))
@@ -280,7 +283,6 @@ struct InstanceEditorView: View {
         verifyState = .running
 
         do {
-            // Resolve token: use form field first, fall back to Keychain.
             let resolvedToken: String
             if !token.isEmpty {
                 resolvedToken = token
@@ -288,39 +290,33 @@ struct InstanceEditorView: View {
                 let account = method == .apiToken ? (email.isEmpty ? "api_token" : email) : "pat"
                 resolvedToken = try KeychainManager().password(instanceName: instName, account: account)
             } else {
-                throw JiraAPIError.missingCredentials
+                throw AtlassianError.missingCredentials
             }
 
-            let cfg = JiraInstanceConfig(name: name.isEmpty ? "verify" : name,
-                                         baseURL: url, edition: edition)
+            let cfg = ConfluenceInstanceConfig(name: name.isEmpty ? "verify" : name,
+                                               baseURL: url, edition: edition)
             let auth: AuthProvider = method == .apiToken
                 ? APITokenAuth(email: email, token: resolvedToken)
                 : PATAuth(token: resolvedToken)
-            let client = JiraRESTClient(config: cfg, auth: auth)
+            let client = ConfluenceRESTClient(config: cfg, auth: auth)
 
-            // Verify: server reachability + auth
-            try await client.serverInfo()
+            let spaces = try await client.listSpaces(cursor: nil, limit: 250).items
+            let spaceKeys = Set(spaces.map { $0.key.uppercased() })
 
-            // Count accessible projects
-            let projects = try await client.listProjects()
-            let projectKeys = Set(projects.map { $0.key.uppercased() })
-
-            // Check project filter
-            let filterKeys = projectFilter
+            let filterKeys = spaceFilter
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
                 .filter { !$0.isEmpty }
 
             if filterKeys.isEmpty {
-                // No filter: show total count
-                let count = projects.count
-                verifyState = .success("Connected · \(count) project\(count == 1 ? "" : "s") accessible")
+                let count = spaces.count
+                verifyState = .success("Connected · \(count) space\(count == 1 ? "" : "s") accessible")
             } else {
-                let notFound = filterKeys.filter { !projectKeys.contains($0) }
+                let notFound = filterKeys.filter { !spaceKeys.contains($0) }
                 if notFound.isEmpty {
-                    verifyState = .success("Connected · \(filterKeys.count) project\(filterKeys.count == 1 ? "" : "s") verified (\(filterKeys.joined(separator: ", ")))")
+                    verifyState = .success("Connected · \(filterKeys.count) space\(filterKeys.count == 1 ? "" : "s") verified (\(filterKeys.joined(separator: ", ")))")
                 } else {
-                    verifyState = .failure("Project\(notFound.count == 1 ? "" : "s") not found: \(notFound.joined(separator: ", "))")
+                    verifyState = .failure("Space\(notFound.count == 1 ? "" : "s") not found: \(notFound.joined(separator: ", "))")
                 }
             }
         } catch {
@@ -329,7 +325,7 @@ struct InstanceEditorView: View {
     }
 
     private func errorMessage(for error: Error) -> String {
-        switch error as? JiraAPIError {
+        switch error as? AtlassianError {
         case .unauthorized:
             return "Authentication failed — check credentials"
         case .forbidden:
@@ -363,18 +359,19 @@ struct InstanceEditorView: View {
                 return
             }
         }
-        let auth = Configuration.AuthEntry(method: method, email: method == .apiToken ? email : nil)
+        let auth = ConfluenceConfiguration.AuthEntry(method: method, email: method == .apiToken ? email : nil)
         var _seen = Set<String>()
-        let parsedKeys = projectFilter
+        let parsedKeys = spaceFilter
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
             .filter { !$0.isEmpty && _seen.insert($0).inserted }
-        let entry = Configuration.InstanceEntry(
+        let entry = ConfluenceConfiguration.InstanceEntry(
             name: name, type: edition, url: url, auth: auth,
             mountPath: mountPath.isEmpty ? nil : mountPath,
-            allowedProjectKeys: parsedKeys.isEmpty ? nil : parsedKeys,
+            allowedSpaceKeys: parsedKeys.isEmpty ? nil : parsedKeys,
             diskCache: diskCache,
-            htmlView: htmlView
+            htmlView: htmlView,
+            includeArchived: includeArchived
         )
         onSave(entry)
     }

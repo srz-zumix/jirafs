@@ -1,6 +1,6 @@
 import Foundation
 
-/// JIRA Server / Data Center Personal Access Token (Bearer).
+/// Atlassian Server / Data Center Personal Access Token (Bearer).
 public struct PATAuth: AuthProvider {
     public let token: String
 
