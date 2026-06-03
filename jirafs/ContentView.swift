@@ -85,6 +85,7 @@ final class InstanceListModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var model = InstanceListModel()
+    @EnvironmentObject private var navigation: NavigationModel
     @State private var showingAddJira = false
     @State private var showingAddConfluence = false
     @State private var editingJira: Configuration.InstanceEntry?
@@ -181,6 +182,11 @@ struct ContentView: View {
             CacheSettingsView(ttl: $model.configuration.cache) {
                 model.saveJira()
             }
+        }
+        .onReceive(navigation.$pendingSelection) { id in
+            guard let id else { return }
+            model.selection = id
+            navigation.pendingSelection = nil
         }
     }
 
