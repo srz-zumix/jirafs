@@ -16,7 +16,7 @@ struct JiraFSApp: App {
         MenuBarExtra {
             MenuBarMenuContent(monitor: monitor)
         } label: {
-            MenuBarLabel()
+            MenuBarLabel(monitor: monitor)
         }
     }
 }
@@ -87,8 +87,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 // MARK: - Menu bar icon + label
 
 private struct MenuBarLabel: View {
+    @ObservedObject var monitor: MountStatusMonitor
+
     var body: some View {
-        Image("MenuBarIcon")
+        HStack(spacing: 3) {
+            Image("MenuBarIcon")
+                .renderingMode(.template)
+            if monitor.mountedCount > 0 {
+                Text("\(monitor.mountedCount)")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+            }
+        }
     }
 }
 
@@ -99,29 +108,24 @@ private struct MenuBarMenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        // Per-instance status rows
+        // マウント済みインスタンスのみ表示
         let config = AppConfig.load()
         let confluenceConfig = AppConfig.loadConfluence()
-        let rows: [(name: String, isConfluence: Bool)] =
-            config.instances.map { ($0.name, false) }
-            + confluenceConfig.instances.map { ($0.name, true) }
-        if rows.isEmpty {
-            Text("No instances configured")
+        let allRows: [(id: String, name: String)] =
+            config.instances.map { ("jira:\($0.name)", $0.name) }
+            + confluenceConfig.instances.map { ("confluence:\($0.name)", $0.name) }
+        let mountedRows = allRows.filter { monitor.mountedStates[$0.id] == true }
+
+        if mountedRows.isEmpty {
+            Text("No instances mounted")
                 .foregroundStyle(.secondary)
         } else {
-            ForEach(rows, id: \.name) { row in
-                let mounted = monitor.mountedStates[(row.isConfluence ? "confluence" : "jira") + ":\(row.name)"] ?? false
-                HStack {
-                    Image(systemName: mounted
-                          ? "externaldrive.fill.badge.checkmark"
-                          : "externaldrive.badge.xmark")
-                        .foregroundStyle(mounted ? .green : .secondary)
-                        .imageScale(.small)
-                    Text(row.name)
-                    Spacer()
-                    Text(mounted ? "Mounted" : "Not mounted")
-                        .foregroundStyle(mounted ? .green : .secondary)
-                        .font(.caption)
+            ForEach(mountedRows, id: \.id) { row in
+                Button {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                } label: {
+                    Label(row.name, systemImage: "externaldrive.fill.badge.checkmark")
                 }
             }
         }
