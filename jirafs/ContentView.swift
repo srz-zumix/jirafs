@@ -188,13 +188,14 @@ struct ContentView: View {
     private func instanceRow(name: String, host: String, systemImage: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
+                .foregroundStyle(Color.accentColor)
+            Text(name)
+                .font(.body)
+            Text(host)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading) {
-                Text(name).font(.headline)
-                Text(host)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
