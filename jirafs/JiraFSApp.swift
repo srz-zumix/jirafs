@@ -5,26 +5,39 @@ import os
 struct JiraFSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var monitor = MountStatusMonitor()
+    @StateObject private var navigation = NavigationModel()
 
     var body: some Scene {
-        WindowGroup("jirafs", id: "main") {
+        Window("jirafs", id: "main") {
             ContentView()
                 .frame(minWidth: 640, minHeight: 480)
                 .environmentObject(monitor)
+                .environmentObject(navigation)
         }
+        .defaultSize(width: 800, height: 600)
 
         MenuBarExtra {
-            MenuBarMenuContent(monitor: monitor)
+            MenuBarMenuContent(monitor: monitor, navigation: navigation)
         } label: {
             MenuBarLabel(monitor: monitor)
         }
     }
 }
 
+// MARK: - Navigation state
+
+/// Shared navigation intent passed from the menu bar to ContentView.
+@MainActor
+final class NavigationModel: ObservableObject {
+    /// Instance ID ("jira:NAME" / "confluence:NAME") to select on next window open.
+    @Published var pendingSelection: String?
+}
+
 // MARK: - App lifecycle
 
 /// Unmounts all jirafs volumes when the app quits so fskitd is left in a
 /// clean state and the next launch can mount without hitting extensionKit error 2.
+/// Single-instance enforcement is handled via LSMultipleInstancesProhibited in Info.plist.
 final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.zumix.jirafs", category: "AppDelegate")
 
@@ -89,6 +102,7 @@ private struct MenuBarLabel: View {
 
 private struct MenuBarMenuContent: View {
     @ObservedObject var monitor: MountStatusMonitor
+    @ObservedObject var navigation: NavigationModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -106,6 +120,7 @@ private struct MenuBarMenuContent: View {
         } else {
             ForEach(mountedRows, id: \.id) { row in
                 Button {
+                    navigation.pendingSelection = row.id
                     openWindow(id: "main")
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 } label: {
