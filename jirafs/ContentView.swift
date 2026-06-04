@@ -142,7 +142,7 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Instances")
-            .frame(minWidth: 220)
+            .frame(minWidth: 250)
         } detail: {
             detailView
         }
