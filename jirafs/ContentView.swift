@@ -57,6 +57,7 @@ final class InstanceListModel: ObservableObject {
 
     func removeJira(name: String) {
         configuration.instances.removeAll { $0.name == name }
+        try? KeychainManager().deleteCacheKey(instanceName: name, product: "jirafs")
         saveJira()
     }
 
@@ -85,6 +86,7 @@ final class InstanceListModel: ObservableObject {
 
     func removeConfluence(name: String) {
         confluenceConfiguration.instances.removeAll { $0.name == name }
+        try? KeychainManager().deleteCacheKey(instanceName: name, product: "confluencefs")
         saveConfluence()
     }
 }

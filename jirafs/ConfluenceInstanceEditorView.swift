@@ -373,6 +373,13 @@ struct ConfluenceInstanceEditorView: View {
             htmlView: htmlView,
             includeArchived: includeArchived
         )
+        if diskCache && !name.isEmpty {
+            do {
+                _ = try KeychainManager().loadOrCreateCacheKey(instanceName: name, product: "confluencefs")
+            } catch {
+                print("Cache key provisioning failed: \(error)")
+            }
+        }
         onSave(entry)
     }
 }

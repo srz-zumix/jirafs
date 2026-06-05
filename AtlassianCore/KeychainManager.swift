@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 import os
 
 private let keychainLogger = Logger(subsystem: "com.zumix.jirafs", category: "keychain")
@@ -111,6 +112,107 @@ public struct KeychainManager: Sendable {
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw AtlassianError.transport("Keychain delete failed: \(status)")
+        }
+    }
+
+    // MARK: - Disk-cache encryption key
+    //
+    // The disk cache's master encryption key is stored in the shared
+    // data-protection Keychain (same access group as credentials), NOT as a
+    // plaintext file next to the encrypted cache. Both the host app and the
+    // FSKit extension can read/create it because they share the access group.
+    // The item is `kSecAttrAccessibleAfterFirstUnlock` so the extension can use
+    // it without any user-presence prompt.
+
+    private static let cacheKeyAccount = "cache_encryption_key"
+
+    /// Keychain service name for an instance's cache key. The instance name is
+    /// hashed so that names containing `.`, case differences, or other
+    /// characters cannot collide or break the service string, and the product
+    /// is folded in so jirafs / confluencefs instances of the same name get
+    /// distinct keys even though they share one access group.
+    private static func cacheKeyService(product: String, instanceName: String) -> String {
+        let digest = SHA256.hash(data: Data("\(product)|\(instanceName)".utf8))
+        let suffix = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return "\(servicePrefix).cachekey.\(suffix)"
+    }
+
+    /// Loads the per-instance disk-cache master key from the shared Keychain,
+    /// creating and storing a new random 256-bit key only when none exists.
+    ///
+    /// A new key is generated **exclusively** on `errSecItemNotFound`. Any other
+    /// Keychain error is thrown rather than treated as "absent", so a transient
+    /// read failure can never silently rotate the key and invalidate existing
+    /// cache files.
+    public func loadOrCreateCacheKey(instanceName: String, product: String) throws -> SymmetricKey {
+        let service = Self.cacheKeyService(product: product, instanceName: instanceName)
+        if let data = try readCacheKeyData(service: service) {
+            return SymmetricKey(data: data)
+        }
+        let key = SymmetricKey(size: .bits256)
+        let keyData = key.withUnsafeBytes { Data($0) }
+        let insert: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.cacheKeyAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecValueData as String: keyData,
+        ]
+        let status = SecItemAdd(insert as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            // Another process (host app / extension) created it concurrently.
+            guard let data = try readCacheKeyData(service: service) else {
+                throw AtlassianError.transport("Keychain cache-key vanished after duplicate")
+            }
+            return SymmetricKey(data: data)
+        }
+        guard status == errSecSuccess else {
+            throw AtlassianError.transport("Keychain cache-key add failed: \(status)")
+        }
+        return key
+    }
+
+    /// Returns the stored 32-byte key, `nil` only on `errSecItemNotFound`.
+    /// Throws on any other Keychain error so callers never misread a failure as
+    /// "no key" and regenerate.
+    private func readCacheKeyData(service: String) throws -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.cacheKeyAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else {
+            throw AtlassianError.transport("Keychain cache-key read failed: \(status)")
+        }
+        guard let data = item as? Data, data.count == 32 else {
+            throw AtlassianError.transport("Keychain cache-key has unexpected size")
+        }
+        return data
+    }
+
+    /// Deletes the stored cache key for an instance (used when the instance is
+    /// removed). Clearing cache *files* alone does not delete the key.
+    public func deleteCacheKey(instanceName: String, product: String) throws {
+        let service = Self.cacheKeyService(product: product, instanceName: instanceName)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.cacheKeyAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            throw AtlassianError.transport("Keychain cache-key delete failed: \(status)")
         }
     }
 }

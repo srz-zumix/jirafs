@@ -376,6 +376,13 @@ struct InstanceEditorView: View {
             diskCache: diskCache,
             htmlView: htmlView
         )
+        if diskCache && !name.isEmpty {
+            do {
+                _ = try KeychainManager().loadOrCreateCacheKey(instanceName: name, product: "jirafs")
+            } catch {
+                print("Cache key provisioning failed: \(error)")
+            }
+        }
         onSave(entry)
     }
 }
