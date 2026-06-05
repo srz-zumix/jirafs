@@ -93,7 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         guard !targets.isEmpty else { return }
 
         for target in targets {
-            try? fm.createDirectory(atPath: target.path, withIntermediateDirectories: true)
+            do {
+                try fm.createDirectory(atPath: target.path, withIntermediateDirectories: true)
+            } catch {
+                logger.error("Auto-mount skipped for '\(target.name, privacy: .public)': cannot create mount directory '\(target.path, privacy: .public)': \(error.localizedDescription, privacy: .public)")
+                continue
+            }
             let cmd = target.cmd
             let name = target.name
             // FSKit volumes are managed by fskitd (a user-space daemon). Attempt
