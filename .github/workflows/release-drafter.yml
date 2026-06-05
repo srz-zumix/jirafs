@@ -47,9 +47,7 @@ jobs:
         run: |
           VERSION="${TAG#v}"
 
-          for p in jirafs/Info.plist jirafs-extension/Info.plist confluencefs-extension/Info.plist; do
-            sed -i "/<key>CFBundleShortVersionString<\/key>/{n; s|<string>.*</string>|<string>${VERSION}</string>|}" "$p"
-          done
+          sed -i "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"${VERSION}\"/" project.yml
 
           if git diff --quiet; then
             echo "No changes"
@@ -66,9 +64,7 @@ jobs:
           branch: ${{ env.BRANCH }}
           force_push: true
           files: |
-            jirafs/Info.plist
-            jirafs-extension/Info.plist
-            confluencefs-extension/Info.plist
+            project.yml
 
       - name: Create pull request
         if: steps.update-version.outputs.diff == '1'
