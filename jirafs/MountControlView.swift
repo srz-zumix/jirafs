@@ -173,18 +173,6 @@ struct MountControlView: View {
                     .disabled(!isMounted)
                 }
                 .buttonStyle(.bordered)
-
-                // System Settings shortcut
-                Button {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: {
-                    Label("Open Extension Settings", systemImage: "gear")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
             }
             .padding(.vertical, 2)
         } label: {
@@ -239,6 +227,22 @@ struct MountControlView: View {
         }
         let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
         let mountCmd = "/sbin/mount -F -t \(descriptor.fsType) -o ro '\(descriptor.scheme)://\(host)' '\(escapedPath)'"
+
+        // Try without privilege escalation first (no password dialog).
+        let succeededNonPrivileged = await Task.detached(priority: .userInitiated) {
+            runCommandAsCurrentUser(mountCmd)
+        }.value
+
+        if succeededNonPrivileged {
+            try? await Task.sleep(for: .seconds(1))
+            monitor.refresh()
+            if !isMounted {
+                errorMessage = "Mount command completed but volume is not visible. Check fskitd and pluginkit registration."
+            }
+            return
+        }
+
+        // Non-privileged mount failed; fall back to privileged execution.
         do {
             try await runPrivileged(mountCmd)
             // Wait briefly for the kernel to register the volume before checking.
@@ -317,111 +321,7 @@ struct MountControlView: View {
     private func runPrivileged(_ command: String) async throws {
         // Authorization Services blocks the calling thread; run off main.
         try await Task.detached(priority: .userInitiated) {
-            try MountControlView.executeWithAuthorization(command)
+            try runPrivilegedCommand(command)
         }.value
-    }
-
-    /// Executes `command` as root via `AuthorizationExecuteWithPrivileges`.
-    /// Marked `nonisolated` so it can be called from a detached task.
-    nonisolated private static func executeWithAuthorization(_ command: String) throws {
-        // 1. Create auth ref
-        var authRef: AuthorizationRef?
-        let createStatus = AuthorizationCreate(nil, nil, AuthorizationFlags(), &authRef)
-        guard createStatus == errAuthorizationSuccess, let authRef else {
-            throw MountError.scriptFailed("Authorization init failed (code \(createStatus))")
-        }
-        defer { AuthorizationFree(authRef, AuthorizationFlags()) }
-
-        // 2. Request system.privilege.admin with a single interactive prompt.
-        //    Authorization Services shows Touch ID (if "Use Touch ID for
-        //    administrator actions" is enabled in System Settings) or password.
-        var copyStatus: OSStatus = errAuthorizationInternal
-        kAuthorizationRightExecute.withCString { namePtr in
-            var item = AuthorizationItem(name: namePtr, valueLength: 0, value: nil, flags: 0)
-            withUnsafeMutablePointer(to: &item) { itemPtr in
-                var rights = AuthorizationRights(count: 1, items: itemPtr)
-                copyStatus = AuthorizationCopyRights(
-                    authRef, &rights, nil,
-                    [.interactionAllowed, .preAuthorize, .extendRights], nil)
-            }
-        }
-        switch copyStatus {
-        case errAuthorizationSuccess:  break
-        case errAuthorizationCanceled: throw MountError.cancelled
-        default: throw MountError.scriptFailed("Authorization denied (code \(copyStatus))")
-        }
-
-        // 3. AuthorizationExecuteWithPrivileges is deprecated since macOS 10.7 and
-        //    marked unavailable in Swift. Call it via dlsym to bypass that check;
-        //    the symbol remains present in Security.framework on macOS 15.
-        //    (A privileged helper via SMAppService would be the long-term solution.)
-        typealias AuthExecFn = @convention(c) (
-            OpaquePointer,
-            UnsafePointer<CChar>,
-            UInt32,
-            UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
-            UnsafeMutablePointer<UnsafeMutablePointer<FILE>?>?
-        ) -> OSStatus
-        guard let sym = dlsym(dlopen(nil, RTLD_LAZY), "AuthorizationExecuteWithPrivileges") else {
-            throw MountError.scriptFailed("AuthorizationExecuteWithPrivileges not found in Security.framework")
-        }
-        let authExec = unsafeBitCast(sym, to: AuthExecFn.self)
-
-        // 4. Build argv: redirect stderr → stdout and emit exit-code marker.
-        let wrapped = "\(command) 2>&1; printf '__EXIT__:%d\\n' $?"
-        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("-c"), strdup(wrapped), nil]
-        defer { argv.dropLast().forEach { free($0) } }
-
-        var commPipe: UnsafeMutablePointer<FILE>?
-        typealias CStrOptPtr = UnsafeMutablePointer<CChar>?
-        let execStatus = argv.withUnsafeMutableBytes { rawBuf in
-            authExec(
-                authRef,
-                "/bin/sh",
-                0,
-                rawBuf.baseAddress?.assumingMemoryBound(to: CStrOptPtr.self),
-                &commPipe)
-        }
-        guard execStatus == errAuthorizationSuccess else {
-            throw MountError.scriptFailed("Failed to start privileged process (code \(execStatus))")
-        }
-
-        // 5. Drain stdout (stderr is merged).
-        var lines: [String] = []
-        if let pipe = commPipe {
-            var buf = [CChar](repeating: 0, count: 512)
-            while fgets(&buf, 512, pipe) != nil {
-                // fgets writes a NUL-terminated C string; decode only up to NUL.
-                let bytes = buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-                lines.append(String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .newlines))
-            }
-            fclose(pipe)
-        }
-
-        // 6. Parse exit code from marker; remaining lines are potential error output.
-        var exitCode = 0
-        var outputLines: [String] = []
-        for line in lines {
-            if line.hasPrefix("__EXIT__:"), let code = Int(line.dropFirst("__EXIT__:".count)) {
-                exitCode = code
-            } else {
-                outputLines.append(line)
-            }
-        }
-        if exitCode != 0 {
-            let msg = outputLines.filter { !$0.isEmpty }.joined(separator: "\n")
-            throw MountError.scriptFailed(msg.isEmpty ? "Command failed (exit \(exitCode))" : msg)
-        }
-    }
-}
-
-private enum MountError: LocalizedError {
-    case scriptFailed(String)
-    case cancelled
-    var errorDescription: String? {
-        switch self {
-        case .scriptFailed(let msg): return msg
-        case .cancelled: return nil
-        }
     }
 }

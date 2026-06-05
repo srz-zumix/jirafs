@@ -38,6 +38,9 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// When `true`, each issue directory contains an `issue.html` file with
         /// a formatted view of all issue data. Defaults to `false`.
         public var htmlView: Bool
+        /// When `true`, this instance is automatically mounted when the app launches.
+        /// Defaults to `false`.
+        public var autoMount: Bool
 
         public var id: String { name }
 
@@ -48,7 +51,7 @@ public struct Configuration: Codable, Sendable, Equatable {
 
         public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedProjectKeys: [String]? = nil,
-                    diskCache: Bool = true, htmlView: Bool = false) {
+                    diskCache: Bool = true, htmlView: Bool = false, autoMount: Bool = false) {
             self.name = name
             self.type = type
             self.url = url
@@ -57,6 +60,7 @@ public struct Configuration: Codable, Sendable, Equatable {
             self.allowedProjectKeys = allowedProjectKeys
             self.diskCache = diskCache
             self.htmlView = htmlView
+            self.autoMount = autoMount
         }
 
         // Custom decoder: new keys default to false for backward compatibility.
@@ -70,6 +74,7 @@ public struct Configuration: Codable, Sendable, Equatable {
             allowedProjectKeys = try c.decodeIfPresent([String].self, forKey: .allowedProjectKeys)
             diskCache        = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? true
             htmlView         = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
+            autoMount        = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }
 

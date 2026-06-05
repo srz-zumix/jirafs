@@ -6,6 +6,7 @@ struct JiraFSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var monitor = MountStatusMonitor()
     @StateObject private var navigation = NavigationModel()
+    @StateObject private var launchAtLogin = LaunchAtLoginManager()
 
     var body: some Scene {
         Window("jirafs", id: "main") {
@@ -17,7 +18,7 @@ struct JiraFSApp: App {
         .defaultSize(width: 800, height: 600)
 
         MenuBarExtra {
-            MenuBarMenuContent(monitor: monitor, navigation: navigation)
+            MenuBarMenuContent(monitor: monitor, navigation: navigation, launchAtLogin: launchAtLogin)
         } label: {
             MenuBarLabel(monitor: monitor)
         }
@@ -40,6 +41,75 @@ final class NavigationModel: ObservableObject {
 /// Single-instance enforcement is handled via LSMultipleInstancesProhibited in Info.plist.
 final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.zumix.jirafs", category: "AppDelegate")
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { await performAutoMount() }
+    }
+
+    // MARK: - Auto-mount
+
+    private func performAutoMount() async {
+        let config = AppConfig.load()
+        let confluenceConfig = AppConfig.loadConfluence()
+        let fm = FileManager.default
+        let mountedURLs = (fm.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? [])
+            .map { $0.standardized }
+
+        struct MountTarget { let name: String; let path: String; let cmd: String }
+        var targets: [MountTarget] = []
+
+        for entry in config.instances where entry.autoMount {
+            guard let host = safeHost(from: entry.url) else {
+                logger.warning("Auto-mount skipped for '\(entry.name, privacy: .public)': invalid URL host")
+                continue
+            }
+            let path = entry.effectiveMountPath
+            let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
+            guard !mountedURLs.contains(targetURL) else { continue }
+            let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
+            targets.append(MountTarget(
+                name: entry.name,
+                path: path,
+                cmd: "/sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(escapedPath)'"
+            ))
+        }
+
+        for entry in confluenceConfig.instances where entry.autoMount {
+            guard let host = safeHost(from: entry.url) else {
+                logger.warning("Auto-mount skipped for '\(entry.name, privacy: .public)': invalid URL host")
+                continue
+            }
+            let path = entry.effectiveMountPath
+            let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
+            guard !mountedURLs.contains(targetURL) else { continue }
+            let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
+            targets.append(MountTarget(
+                name: entry.name,
+                path: path,
+                cmd: "/sbin/mount -F -t confluencefs -o ro 'confluence://\(host)' '\(escapedPath)'"
+            ))
+        }
+
+        guard !targets.isEmpty else { return }
+
+        for target in targets {
+            try? fm.createDirectory(atPath: target.path, withIntermediateDirectories: true)
+            let cmd = target.cmd
+            let name = target.name
+            // FSKit volumes are managed by fskitd (a user-space daemon). Attempt
+            // mount as the current user first so no authentication dialog appears
+            // at startup. If the OS requires root for this volume type, the mount
+            // silently fails here and the user can mount manually from the UI.
+            let succeeded = await Task.detached(priority: .userInitiated) {
+                runCommandAsCurrentUser(cmd)
+            }.value
+            if succeeded {
+                logger.info("Auto-mounted '\(name, privacy: .public)' (non-privileged)")
+            } else {
+                logger.warning("Auto-mount skipped for '\(name, privacy: .public)': non-privileged mount failed. Use the Mount button in the app to mount with authentication.")
+            }
+        }
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         let config = AppConfig.load()
@@ -103,6 +173,7 @@ private struct MenuBarLabel: View {
 private struct MenuBarMenuContent: View {
     @ObservedObject var monitor: MountStatusMonitor
     @ObservedObject var navigation: NavigationModel
+    @ObservedObject var launchAtLogin: LaunchAtLoginManager
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -135,6 +206,13 @@ private struct MenuBarMenuContent: View {
             monitor.refresh()
         }
         .keyboardShortcut("r", modifiers: [])
+
+        Divider()
+
+        Toggle("Launch at Login", isOn: Binding(
+            get: { launchAtLogin.isEnabled },
+            set: { launchAtLogin.setEnabled($0) }
+        ))
 
         Divider()
 

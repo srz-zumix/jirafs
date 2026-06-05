@@ -47,8 +47,9 @@ final class InstanceListModel: ObservableObject {
     }
 
     func update(original: Configuration.InstanceEntry, updated: Configuration.InstanceEntry) {
-        configuration.instances.removeAll { $0.id == original.id }
-        configuration.instances.append(updated)
+        if let idx = configuration.instances.firstIndex(where: { $0.id == original.id }) {
+            configuration.instances[idx] = updated
+        }
         saveJira()
     }
 
@@ -72,8 +73,9 @@ final class InstanceListModel: ObservableObject {
 
     func update(original: ConfluenceConfiguration.InstanceEntry,
                 updated: ConfluenceConfiguration.InstanceEntry) {
-        confluenceConfiguration.instances.removeAll { $0.id == original.id }
-        confluenceConfiguration.instances.append(updated)
+        if let idx = confluenceConfiguration.instances.firstIndex(where: { $0.id == original.id }) {
+            confluenceConfiguration.instances[idx] = updated
+        }
         saveConfluence()
     }
 
@@ -94,54 +96,75 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $model.selection) {
-                if !model.configuration.instances.isEmpty {
-                    Section("JIRA") {
-                        ForEach(model.configuration.instances) { entry in
-                            instanceRow(name: entry.name,
-                                        host: entry.url.host ?? entry.url.absoluteString,
-                                        systemImage: "ladybug")
-                            .tag(InstanceRef(kind: .jira, name: entry.name).id)
+            VStack(spacing: 0) {
+                List(selection: $model.selection) {
+                    if !model.configuration.instances.isEmpty {
+                        Section("JIRA") {
+                            ForEach(model.configuration.instances.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { entry in
+                                instanceRow(name: entry.name,
+                                            host: entry.url.host ?? entry.url.absoluteString,
+                                            systemImage: "ladybug")
+                                .tag(InstanceRef(kind: .jira, name: entry.name).id)
+                            }
+                        }
+                    }
+                    if !model.confluenceConfiguration.instances.isEmpty {
+                        Section("Confluence") {
+                            ForEach(model.confluenceConfiguration.instances.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { entry in
+                                instanceRow(name: entry.name,
+                                            host: entry.url.host ?? entry.url.absoluteString,
+                                            systemImage: "doc.richtext")
+                                .tag(InstanceRef(kind: .confluence, name: entry.name).id)
+                            }
                         }
                     }
                 }
-                if !model.confluenceConfiguration.instances.isEmpty {
-                    Section("Confluence") {
-                        ForEach(model.confluenceConfiguration.instances) { entry in
-                            instanceRow(name: entry.name,
-                                        host: entry.url.host ?? entry.url.absoluteString,
-                                        systemImage: "doc.richtext")
-                            .tag(InstanceRef(kind: .confluence, name: entry.name).id)
-                        }
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button {
-                            showingAddJira = true
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            Button {
+                                showingAddJira = true
+                            } label: {
+                                Label("Add JIRA Instance…", systemImage: "ladybug")
+                            }
+                            Button {
+                                showingAddConfluence = true
+                            } label: {
+                                Label("Add Confluence Instance…", systemImage: "doc.richtext")
+                            }
                         } label: {
-                            Label("Add JIRA Instance…", systemImage: "ladybug")
+                            Label("Add", systemImage: "plus")
                         }
+                    }
+                    ToolbarItem(placement: .secondaryAction) {
                         Button {
-                            showingAddConfluence = true
+                            showingCacheSettings = true
                         } label: {
-                            Label("Add Confluence Instance…", systemImage: "doc.richtext")
+                            Label("Cache Settings", systemImage: "clock.arrow.2.circlepath")
                         }
-                    } label: {
-                        Label("Add", systemImage: "plus")
                     }
                 }
-                ToolbarItem(placement: .secondaryAction) {
+                .navigationTitle("Instances")
+
+                Divider()
+
+                // System settings shortcuts
+                VStack(alignment: .leading, spacing: 4) {
                     Button {
-                        showingCacheSettings = true
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+                            NSWorkspace.shared.open(url)
+                        }
                     } label: {
-                        Label("Cache Settings", systemImage: "clock.arrow.2.circlepath")
+                        Label("Extension Settings", systemImage: "puzzlepiece.extension")
+                            .font(.caption)
                     }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .navigationTitle("Instances")
             .frame(minWidth: 250)
         } detail: {
             detailView
@@ -216,6 +239,10 @@ struct ContentView: View {
                                onDelete: {
                 model.removeJira(name: jira.name)
                 model.selection = nil
+            }, onAutoMountToggle: { newValue in
+                var updated = jira
+                updated.autoMount = newValue
+                model.update(original: jira, updated: updated)
             })
         } else if let id = model.selection,
                   let conf = model.confluenceConfiguration.instances.first(where: {
@@ -226,6 +253,10 @@ struct ContentView: View {
                                          onDelete: {
                 model.removeConfluence(name: conf.name)
                 model.selection = nil
+            }, onAutoMountToggle: { newValue in
+                var updated = conf
+                updated.autoMount = newValue
+                model.update(original: conf, updated: updated)
             })
         } else {
             ContentUnavailableView("No Instance Selected",
@@ -239,6 +270,7 @@ struct InstanceDetailView: View {
     let entry: Configuration.InstanceEntry
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let onAutoMountToggle: (Bool) -> Void
 
     @State private var showClearCacheConfirm = false
     @State private var clearCacheResult: String?
@@ -297,6 +329,15 @@ struct InstanceDetailView: View {
                 MountControlView(descriptor: MountDescriptor(jira: entry))
                     .id(entry.id)
 
+                GroupBox("Startup") {
+                    Toggle("Auto-mount on app launch", isOn: Binding(
+                        get: { entry.autoMount },
+                        set: { onAutoMountToggle($0) }
+                    ))
+                    .font(.callout)
+                    .padding(.vertical, 4)
+                }
+
                 // Cache management
                 if entry.diskCache {
                     GroupBox("Cache") {
@@ -340,6 +381,7 @@ struct ConfluenceInstanceDetailView: View {
     let entry: ConfluenceConfiguration.InstanceEntry
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let onAutoMountToggle: (Bool) -> Void
 
     @State private var showClearCacheConfirm = false
     @State private var clearCacheResult: String?
@@ -395,6 +437,15 @@ struct ConfluenceInstanceDetailView: View {
 
                 MountControlView(descriptor: MountDescriptor(confluence: entry))
                     .id(entry.id)
+
+                GroupBox("Startup") {
+                    Toggle("Auto-mount on app launch", isOn: Binding(
+                        get: { entry.autoMount },
+                        set: { onAutoMountToggle($0) }
+                    ))
+                    .font(.callout)
+                    .padding(.vertical, 4)
+                }
 
                 if entry.diskCache {
                     GroupBox("Cache") {
