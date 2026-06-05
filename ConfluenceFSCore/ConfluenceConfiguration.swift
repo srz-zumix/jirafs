@@ -36,6 +36,9 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// When `true`, archived pages are included in directory listings.
         /// Defaults to `false` (only current/active pages are shown).
         public var includeArchived: Bool
+        /// When `true`, this instance is automatically mounted when the app launches.
+        /// Defaults to `false`.
+        public var autoMount: Bool
 
         public var id: String { name }
 
@@ -46,7 +49,8 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
 
         public init(name: String, type: ConfluenceEdition, url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
-                    diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false) {
+                    diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
+                    autoMount: Bool = false) {
             self.name = name
             self.type = type
             self.url = url
@@ -56,6 +60,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             self.diskCache = diskCache
             self.htmlView = htmlView
             self.includeArchived = includeArchived
+            self.autoMount = autoMount
         }
 
         public init(from decoder: Decoder) throws {
@@ -69,6 +74,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             diskCache       = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? true
             htmlView        = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
             includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
+            autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }
 
