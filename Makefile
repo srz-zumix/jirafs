@@ -172,6 +172,8 @@ test: ## ユニットテスト（JiraAPITests + JiraFSCoreTests）
 # ──────────────────────────────────────────
 generate: ## xcodegen で project.yml から jirafs.xcodeproj を再生成
 	xcodegen generate
+	@# xcodegen は LSMultipleInstancesProhibited を削除してしまうため復元する
+	@plutil -replace LSMultipleInstancesProhibited -bool YES jirafs/Info.plist
 	@echo "✓ jirafs.xcodeproj regenerated"
 
 # ──────────────────────────────────────────

@@ -49,6 +49,8 @@ final class InstanceListModel: ObservableObject {
     func update(original: Configuration.InstanceEntry, updated: Configuration.InstanceEntry) {
         if let idx = configuration.instances.firstIndex(where: { $0.id == original.id }) {
             configuration.instances[idx] = updated
+        } else {
+            configuration.instances.append(updated)
         }
         saveJira()
     }
@@ -75,6 +77,8 @@ final class InstanceListModel: ObservableObject {
                 updated: ConfluenceConfiguration.InstanceEntry) {
         if let idx = confluenceConfiguration.instances.firstIndex(where: { $0.id == original.id }) {
             confluenceConfiguration.instances[idx] = updated
+        } else {
+            confluenceConfiguration.instances.append(updated)
         }
         saveConfluence()
     }
