@@ -106,9 +106,14 @@ public actor CacheManager {
 
     /// Derives a purpose-specific 256-bit key from the Keychain master key so
     /// that AES-GCM encryption and the filename HMAC never share key material.
+    /// An empty salt is intentional: the master key is a uniformly random 256-bit
+    /// Keychain key, so HKDF needs no salt to condition the input; purpose
+    /// separation is provided entirely by the versioned `info` labels. Passing an
+    /// explicit empty salt is byte-equivalent to the salt-less overload, so it
+    /// does not change derived keys or the on-disk format.
     private static func deriveKey(from master: SymmetricKey, info: String) -> SymmetricKey {
-        HKDF<SHA256>.deriveKey(inputKeyMaterial: master, info: Data(info.utf8),
-                               outputByteCount: 32)
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: master, salt: Data(),
+                               info: Data(info.utf8), outputByteCount: 32)
     }
 
     /// Best-effort removal of the legacy plaintext `.cache.key` file from older
