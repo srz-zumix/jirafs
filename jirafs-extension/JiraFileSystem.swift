@@ -32,11 +32,16 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
                 ? CacheManager.cacheDirectory(for: instanceName,
                                               baseCachesDir: CacheManager.processCachesBaseURL())
                 : nil
-            let encryptionKey: SymmetricKey? = diskCacheEnabled
-                ? (try? KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "jirafs"))
-                : nil
-            if diskCacheEnabled && encryptionKey == nil {
-                logger.error("disk cache enabled but cache key unavailable; using memory-only cache")
+            let encryptionKey: SymmetricKey?
+            if diskCacheEnabled {
+                do {
+                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "jirafs")
+                } catch {
+                    encryptionKey = nil
+                    logger.error("disk cache enabled but cache key unavailable; using memory-only cache: \(String(describing: error), privacy: .public)")
+                }
+            } else {
+                encryptionKey = nil
             }
             let cache = CacheManager(diskEnabled: diskCacheEnabled, cachesDir: cachesDir,
                                      encryptionKey: encryptionKey)

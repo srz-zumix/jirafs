@@ -30,11 +30,16 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                                               baseCachesDir: CacheManager.processCachesBaseURL(),
                                               product: "confluencefs")
                 : nil
-            let encryptionKey: SymmetricKey? = diskCacheEnabled
-                ? (try? KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "confluencefs"))
-                : nil
-            if diskCacheEnabled && encryptionKey == nil {
-                logger.error("disk cache enabled but cache key unavailable; using memory-only cache")
+            let encryptionKey: SymmetricKey?
+            if diskCacheEnabled {
+                do {
+                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "confluencefs")
+                } catch {
+                    encryptionKey = nil
+                    logger.error("disk cache enabled but cache key unavailable; using memory-only cache: \(String(describing: error), privacy: .public)")
+                }
+            } else {
+                encryptionKey = nil
             }
             let cache = CacheManager(diskEnabled: diskCacheEnabled, cachesDir: cachesDir,
                                      encryptionKey: encryptionKey)

@@ -86,7 +86,7 @@ public actor CacheManager {
             cacheLogger.info("CacheManager init: diskEnabled=true (key from Keychain)")
         } else {
             if diskEnabled {
-                cacheLogger.error("CacheManager init: disk cache requested but no encryption key available; falling back to memory-only")
+                cacheLogger.error("CacheManager init: disk cache requested but unavailable; falling back to memory-only (cachesDirMissing=\(cachesDir == nil), encryptionKeyMissing=\(masterKey == nil))")
             }
             self.diskEnabled = false
             self.cacheDir = nil
