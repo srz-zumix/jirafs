@@ -125,6 +125,8 @@ targets:
       properties:
         CFBundleDisplayName: jirafs
         CFBundleName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule
           FSActivateOptionSyntax:
@@ -182,6 +184,8 @@ targets:
       properties:
         CFBundleDisplayName: confluencefs
         CFBundleName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule
           FSActivateOptionSyntax:
@@ -247,6 +251,8 @@ targets:
       properties:
         CFBundleDisplayName: jirafs
         CFBundleName: $(PRODUCT_NAME)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSHumanReadableCopyright: "Copyright © 2026"
         NSPrincipalClass: NSApplication
