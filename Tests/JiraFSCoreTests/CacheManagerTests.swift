@@ -61,11 +61,14 @@ final class CacheManagerTests: XCTestCase {
             atPath: dir.appendingPathComponent(".cache.key").path))
         // Cached payload must not be readable as plaintext on disk.
         let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+        var foundCacheFile = false
         for name in files ?? [] where name.hasSuffix(".cache") {
+            foundCacheFile = true
             let data = try? Data(contentsOf: dir.appendingPathComponent(name))
             let asString = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
             XCTAssertFalse(asString.contains("secret"))
         }
+        XCTAssertTrue(foundCacheFile, "expected at least one .cache file to be written")
     }
 
     func testMissingKeyFallsBackToMemoryOnly() async {

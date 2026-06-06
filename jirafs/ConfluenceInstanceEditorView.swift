@@ -398,6 +398,15 @@ struct ConfluenceInstanceEditorView: View {
             htmlView: htmlView,
             includeArchived: includeArchived
         )
+        // Best-effort cleanup of the previous instance's orphaned cache key when
+        // the instance was renamed. Non-fatal: a failure must not abort the save.
+        if let original = originalName, original != name {
+            do {
+                try KeychainManager().deleteCacheKey(instanceName: original, product: "confluencefs")
+            } catch {
+                print("Old cache key cleanup failed: \(error)")
+            }
+        }
         onSave(entry)
     }
 }
