@@ -20,20 +20,20 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     ) {
         do {
             self.containerStatus = .ready
-            let hostname = ConfluenceFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
-            logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
-            let (instanceName, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived) =
-                try ConfluenceFileSystem.lookupInstance(hostname: hostname)
+            let mountID = ConfluenceFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
+            logger.info("loadResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
+            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived) =
+                try ConfluenceFileSystem.lookupInstance(mountID: mountID)
             let client = ConfluenceRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
-                ? CacheManager.cacheDirectory(for: instanceName,
+                ? CacheManager.cacheDirectory(for: cacheID,
                                               baseCachesDir: CacheManager.processCachesBaseURL(),
                                               product: "confluencefs")
                 : nil
             let encryptionKey: SymmetricKey?
             if diskCacheEnabled {
                 do {
-                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "confluencefs")
+                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: cacheID, product: "confluencefs")
                 } catch {
                     encryptionKey = nil
                     logger.error("disk cache enabled but cache key unavailable; using memory-only cache: \(String(describing: error), privacy: .public)")
@@ -54,8 +54,8 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                 allowedSpaceKeys: allowedSpaceKeys,
                 includeArchived: includeArchived
             )
-            let volume = ConfluenceVolume(name: instanceName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
-            logger.info("loaded volume for \(instanceName, privacy: .public)")
+            let volume = ConfluenceVolume(name: volumeName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
+            logger.info("loaded volume for \(volumeName, privacy: .public)")
             reply(volume, nil)
         } catch {
             logger.error("loadResource failed: \(error, privacy: .public)")
@@ -69,18 +69,18 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     }
 
     func probeResource(resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
-        let hostname = ConfluenceFileSystem.hostname(from: resource, taskOptions: [])
-        logger.info("probeResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
+        let mountID = ConfluenceFileSystem.hostname(from: resource, taskOptions: [])
+        logger.info("probeResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
         let configURL = ConfluenceFileSystem.configURL()
         let config = (try? ConfluenceConfiguration.load(from: configURL)) ?? ConfluenceConfiguration()
         let entry: ConfluenceConfiguration.InstanceEntry?
-        if let hostname {
-            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        if let mountID {
+            entry = config.instances.first { $0.mountID == mountID } ?? config.instances.first
         } else {
             entry = config.instances.first
         }
         let name = entry?.name ?? "confluencefs"
-        let seedKey = hostname ?? name
+        let seedKey = mountID ?? name
         let containerID = FSContainerIdentifier(uuid: ConfluenceFileSystem.deterministicUUID(for: seedKey))
         self.containerStatus = .ready
         reply(.usable(name: name, containerID: containerID), nil)
@@ -116,16 +116,16 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                            bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
-    /// Resolve the instance matching `hostname` (falls back to the first entry).
-    static func lookupInstance(hostname: String?) throws
-        -> (String, ConfluenceInstanceConfig, AuthProvider, [String]?,
+    /// Resolve the mount matching `mountID` (falls back to the first entry).
+    static func lookupInstance(mountID: String?) throws
+        -> (String, String, ConfluenceInstanceConfig, AuthProvider, [String]?,
             ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool)
     {
         let configURL = ConfluenceFileSystem.configURL()
         let config = (try? ConfluenceConfiguration.load(from: configURL)) ?? ConfluenceConfiguration()
         let entry: ConfluenceConfiguration.InstanceEntry?
-        if let hostname {
-            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        if let mountID {
+            entry = config.instances.first { $0.mountID == mountID } ?? config.instances.first
         } else {
             entry = config.instances.first
         }
@@ -137,13 +137,13 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         case .apiToken:
             let email = entry.auth.email ?? ""
             let account = email.isEmpty ? "api_token" : email
-            let token = try keychain.password(instanceName: entry.name, account: account)
+            let token = try keychain.serverPassword(serverID: entry.serverID, account: account)
             auth = APITokenAuth(email: email, token: token)
         case .pat:
-            let token = try keychain.password(instanceName: entry.name, account: "pat")
+            let token = try keychain.serverPassword(serverID: entry.serverID, account: "pat")
             auth = PATAuth(token: token)
         }
-        return (entry.name, cfg, auth, entry.allowedSpaceKeys,
+        return (entry.name, entry.mountID, cfg, auth, entry.allowedSpaceKeys,
                 config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived)
     }
 

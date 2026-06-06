@@ -21,7 +21,19 @@ public struct Configuration: Codable, Sendable, Equatable {
         self.pagination = pagination
     }
 
+    /// A resolved mount, derived by the host app from a (Server, Mount) pair and
+    /// written into the extension's `config.json`. The extension routes a
+    /// `jira://<mountID>` URL to the matching entry.
     public struct InstanceEntry: Codable, Sendable, Equatable, Identifiable {
+        /// Stable identifier for this mount. Embedded as the URL host in the
+        /// `jira://<mountID>` mount URL so the extension can route to it even
+        /// when several mounts share the same server hostname.
+        public var mountID: String
+        /// Identifier of the server whose credentials (in the Keychain) this
+        /// mount uses. The token is stored under the server, not the mount, so
+        /// multiple mounts can reuse one set of credentials.
+        public var serverID: String
+        /// Display / volume name for this mount.
         public var name: String
         public var type: JiraEdition
         public var url: URL
@@ -42,16 +54,19 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// Defaults to `false`.
         public var autoMount: Bool
 
-        public var id: String { name }
+        public var id: String { mountID }
 
         public var effectiveMountPath: String {
             let raw = mountPath ?? "~/jirafs/\(name)"
             return (raw as NSString).expandingTildeInPath
         }
 
-        public init(name: String, type: JiraEdition, url: URL, auth: AuthEntry,
+        public init(mountID: String, serverID: String, name: String, type: JiraEdition,
+                    url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedProjectKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, autoMount: Bool = false) {
+            self.mountID = mountID
+            self.serverID = serverID
             self.name = name
             self.type = type
             self.url = url
@@ -63,10 +78,12 @@ public struct Configuration: Codable, Sendable, Equatable {
             self.autoMount = autoMount
         }
 
-        // Custom decoder: new keys default to false for backward compatibility.
+        // Custom decoder: optional keys fall back to sensible defaults.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name             = try c.decode(String.self, forKey: .name)
+            mountID          = try c.decodeIfPresent(String.self, forKey: .mountID) ?? name
+            serverID         = try c.decodeIfPresent(String.self, forKey: .serverID) ?? ""
             type             = try c.decode(JiraEdition.self, forKey: .type)
             url              = try c.decode(URL.self, forKey: .url)
             auth             = try c.decode(AuthEntry.self, forKey: .auth)

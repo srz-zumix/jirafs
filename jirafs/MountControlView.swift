@@ -17,10 +17,15 @@ import ConfluenceFSCore
 /// `/usr/sbin/diskutil unmount force` via the same privileged API.
 /// Product-agnostic description of a mountable volume, so the same mount UI
 /// serves both JIRA (`jira://` · `jirafs`) and Confluence (`confluence://` ·
-/// `confluencefs`) instances.
+/// `confluencefs`) mounts.
+///
+/// The `jira://` / `confluence://` URL carries the **mount id** as its host so
+/// the FSKit extension can route to the exact mount even when several mounts
+/// share one server hostname.
 struct MountDescriptor: Equatable {
+    /// Stable mount identifier; also used as the URL host and the mount-state key.
+    let id: String
     let name: String
-    let host: String?
     let mountPath: String
     /// URL scheme used by the FSKit extension, e.g. `jira` or `confluence`.
     let scheme: String
@@ -29,22 +34,13 @@ struct MountDescriptor: Equatable {
     /// Human-readable extension name used in error messages.
     let extensionLabel: String
 
-    init(jira entry: Configuration.InstanceEntry) {
-        name = entry.name
-        host = entry.url.host
-        mountPath = entry.effectiveMountPath
-        scheme = "jira"
-        fsType = "jirafs"
-        extensionLabel = "jirafs"
-    }
-
-    init(confluence entry: ConfluenceConfiguration.InstanceEntry) {
-        name = entry.name
-        host = entry.url.host
-        mountPath = entry.effectiveMountPath
-        scheme = "confluence"
-        fsType = "confluencefs"
-        extensionLabel = "confluencefs"
+    init(mount: Mount) {
+        id = mount.id
+        name = mount.name
+        mountPath = mount.effectiveMountPath
+        scheme = mount.product.scheme
+        fsType = mount.product.fsType
+        extensionLabel = mount.product.fsType
     }
 }
 
@@ -58,7 +54,7 @@ struct MountControlView: View {
     /// disabled in System Settings; triggers a settings link in the error panel.
     @State private var showExtensionSettingsLink = false
 
-    private var isMounted: Bool { monitor.mountedStates["\(descriptor.scheme):\(descriptor.name)"] ?? false }
+    private var isMounted: Bool { monitor.mountedStates[descriptor.id] ?? false }
 
     var body: some View {
         GroupBox {
@@ -186,14 +182,15 @@ struct MountControlView: View {
 
     /// Returns the URL host only if it is present and consists entirely of
     /// characters that are safe to embed in a single-quoted shell argument
-    /// (`[A-Za-z0-9._-]`). Returns `nil` for missing, empty, or unsafe hosts.
+    /// (`[A-Za-z0-9._-]`). Returns `nil` for empty or unsafe values.
     ///
     /// We validate rather than escape because the host is passed inside a
     /// privileged `/bin/sh -c` command; any shell metacharacter (`;`, `$`, …)
-    /// could execute arbitrary code as root. Valid JIRA hostnames never contain
-    /// such characters, so rejection is the right response.
+    /// could execute arbitrary code as root. Mount ids are UUIDs, so rejection
+    /// is the right response for anything unexpected.
     private var safeHost: String? {
-        guard let host = descriptor.host, !host.isEmpty else { return nil }
+        let host = descriptor.id
+        guard !host.isEmpty else { return nil }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
         guard host.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
         return host

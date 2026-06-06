@@ -7,6 +7,7 @@ struct JiraFSApp: App {
     @StateObject private var monitor = MountStatusMonitor()
     @StateObject private var navigation = NavigationModel()
     @StateObject private var launchAtLogin = LaunchAtLoginManager()
+    @StateObject private var appStore = AppStoreModel()
 
     var body: some Scene {
         Window("jirafs", id: "main") {
@@ -14,6 +15,7 @@ struct JiraFSApp: App {
                 .frame(minWidth: 640, minHeight: 480)
                 .environmentObject(monitor)
                 .environmentObject(navigation)
+                .environmentObject(appStore)
         }
         .defaultSize(width: 800, height: 600)
 
@@ -21,6 +23,13 @@ struct JiraFSApp: App {
             MenuBarMenuContent(monitor: monitor, navigation: navigation, launchAtLogin: launchAtLogin)
         } label: {
             MenuBarLabel(monitor: monitor)
+        }
+
+        Settings {
+            PreferencesView()
+                .environmentObject(monitor)
+                .environmentObject(launchAtLogin)
+                .environmentObject(appStore)
         }
     }
 }
@@ -30,7 +39,7 @@ struct JiraFSApp: App {
 /// Shared navigation intent passed from the menu bar to ContentView.
 @MainActor
 final class NavigationModel: ObservableObject {
-    /// Instance ID ("jira:NAME" / "confluence:NAME") to select on next window open.
+    /// Mount id to select on next window open.
     @Published var pendingSelection: String?
 }
 
@@ -49,8 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     // MARK: - Auto-mount
 
     private func performAutoMount() async {
-        let config = AppConfig.load()
-        let confluenceConfig = AppConfig.loadConfluence()
+        let store = AppConfig.loadAppStore()
         let fm = FileManager.default
         let mountedURLs = (fm.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? [])
             .map { $0.standardized }
@@ -58,35 +66,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         struct MountTarget { let name: String; let path: String; let cmd: String }
         var targets: [MountTarget] = []
 
-        for entry in config.instances where entry.autoMount {
-            guard let host = safeHost(from: entry.url) else {
-                logger.warning("Auto-mount skipped for '\(entry.name, privacy: .public)': invalid URL host")
+        for mount in store.mounts where mount.autoMount {
+            // Only auto-mount mounts whose server still provides the product.
+            guard let server = store.server(id: mount.serverID),
+                  server.supports(mount.product) else {
+                logger.warning("Auto-mount skipped for '\(mount.name, privacy: .public)': server missing or product unavailable")
                 continue
             }
-            let path = entry.effectiveMountPath
+            let host = mount.id  // mount id is the URL host
+            let path = mount.effectiveMountPath
             let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
             guard !mountedURLs.contains(targetURL) else { continue }
             let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
             targets.append(MountTarget(
-                name: entry.name,
+                name: mount.name,
                 path: path,
-                cmd: "/sbin/mount -F -t jirafs -o ro 'jira://\(host)' '\(escapedPath)'"
-            ))
-        }
-
-        for entry in confluenceConfig.instances where entry.autoMount {
-            guard let host = safeHost(from: entry.url) else {
-                logger.warning("Auto-mount skipped for '\(entry.name, privacy: .public)': invalid URL host")
-                continue
-            }
-            let path = entry.effectiveMountPath
-            let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
-            guard !mountedURLs.contains(targetURL) else { continue }
-            let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
-            targets.append(MountTarget(
-                name: entry.name,
-                path: path,
-                cmd: "/sbin/mount -F -t confluencefs -o ro 'confluence://\(host)' '\(escapedPath)'"
+                cmd: "/sbin/mount -F -t \(mount.product.fsType) -o ro '\(mount.product.scheme)://\(host)' '\(escapedPath)'"
             ))
         }
 
@@ -117,16 +112,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        let config = AppConfig.load()
-        let confluenceConfig = AppConfig.loadConfluence()
+        let store = AppConfig.loadAppStore()
         let fm = FileManager.default
         let mountedURLs = (fm.mountedVolumeURLs(
             includingResourceValuesForKeys: nil, options: []) ?? [])
             .map { $0.standardized }
 
         let mountPoints: [(name: String, path: String)] =
-            config.instances.map { ($0.name, $0.effectiveMountPath) }
-            + confluenceConfig.instances.map { ($0.name, $0.effectiveMountPath) }
+            store.mounts.map { ($0.name, $0.effectiveMountPath) }
 
         for instance in mountPoints {
             let targetURL = URL(fileURLWithPath: instance.path,
@@ -182,13 +175,11 @@ private struct MenuBarMenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        // マウント済みインスタンスのみ表示
-        let config = AppConfig.load()
-        let confluenceConfig = AppConfig.loadConfluence()
-        let allRows: [(id: String, name: String)] =
-            config.instances.map { ("jira:\($0.name)", $0.name) }
-            + confluenceConfig.instances.map { ("confluence:\($0.name)", $0.name) }
-        let mountedRows = allRows.filter { monitor.mountedStates[$0.id] == true }
+        // マウント済みのマウントのみ表示
+        let store = AppConfig.loadAppStore()
+        let mountedRows = store.mounts
+            .filter { monitor.mountedStates[$0.id] == true }
+            .map { (id: $0.id, name: $0.name) }
 
         if mountedRows.isEmpty {
             Text("No instances mounted")

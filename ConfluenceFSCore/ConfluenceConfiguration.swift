@@ -21,7 +21,18 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         self.pagination = pagination
     }
 
+    /// A resolved mount, derived by the host app from a (Server, Mount) pair and
+    /// written into the extension's `config.json`. The extension routes a
+    /// `confluence://<mountID>` URL to the matching entry.
     public struct InstanceEntry: Codable, Sendable, Equatable, Identifiable {
+        /// Stable identifier for this mount. Embedded as the URL host in the
+        /// `confluence://<mountID>` mount URL so the extension can route to it
+        /// even when several mounts share the same server hostname.
+        public var mountID: String
+        /// Identifier of the server whose credentials (in the Keychain) this
+        /// mount uses.
+        public var serverID: String
+        /// Display / volume name for this mount.
         public var name: String
         public var type: ConfluenceEdition
         public var url: URL
@@ -40,17 +51,20 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// Defaults to `false`.
         public var autoMount: Bool
 
-        public var id: String { name }
+        public var id: String { mountID }
 
         public var effectiveMountPath: String {
             let raw = mountPath ?? "~/confluencefs/\(name)"
             return (raw as NSString).expandingTildeInPath
         }
 
-        public init(name: String, type: ConfluenceEdition, url: URL, auth: AuthEntry,
+        public init(mountID: String, serverID: String, name: String, type: ConfluenceEdition,
+                    url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
                     autoMount: Bool = false) {
+            self.mountID = mountID
+            self.serverID = serverID
             self.name = name
             self.type = type
             self.url = url
@@ -66,6 +80,8 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name            = try c.decode(String.self, forKey: .name)
+            mountID         = try c.decodeIfPresent(String.self, forKey: .mountID) ?? name
+            serverID        = try c.decodeIfPresent(String.self, forKey: .serverID) ?? ""
             type            = try c.decode(ConfluenceEdition.self, forKey: .type)
             url             = try c.decode(URL.self, forKey: .url)
             auth            = try c.decode(AuthEntry.self, forKey: .auth)

@@ -1,20 +1,18 @@
 import Foundation
 import Combine
-import JiraFSCore
-import ConfluenceFSCore
 
-/// Periodically checks which configured JIRA instances are currently mounted
-/// and publishes the results so the menu bar and other UI can react.
+/// Periodically checks which configured mounts are currently mounted and
+/// publishes the results so the menu bar and other UI can react.
 @MainActor
 final class MountStatusMonitor: ObservableObject {
 
-    /// Keyed by instance name → true if mounted.
+    /// Keyed by mount id → true if mounted.
     @Published private(set) var mountedStates: [String: Bool] = [:]
 
-    /// True if at least one instance is mounted.
+    /// True if at least one mount is mounted.
     var anyMounted: Bool { mountedStates.values.contains(true) }
 
-    /// Number of currently mounted instances.
+    /// Number of currently mounted mounts.
     var mountedCount: Int { mountedStates.values.filter { $0 }.count }
 
     private var pollingTask: Task<Void, Never>?
@@ -43,20 +41,15 @@ final class MountStatusMonitor: ObservableObject {
     }
 
     func refresh() {
-        let config = AppConfig.load()
-        let confluenceConfig = AppConfig.loadConfluence()
+        let store = AppConfig.loadAppStore()
         let mountedURLs = (FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: nil, options: []) ?? [])
             .map { $0.standardized }
 
         var updated: [String: Bool] = [:]
-        for entry in config.instances {
-            let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
-            updated["jira:\(entry.name)"] = mountedURLs.contains(targetURL)
-        }
-        for entry in confluenceConfig.instances {
-            let targetURL = URL(fileURLWithPath: entry.effectiveMountPath, isDirectory: true).standardized
-            updated["confluence:\(entry.name)"] = mountedURLs.contains(targetURL)
+        for mount in store.mounts {
+            let targetURL = URL(fileURLWithPath: mount.effectiveMountPath, isDirectory: true).standardized
+            updated[mount.id] = mountedURLs.contains(targetURL)
         }
         mountedStates = updated
     }
