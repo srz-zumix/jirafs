@@ -24,47 +24,90 @@ xcodegen generate    # project.yml → jirafs.xcodeproj
 jirafs/
 ├── project.yml                       # XcodeGen プロジェクト定義
 ├── jirafs.xcodeproj                  # 生成物、gitignore
-├── jirafs/                          # ホストアプリ (設定 UI)
-│   ├── JiraFSApp.swift                # SwiftUI App エントリ
-│   ├── ContentView.swift              # インスタンス一覧
-│   ├── InstanceEditorView.swift       # インスタンス CRUD + Keychain 保存
-│   ├── MountControlView.swift         # mount コマンド生成・設定ガイド
-│   └── AppConfig.swift                # config.json ロード/セーブ
-├── jirafs-extension/                # FSKit App Extension
+├── jirafs/                          # ホストアプリ (設定 UI / メニューバー)
+│   ├── JiraFSApp.swift                # SwiftUI App エントリ (メニューバー + Preferences)
+│   ├── ContentView.swift              # サーバー / マウント一覧
+│   ├── ServerStore.swift              # AppStore / Server / Mount / MountProduct モデル (source of truth)
+│   ├── ServerEditorView.swift         # Server (接続 + 共有クレデンシャル) の CRUD + Keychain 保存
+│   ├── MountEditorView.swift          # Mount (Server × Product → マウントポイント) の CRUD
+│   ├── AppStoreModel.swift            # AppStore を包む ObservableObject (永続化 + config 派生)
+│   ├── AppConfig.swift                # appstore.json ロード/セーブ + 拡張ごとの config.json 派生
+│   ├── MountControlView.swift         # mount/unmount 操作・コマンド生成・設定ガイド
+│   ├── MountStatusMonitor.swift       # マウント状態の定期監視 (メニューバー反映)
+│   ├── MountPrivileged.swift          # 管理者権限での mount/unmount 実行
+│   ├── LaunchAtLoginManager.swift     # ログイン時自動起動
+│   ├── PreferencesView.swift          # 環境設定画面
+│   ├── Info.plist
+│   └── jirafs.entitlements
+├── AtlassianCore/                   # プロダクト非依存の共有ロジック (Framework)
+│   ├── AuthProvider.swift             # 認証プロトコル
+│   ├── APITokenAuth.swift             # API Token (Cloud) Basic auth
+│   ├── PATAuth.swift                  # PAT (Server / Data Center) Bearer
+│   ├── KeychainManager.swift          # Access Group 共有
+│   ├── HTTPTransport.swift            # テスト可能な HTTP 抽象
+│   ├── RateLimiter.swift              # 429 / 5xx 指数バックオフ
+│   ├── CacheManager.swift            # In-Memory + AES-GCM ディスクの 2 層キャッシュ actor
+│   ├── FileNameSanitizer.swift        # パストラバーサル防止 + 重複回避
+│   ├── ADFRenderer.swift              # Atlassian Document Format → Markdown
+│   ├── JSONValue.swift                # 任意 JSON 値の Codable 表現
+│   ├── AtlassianError.swift           # 共通エラー型
+│   ├── AtlassianLog.swift             # os.Logger ラッパ
+│   └── SendableBox.swift              # 非 Sendable 値を Task に渡すためのラッパ
+├── JiraAPI/                         # JIRA REST API クライアント (Framework)
+│   ├── JiraClient.swift               # クライアントプロトコル + JiraInstanceConfig + JiraEdition
+│   ├── JiraRESTClient.swift           # Cloud (v3) / Server (v2) 共通実装
+│   ├── Models.swift                   # JiraProject / JiraIssue / JiraComment / JiraAttachment / JiraUser
+│   ├── AtlassianCompat.swift          # AtlassianCore への typealias (JiraAPIError 等の互換名)
+│   └── Logging.swift
+├── JiraFSCore/                      # JIRA 用 FS ロジック (Framework)
+│   ├── Configuration.swift            # JIRA 用 config.json スキーマ
+│   ├── PathResolver.swift             # FSNodeKind と パスの変換
+│   ├── IssueDataSource.swift          # JiraClient + CacheManager 統合
+│   ├── ContentRenderer.swift          # description/comment → Markdown (ADF は AtlassianCore.ADFRenderer に委譲、wiki markup は自前)
+│   └── IssueFileBuilder.swift         # summary.txt / description.md / metadata.json / comments 生成
+├── jirafs-extension/                # JIRA FSKit App Extension
 │   ├── JiraFSExtension.swift          # UnaryFileSystemExtension エントリ
 │   ├── JiraFileSystem.swift           # FSUnaryFileSystem サブクラス
+│   ├── JiraFileSystem+ServerURL.m     # jira:// URL からホスト名を取得 (Obj-C)
 │   ├── JiraVolume.swift               # FSVolume サブクラス (アイテムテーブル保持)
 │   ├── JiraVolume+Operations.swift    # FSVolume.Operations + PathConfOperations
 │   ├── JiraVolume+ReadWrite.swift     # FSVolume.ReadWriteOperations
 │   ├── JiraVolume+OpenClose.swift     # FSVolume.OpenCloseOperations + payload ロード
 │   ├── JiraFSItem.swift               # FSItem サブクラス (Kind ベース)
 │   ├── FSKitError.swift               # JiraAPIError → POSIX 変換
-│   ├── SendableBox.swift              # 非 Sendable 値を Task に渡すためのラッパ
+│   ├── AGENTS.md                      # 拡張実装のエージェント向けガイド
 │   ├── Info.plist
 │   └── jirafs-extension.entitlements
-├── JiraAPI/                         # JIRA REST API クライアント (Framework)
-│   ├── JiraClient.swift               # クライアントプロトコル + JiraInstanceConfig + JiraEdition
-│   ├── JiraRESTClient.swift           # Cloud (v3) / Server (v2) 共通実装
-│   ├── JiraHTTPTransport.swift        # テスト可能な HTTP 抽象
-│   ├── AuthProvider.swift             # 認証プロトコル
-│   ├── APITokenAuth.swift             # API Token (Cloud) Basic auth
-│   ├── PATAuth.swift                  # PAT (Server) Bearer
-│   ├── KeychainManager.swift          # Access Group 共有
-│   ├── RateLimiter.swift              # 429 / 5xx 指数バックオフ
-│   ├── Models.swift                   # JiraProject / JiraIssue / JiraComment / JiraAttachment / JiraUser / JSONValue
-│   ├── JiraAPIError.swift
-│   └── Logging.swift
-├── JiraFSCore/                      # 共有ロジック (Framework)
-│   ├── Configuration.swift            # config.json スキーマ
-│   ├── PathResolver.swift             # FSNodeKind と パスの変換
-│   ├── CacheManager.swift             # TTL actor キャッシュ
-│   ├── IssueDataSource.swift          # JiraClient + CacheManager 統合
-│   ├── ContentRenderer.swift          # ADF / wiki markup → Markdown
-│   ├── IssueFileBuilder.swift         # summary.txt / description.md / metadata.json / comments 生成
-│   └── FileNameSanitizer.swift        # パストラバーサル防止 + 重複回避
+├── ConfluenceAPI/                   # Confluence REST API クライアント (Framework)
+│   ├── ConfluenceClient.swift         # クライアントプロトコル + ConfluenceEdition
+│   ├── ConfluenceRESTClient.swift     # Cloud (v2) / Data Center (v1) 共通実装
+│   ├── ConfluenceModels.swift         # ドメインモデル
+│   └── ConfluenceWireModels.swift     # API レスポンスのデコードモデル
+├── ConfluenceFSCore/                # Confluence 用 FS ロジック (Framework)
+│   ├── ConfluenceConfiguration.swift  # Confluence 用 config.json スキーマ
+│   ├── ConfluencePathResolver.swift   # ページツリー ↔ パスの変換
+│   ├── PageDataSource.swift           # ConfluenceClient + CacheManager 統合
+│   ├── PageFileBuilder.swift          # page.md / .metadata.json / .labels.txt / comments 生成
+│   ├── ConfluenceContentRenderer.swift # 本文 → Markdown (storage / ADF)
+│   └── StorageFormatRenderer.swift    # storage 形式 (XHTML) → Markdown
+├── confluencefs-extension/          # Confluence FSKit App Extension
+│   ├── ConfluenceFSExtension.swift    # UnaryFileSystemExtension エントリ
+│   ├── ConfluenceFileSystem.swift     # FSUnaryFileSystem サブクラス
+│   ├── ConfluenceFileSystem+ServerURL.m # confluence:// URL からホスト名を取得 (Obj-C)
+│   ├── ConfluenceVolume.swift         # FSVolume サブクラス
+│   ├── ConfluenceVolume+Operations.swift
+│   ├── ConfluenceVolume+ReadWrite.swift
+│   ├── ConfluenceVolume+OpenClose.swift
+│   ├── ConfluenceFSItem.swift         # FSItem サブクラス
+│   ├── FSKitError.swift               # AtlassianError → POSIX 変換
+│   ├── AGENTS.md
+│   ├── Info.plist
+│   └── confluencefs-extension.entitlements
 ├── Tests/
-│   ├── JiraAPITests/                  # AuthTests / JiraRESTClientTests (URLProtocol stub)
-│   └── JiraFSCoreTests/               # FileNameSanitizer / PathResolver / ContentRenderer / CacheManager / IssueDataSourcePagination
+│   ├── JiraAPITests/                  # JIRA Auth / JiraRESTClient (URLProtocol stub)
+│   ├── JiraFSCoreTests/               # FileNameSanitizer / PathResolver / ContentRenderer / CacheManager / IssueDataSourcePagination
+│   ├── ConfluenceAPITests/            # ConfluenceRESTClient (URLProtocol stub)
+│   └── ConfluenceFSCoreTests/         # PathResolver / PageFileBuilder / StorageFormatRenderer 等
 └── Documentation/
     ├── SPEC.md
     └── INSTRUCTIONS.md
@@ -123,7 +166,15 @@ jirafs/
 
 ### 3. 共有フレームワーク
 
-`JiraAPI` と `JiraFSCore` は Embedded Framework としてホストアプリと Extension の両方で共有。
+Embedded Framework としてホストアプリと各 Extension で共有する。
+
+| フレームワーク | 役割 | 利用先 |
+| --- | --- | --- |
+| `AtlassianCore` | 認証 / HTTP / レート制限 / Keychain / 2 層キャッシュ / ファイル名サニタイズ / ADF レンダラ等のプロダクト非依存ロジック | 全ターゲット |
+| `JiraAPI` | JIRA REST クライアント・モデル | jirafs / jirafs-extension |
+| `JiraFSCore` | JIRA 用パス解決・データソース・本文変換 | jirafs / jirafs-extension |
+| `ConfluenceAPI` | Confluence REST クライアント・モデル | jirafs / confluencefs-extension |
+| `ConfluenceFSCore` | Confluence 用パス解決・データソース・本文変換 | jirafs / confluencefs-extension |
 
 ## 開発ステップ (Phase 1)
 
@@ -131,7 +182,7 @@ Phase 1 (MVP) の実装ステップとはどこまで進んだかを記録する
 
 ### ✅ Step 1: FSKit スキャフォールド
 
-- [x] XcodeGen で `project.yml` 作成 (4 ターゲット + 2 テスト)
+- [x] XcodeGen で `project.yml` 作成 (7 プロダクトターゲット + 4 テストターゲット)
 - [x] `JiraFSExtension` に `UnaryFileSystemExtension` を実装
 - [x] `JiraFileSystem` で `FSUnaryFileSystem` をサブクラス化
 - [x] `JiraVolume` で `FSVolume` をサブクラス化 (Operations / PathConfOperations / OpenCloseOperations / ReadWriteOperations)
@@ -180,16 +231,18 @@ Phase 1 (MVP) の実装ステップとはどこまで進んだかを記録する
 
 ### ✅ Step 7: ホストアプリ UI
 
-- [x] JIRA インスタンス設定画面 (NavigationSplitView)
+- [x] Server (接続 + 共有クレデンシャル) / Mount (Server × Product → マウントポイント) の設定画面 (NavigationSplitView)
 - [x] 認証情報入力・保存 (`KeychainManager`)
-- [x] mount コマンド生成・拡張機能設定へのディープリンク
+- [x] `AppStore` を source of truth とし、拡張ごとの `config.json` を自動派生
+- [x] メニューバー常駐 + マウント状態監視 (`MountStatusMonitor`)
+- [x] 管理者権限での mount/unmount 実行 (`MountPrivileged`) ・コマンド生成・拡張機能設定へのディープリンク
 
 ### ✅ Step 8: テスト・品質
 
-- [x] ユニットテスト (現在 28 件 pass)
+- [x] ユニットテスト (`JiraAPITests` / `JiraFSCoreTests` / `ConfluenceAPITests` / `ConfluenceFSCoreTests`)
 - [x] `URLProtocol` スタブで Cloud/Server クライアント検証
 - [x] パフォーマンステスト (大量イシューでのページネーション — `IssueDataSourcePaginationTests`)
-- [ ] 実 JIRA インスタンスでの E2E テスト (Xcode 16.4+ / macOS 15.4+ 必要)
+- [ ] 実 JIRA / Confluence インスタンスでの E2E テスト (Xcode 16.4+ / macOS 15.4+ 必要)
 
 ## ビルド & テスト
 
@@ -226,7 +279,7 @@ DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
 
 ### テスト
 
-フレームワーク層（`JiraAPI` / `JiraFSCore`）のテストは macOS 14.0 以降で実行可能。
+フレームワーク層（`AtlassianCore` / `JiraAPI` / `JiraFSCore` / `ConfluenceAPI` / `ConfluenceFSCore`）のテストは macOS 14.0 以降で実行可能。
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
@@ -238,8 +291,8 @@ DEVELOPER_DIR=/Applications/Xcode-16.4.0.app/Contents/Developer \
              test 2>&1 | grep -E "error:|Test Suite|FAILED|PASSED"
 ```
 
-> 拡張本体 (`jirafs-extension`) と `jirafs` ホストアプリは macOS 15.4 が必要 (FSKit 依存)。
-> `JiraAPI` / `JiraFSCore` / テストは macOS 14.0 を維持し、Xcode 16.4 + macOS 14 以降のホストでテスト実行できる。
+> 拡張本体 (`jirafs-extension` / `confluencefs-extension`) と `jirafs` ホストアプリは macOS 15.4 が必要 (FSKit 依存)。
+> 共有フレームワーク (`AtlassianCore` / `JiraAPI` / `JiraFSCore` / `ConfluenceAPI` / `ConfluenceFSCore`) とテストは macOS 14.0 を維持し、Xcode 16.4 + macOS 14 以降のホストでテスト実行できる。
 
 ## インストールとマウント手順
 
@@ -263,21 +316,24 @@ FSKITD_PID=$(sudo launchctl list 2>/dev/null | awk '/fskitd/{print $1}')
 # 2. 5 秒待つ（fskitd が自動再起動するまで）
 sleep 5
 
-# 3. 拡張を登録
+# 3. 拡張を登録（JIRA / Confluence の両方）
 sudo pluginkit -a /Applications/jirafs.app/Contents/Extensions/jirafs-extension.appex
+sudo pluginkit -a /Applications/jirafs.app/Contents/Extensions/confluencefs-extension.appex
 ```
 
 登録確認:
 
 ```bash
 pluginkit -m -A -i com.zumix.jirafs.fskit
+pluginkit -m -A -i com.zumix.jirafs.confluencefs.fskit
 ```
 
 ### ホストアプリの起動と設定
 
 1. `/Applications/jirafs.app` を起動
-2. 「+」で JIRA インスタンスを追加（URL / Edition / 認証情報）
-3. 認証情報は Keychain に保存される
+2. **Server** を追加（URL / Edition / 認証情報。JIRA と Confluence でクレデンシャルを共有可能）
+3. **Mount** を追加（Server × Product → マウントポイント + フィルタ / オプション）
+4. 認証情報は Keychain に保存され、拡張ごとの `config.json` が自動生成される
 
 ### マウント
 
@@ -333,9 +389,11 @@ UI から Mount / Unmount を操作できる。
 - Swift 6.0 準拠 (Strict Concurrency)
 - `Sendable` 準拠を徹底
 - `async/await` ベースの内部 API → FSKit の reply handler に橋渡し
-- OSLog (Logger) によるログ出力
+- OSLog (Logger) によるログ出力。**HTTP エラーのレスポンスボディは `privacy: .private`**、URL / ステータスコードのみ `privacy: .public`
 - エラーは POSIX エラーコードに変換して返却
 - API クライアントは `protocol` ベースでテスタブルに
+- **接続 URL は `https://` 必須** — ServerEditorView が非 HTTPS URL を拒否する。`http://` を受け入れると Basic / Bearer トークンが平文で送信されるため
+- `RateLimiter` の `maxRetryAfter` (デフォルト 60s) を超える Retry-After は上限値にクランプする
 
 ## トラブルシューティング
 

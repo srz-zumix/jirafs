@@ -113,7 +113,7 @@ mount -F -t jirafs jira://jira.internal.example.com ~/jirafs/internal
 └── .jirafs/
 ```
 
-> **注**: `.jirafs/` ディレクトリはマウント内に表示されるが、設定ファイル本体 (`config.json`) はホストアプリと Extension の両方からアクセス可能にするため、**実際は `~/Library/Application Support/jirafs/config.json` に保存される**。マウント内の `.jirafs/config.json` は読み取り専用ビュー (Phase 1 では空オブジェクトを返すスタブ)。
+> **注**: `.jirafs/` ディレクトリはマウント内に表示されるが、設定の source of truth (`appstore.json`) はホストアプリの `~/Library/Application Support/jirafs/appstore.json` に保存され、各 Extension はそこから派生した `config.json` を自身のサンドボックスコンテナから読む (詳細は後述の「設定ファイル」)。マウント内の `.jirafs/config.json` は読み取り専用ビュー (Phase 1 では空オブジェクトを返すスタブ)。
 
 ## 動作モード (read-only / read-write)
 
@@ -149,7 +149,8 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
 変換実装方針:
 
 - **Markdown 出力**: [`apple/swift-markdown`](https://github.com/apple/swift-markdown) を採用
-- **ADF パーサ**: 自作 (`JiraFSCore/ContentRenderer.swift`)。Atlassian Document Format の主要ノード (paragraph, heading, list, codeBlock, mention, link, table, mediaSingle 等) をマッピング
+- **ディスパッチ**: `JiraFSCore/ContentRenderer.swift` が値の型を見て ADF (object) / wiki markup (string) を振り分ける
+- **ADF パーサ**: `AtlassianCore/ADFRenderer.swift` (JIRA / Confluence で共有)。Atlassian Document Format の主要ノード (paragraph, heading, list, codeBlock, mention, link, table, mediaSingle 等) をマッピング
 - **Wiki Markup パーサ**: 自作の最小実装 (見出し, リスト, リンク, 強調, コードブロック, パネル)
 - **フォールバック**: 変換に失敗した場合は raw 文字列 (ADF JSON または wiki markup) をそのまま出力し、ファイル先頭に `<!-- jirafs: raw fallback -->` コメントを付与
 
@@ -244,7 +245,8 @@ GET /rest/api/{ver}/attachment/content/{id}        # 添付ファイルダウン
 
 - Cloud: 直近1分あたりのリクエスト上限あり (429 レスポンスに対する Retry-After 対応)
 - Server: 管理者設定に依存
-- 指数バックオフ + リトライを実装
+- 指数バックオフ + リトライを実装 (最大 3 回)
+- サーバー指定の `Retry-After` は **最大 60 秒にクランプ** (`RateLimiter.maxRetryAfter`)。悪意あるサーバーが巨大値を返してもアプリを長時間停止させられない
 
 ## FSKit 実装詳細
 
@@ -375,10 +377,12 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 ## セキュリティ
 
 - 認証情報は macOS Keychain に保存 (ファイルや環境変数に平文保存しない)
-- HTTPS 通信必須 (証明書検証あり)
+- **HTTPS 必須** — ホストアプリの Server Editor が `https://` 以外のスキームを拒否する (Save / Verify を無効化、警告バナーを表示)
+- HTTPS 通信必須 (URLSession による TLS 証明書検証あり、`NSAllowsArbitraryLoads` 未設定)
 - App Sandbox 対応
 - FSKit entitlement (`com.apple.developer.fskit.fsmodule`)
-- JIRA API レスポンスのサニタイズ (パストラバーサル防止: ファイル名に `..` や `/` を含む場合はエスケープ)
+- JIRA / Confluence API レスポンスのサニタイズ (パストラバーサル防止: ファイル名に `..` や `/` を含む場合はエスケープ)
+- **ログの機密性** — HTTP エラー時のレスポンスボディは `privacy: .private` で記録し、ステータスコード / URL のみ `privacy: .public` に残す (業務データの unified log 漏洩を防止)
 
 ### ディスクキャッシュの暗号化
 
@@ -423,15 +427,30 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 `Info.plist` の `FSSupportedSchemes` には `jira` のみを登録する。マウントコマンドは `jira://<host>` 形式で発行する。
 
 
-## 設定ファイル (config.json)
+## 設定ファイル (AppStore と派生 config.json)
 
-設定ファイルは **`~/Library/Application Support/jirafs/config.json`** に保存される。ホストアプリと Extension の両方が同じファイルを読み書きするため、Sandbox 共有のために App Group ではなく User Domain の Application Support を使用する (Keychain 認証情報のみ Access Group 経由で共有)。
+設定の source of truth は **ホストアプリ**が保持する `AppStore` で、**`~/Library/Application Support/jirafs/appstore.json`** に保存される。`AppStore` は以下の 2 要素を持つ。
+
+- **Server**: 再利用可能な接続情報 + 共有クレデンシャル。1 つの Server で JIRA / Confluence の両方の接続先を持て、認証情報 (Keychain) は Server 単位で共有する。
+- **Mount**: Server とプロダクト (`jira` / `confluence`) をマウントポイントに束ねた単位。フィルタ (`allowedKeys`)、`diskCache`、`htmlView`、`autoMount` などのオプションを持つ。
+
+ホストアプリは `AppStore` を保存するたびに、各 FSKit Extension が読む **派生 `config.json` を自動生成**する。Extension はサンドボックス化されているため、App Group を使わず各 Extension のサンドボックスコンテナ内に config.json を書き込む (ホストアプリは非サンドボックスのため直接書き込める)。
+
+| ファイル | 役割 |
+| --- | --- |
+| `~/Library/Application Support/jirafs/appstore.json` | source of truth (Server + Mount) |
+| `~/Library/Containers/com.zumix.jirafs.fskit/Data/Library/Application Support/jirafs/config.json` | JIRA 拡張用の派生設定 |
+| `~/Library/Containers/com.zumix.jirafs.confluencefs.fskit/Data/Library/Application Support/confluencefs/config.json` | Confluence 拡張用の派生設定 |
+
+派生された JIRA 用 `config.json` のスキーマ (`JiraFSCore.Configuration`):
 
 ```json
 {
   "version": 1,
   "instances": [
     {
+      "mountID": "…",
+      "serverID": "…",
       "name": "my-cloud",
       "type": "cloud",
       "url": "https://mycompany.atlassian.net",
@@ -439,19 +458,25 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
         "method": "api_token",
         "email": "user@example.com"
       },
+      "mountPath": "~/jirafs/my-cloud",
       "diskCache": true,
-      "htmlView": false
+      "htmlView": false,
+      "autoMount": false
     },
     {
+      "mountID": "…",
+      "serverID": "…",
       "name": "my-server",
       "type": "server",
       "url": "https://jira.internal.example.com",
       "auth": {
         "method": "pat"
       },
+      "mountPath": "~/jirafs/my-server",
       "allowedProjectKeys": ["PROJ", "OPS"],   // 設定時は listProjects() 一括取得ではなく getProject(key:) 並列呼び出しで取得 (Server の大量プロジェクト対策)
       "diskCache": true,
-      "htmlView": true
+      "htmlView": true,
+      "autoMount": false
     }
   ],
   "cache": {
@@ -506,7 +531,7 @@ umount ~/jirafs
 - [x] Keychain 認証情報管理 (Access Group 共有)
 - [x] エラーハンドリング (`JiraAPIError` → POSIX 変換) ・ロギング (`os.Logger` subsystem `com.zumix.jirafs`)
 - [x] ADF / wiki markup → Markdown レンダラ (主要ノード対応)
-- [x] `RateLimiter` (429 + Retry-After / 5xx 指数バックオフ、最大 3 回)
+- [x] `RateLimiter` (429 + Retry-After / 5xx 指数バックオフ、最大 3 回、Retry-After 上限 60s クランプ)
 - [x] 大量イシュー (数千件) のページネーション perf 検証 (`IssueDataSourcePaginationTests`)
 - [ ] 実機 (Xcode 16.4+ / macOS 15.4+) での FSKit マウント検証
 
