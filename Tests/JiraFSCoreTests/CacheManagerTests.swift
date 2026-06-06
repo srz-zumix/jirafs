@@ -86,6 +86,31 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertNil(disk)
     }
 
+    func testDirCreationFailureFallsBackToMemoryOnly() async {
+        let parent = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        // Place a regular file where the cache directory should be so that
+        // createDirectory fails → the cache must fall back to memory-only.
+        let dir = parent.appendingPathComponent("cache")
+        XCTAssertTrue(FileManager.default.createFile(atPath: dir.path, contents: Data("x".utf8)))
+
+        let key = SymmetricKey(size: .bits256)
+        let cache = CacheManager(diskEnabled: true, cachesDir: dir, encryptionKey: key)
+        await cache.set("k", value: "secret", ttl: 60)
+
+        // Memory cache still works.
+        let mem: String? = await cache.get("k", as: String.self)
+        XCTAssertEqual(mem, "secret")
+
+        // The path must remain the original file: nothing was persisted to disk.
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir))
+        XCTAssertFalse(isDir.boolValue)
+        let contents = try? Data(contentsOf: dir)
+        XCTAssertEqual(contents, Data("x".utf8))
+    }
+
     func testLegacyPlaintextKeyFileRemoved() async {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

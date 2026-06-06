@@ -76,16 +76,34 @@ public actor CacheManager {
         if diskEnabled, let dir = cachesDir {
             CacheManager.removeLegacyKeyFile(in: dir)
         }
-        if effective, let dir = cachesDir, let master = masterKey {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                     attributes: [.posixPermissions: 0o700])
+        // Disk persistence further requires a usable directory. Creating it can
+        // fail (permissions / I/O), and an already-existing directory may not be
+        // writable, so probe writability after creation. If the directory cannot
+        // be used, fall back to memory-only instead of pretending disk caching is
+        // on while every write silently no-ops.
+        var diskReady = effective
+        if effective, let dir = cachesDir {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let probe = dir.appendingPathComponent(".probe-\(UUID().uuidString)")
+                try Data().write(to: probe, options: .atomic)
+                try? FileManager.default.removeItem(at: probe)
+            } catch {
+                diskReady = false
+                cacheLogger.error("CacheManager init: cache directory unusable; falling back to memory-only: \(String(describing: error))")
+            }
+        }
+        if diskReady, let dir = cachesDir, let master = masterKey {
             self.diskEnabled = true
             self.cacheDir = dir
             self.encryptionKey = CacheManager.deriveKey(from: master, info: Self.encryptionKeyInfo)
             self.filenameKey = CacheManager.deriveKey(from: master, info: Self.filenameKeyInfo)
             cacheLogger.info("CacheManager init: diskEnabled=true (key from Keychain)")
         } else {
-            if diskEnabled {
+            // Only the missing-prerequisite case is reported here; a directory
+            // failure already logged its own, more specific reason above.
+            if diskEnabled && !effective {
                 cacheLogger.error("CacheManager init: disk cache requested but unavailable; falling back to memory-only (cachesDirMissing=\(cachesDir == nil), encryptionKeyMissing=\(masterKey == nil))")
             }
             self.diskEnabled = false
