@@ -63,20 +63,20 @@ public actor CacheManager {
     ///                  persistence; if `nil`, the cache falls back to
     ///                  memory-only even when `diskEnabled` is `true`.
     public init(diskEnabled: Bool = false, cachesDir: URL? = nil,
-                encryptionKey: SymmetricKey? = nil) {
+                encryptionKey masterKey: SymmetricKey? = nil) {
         // Disk persistence requires ALL of: the flag, a directory, and a key.
         // Computing a single effective flag guarantees we never end up with a
         // cacheDir but no key (which would make evictExpiredDiskEntries treat
         // every file as undecryptable and delete it).
-        let effective = diskEnabled && cachesDir != nil && encryptionKey != nil
-        if effective, let dir = cachesDir, let master = encryptionKey {
+        let effective = diskEnabled && cachesDir != nil && masterKey != nil
+        if effective, let dir = cachesDir, let master = masterKey {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o700])
             CacheManager.removeLegacyKeyFile(in: dir)
             self.diskEnabled = true
             self.cacheDir = dir
-            self.encryptionKey = CacheManager.deriveKey(from: master, info: "jirafs disk cache encryption")
-            self.filenameKey = CacheManager.deriveKey(from: master, info: "jirafs disk cache filename hmac")
+            self.encryptionKey = CacheManager.deriveKey(from: master, info: Self.encryptionKeyInfo)
+            self.filenameKey = CacheManager.deriveKey(from: master, info: Self.filenameKeyInfo)
             cacheLogger.info("CacheManager init: diskEnabled=true (key from Keychain)")
         } else {
             if diskEnabled {
@@ -89,6 +89,14 @@ public actor CacheManager {
             cacheLogger.info("CacheManager init: diskEnabled=false")
         }
     }
+
+    /// Stable, product-agnostic HKDF context labels. These are a compatibility
+    /// boundary for the on-disk format: changing them changes the derived keys
+    /// and invalidates existing `.cache` files, so they are versioned and must
+    /// not be edited casually. `CacheManager` is shared by jirafs and
+    /// confluencefs, so the labels are deliberately product-neutral.
+    private static let encryptionKeyInfo = "com.zumix.atlassian.cache.encryption.v1"
+    private static let filenameKeyInfo = "com.zumix.atlassian.cache.filename-hmac.v1"
 
     /// Derives a purpose-specific 256-bit key from the Keychain master key so
     /// that AES-GCM encryption and the filename HMAC never share key material.

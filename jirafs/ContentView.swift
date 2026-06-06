@@ -57,7 +57,11 @@ final class InstanceListModel: ObservableObject {
 
     func removeJira(name: String) {
         configuration.instances.removeAll { $0.name == name }
-        try? KeychainManager().deleteCacheKey(instanceName: name, product: "jirafs")
+        do {
+            try KeychainManager().deleteCacheKey(instanceName: name, product: "jirafs")
+        } catch {
+            print("Failed to delete cache key for jirafs instance '\(name)': \(error)")
+        }
         saveJira()
     }
 
@@ -86,7 +90,11 @@ final class InstanceListModel: ObservableObject {
 
     func removeConfluence(name: String) {
         confluenceConfiguration.instances.removeAll { $0.name == name }
-        try? KeychainManager().deleteCacheKey(instanceName: name, product: "confluencefs")
+        do {
+            try KeychainManager().deleteCacheKey(instanceName: name, product: "confluencefs")
+        } catch {
+            print("Failed to delete cache key for confluencefs instance '\(name)': \(error)")
+        }
         saveConfluence()
     }
 }
