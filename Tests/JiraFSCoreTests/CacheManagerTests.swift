@@ -95,6 +95,20 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
     }
 
+    func testLegacyPlaintextKeyFileRemovedOnMemoryFallback() async {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let legacy = dir.appendingPathComponent(".cache.key")
+        try? Data(repeating: 0xCD, count: 32).write(to: legacy)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
+
+        // Disk requested but no key → memory-only fallback. The sensitive legacy
+        // key file must still be purged.
+        _ = CacheManager(diskEnabled: true, cachesDir: dir, encryptionKey: nil)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+    }
+
     func testEvictionPurgesUndecryptableOrphans() async {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

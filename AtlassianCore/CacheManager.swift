@@ -29,8 +29,8 @@ private let cacheLogger = Logger(subsystem: "com.zumix.jirafs", category: "cache
 ///   attacker who can read the Keychain. Credentials live separately in the
 ///   Keychain; the disk cache only holds cached copies of API responses.
 /// - If `diskEnabled` is requested but no encryption key is available (e.g. a
-///   transient Keychain failure), the cache silently falls back to memory-only.
-///   It never writes a plaintext key as a fallback.
+///   transient Keychain failure), the cache falls back to memory-only (logging
+///   the condition). It never writes a plaintext key as a fallback.
 ///
 /// `synchronize()` clears both layers (called from `FSVolume.synchronize`).
 public actor CacheManager {
@@ -69,10 +69,16 @@ public actor CacheManager {
         // cacheDir but no key (which would make evictExpiredDiskEntries treat
         // every file as undecryptable and delete it).
         let effective = diskEnabled && cachesDir != nil && masterKey != nil
+        // Always purge a legacy plaintext key file when disk caching was
+        // requested for this directory, even if we ultimately fall back to
+        // memory-only — leaving old sensitive key material on disk would
+        // contradict the migration guarantee.
+        if diskEnabled, let dir = cachesDir {
+            CacheManager.removeLegacyKeyFile(in: dir)
+        }
         if effective, let dir = cachesDir, let master = masterKey {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                      attributes: [.posixPermissions: 0o700])
-            CacheManager.removeLegacyKeyFile(in: dir)
             self.diskEnabled = true
             self.cacheDir = dir
             self.encryptionKey = CacheManager.deriveKey(from: master, info: Self.encryptionKeyInfo)

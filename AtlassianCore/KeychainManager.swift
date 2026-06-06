@@ -127,10 +127,12 @@ public struct KeychainManager: Sendable {
     private static let cacheKeyAccount = "cache_encryption_key"
 
     /// Keychain service name for an instance's cache key. The instance name is
-    /// hashed so that names containing `.`, case differences, or other
-    /// characters cannot collide or break the service string, and the product
-    /// is folded in so jirafs / confluencefs instances of the same name get
-    /// distinct keys even though they share one access group.
+    /// hashed (with the product folded in) so that names containing `.`, case
+    /// differences, or other characters do not break the service string and
+    /// are extremely unlikely to collide — the suffix is a truncated SHA-256,
+    /// so collisions are theoretically possible but negligibly improbable. The
+    /// product fold-in keeps jirafs / confluencefs instances of the same name
+    /// on distinct keys even though they share one access group.
     private static func cacheKeyService(product: String, instanceName: String) -> String {
         let digest = SHA256.hash(data: Data("\(product)|\(instanceName)".utf8))
         let suffix = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
