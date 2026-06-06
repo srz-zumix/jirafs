@@ -387,6 +387,13 @@ struct ServerEditorView: View {
 
         if !token.isEmpty {
             do {
+                // Delete the old credential entry if the Keychain account key
+                // changed (method or email changed). Leaving orphaned entries
+                // causes confusion and wastes Keychain space.
+                if keychainKeyChanged, let origMethod = originalMethod {
+                    let origAccount = origMethod.keychainAccount(email: originalEmail)
+                    try? KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
+                }
                 try KeychainManager().setServerPassword(token, serverID: serverID, account: account)
             } catch {
                 print("Keychain save failed: \(error)")

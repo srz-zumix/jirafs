@@ -74,6 +74,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                 continue
             }
             let host = mount.id  // mount id is the URL host
+            // Validate: mount.id must consist only of characters safe for a
+            // single-quoted shell argument before it is interpolated into the
+            // mount command. appstore.json is user-writable, so a tampered id
+            // containing shell metacharacters could otherwise lead to arbitrary
+            // command execution. UUIDs pass this check; anything else is rejected.
+            guard let mountURL = URL(string: "\(mount.product.scheme)://\(host)"),
+                  let safeID = safeHost(from: mountURL) else {
+                logger.warning("Auto-mount skipped for '\(mount.name, privacy: .public)': mount id contains unsafe characters")
+                continue
+            }
             let path = mount.effectiveMountPath
             let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
             guard !mountedURLs.contains(targetURL) else { continue }
@@ -81,7 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             targets.append(MountTarget(
                 name: mount.name,
                 path: path,
-                cmd: "/sbin/mount -F -t \(mount.product.fsType) -o ro '\(mount.product.scheme)://\(host)' '\(escapedPath)'"
+                cmd: "/sbin/mount -F -t \(mount.product.fsType) -o ro '\(mount.product.scheme)://\(safeID)' '\(escapedPath)'"
             ))
         }
 
