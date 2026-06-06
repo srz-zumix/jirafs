@@ -262,7 +262,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     private func validate(http: HTTPURLResponse, data: Data) throws {
         guard !(200..<300).contains(http.statusCode) else { return }
         let body = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
-        logger.error("HTTP \(http.statusCode, privacy: .public) \(http.url?.absoluteString ?? "?", privacy: .public): \(body, privacy: .public)")
+        logger.error("HTTP \(http.statusCode, privacy: .public) \(http.url?.absoluteString ?? "?", privacy: .public): \(body, privacy: .private)")
         throw mapError(status: http.statusCode, http: http)
     }
 
