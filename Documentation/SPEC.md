@@ -380,6 +380,18 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 - FSKit entitlement (`com.apple.developer.fskit.fsmodule`)
 - JIRA API レスポンスのサニタイズ (パストラバーサル防止: ファイル名に `..` や `/` を含む場合はエスケープ)
 
+### ディスクキャッシュの暗号化
+
+ディスクキャッシュ (L2) は API レスポンスのコピーを平文でディスクに残さないため AES-GCM で暗号化する。鍵管理は以下の方針とする。
+
+- **マスター鍵 (256bit) は共有 Keychain Access Group に保存**する (data-protection Keychain, `kSecAttrAccessibleAfterFirstUnlock`)。認証情報と同じ仕組みで、ホストアプリと FSKit Extension の双方が読み書きできる。**鍵をディスク (`.cache.key` 等の平文ファイル) に保存しない。**
+- 実際の暗号化鍵とファイル名 HMAC 鍵は、マスター鍵から **HKDF-SHA256 で用途別に導出**する (鍵の使い回しを避ける)。
+- ファイル名は `HMAC-SHA256(filenameKey, cacheKey)` の切り詰め。予測可能な `cacheKey` からファイル名を逆引きできない。
+- 鍵が一時的に取得できない場合は **メモリのみのキャッシュにフォールバック**し、平文鍵を書き出すことは決してしない。
+- 旧バージョンが残した平文 `.cache.key` ファイルは初期化時に削除し、復号できない旧形式の `.cache` ファイルは eviction で掃除する。
+
+> **脅威モデルの注意**: この暗号化は「API レスポンスを平文でディスクに残さない」ことを目的とする。ディスク上のキャッシュディレクトリや Keychain を読める主体 (同一ユーザー権限のプロセス、Full Disk Access を持つツール、バックアップ、ユーザー権限を奪取したマルウェア等) に対する防御境界ではない。Extension のサンドボックスコンテナ内に置かれることは、他のサンドボックスアプリによる偶発的アクセスを減らす程度であり、強い防御境界とはみなさない。
+
 ### Keychain Access Group
 
 ホストアプリと App Extension で同一の Keychain Access Group を共有し、ホストアプリで保存した認証情報を Extension が読み取る。
@@ -389,6 +401,7 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 | Access Group | `$(AppIdentifierPrefix)com.zumix.jirafs.shared` |
 | Service (項目名) | `com.zumix.jirafs.<instanceName>` |
 | Account | 認証方式に応じた識別子 (例: API Token なら email, PAT なら `pat`) |
+| Service (ディスクキャッシュ鍵) | `com.zumix.jirafs.cachekey.<SHA256(product\|instanceName) 先頭16B hex>` / Account `cache_encryption_key` |
 
 両ターゲットの `entitlements` に以下を含める。
 

@@ -11,16 +11,26 @@ private let cacheLogger = Logger(subsystem: "com.zumix.jirafs", category: "cache
 ///
 /// **Disk layer** (opt-in via `diskEnabled`): persists entries as
 /// AES-GCM-encrypted files under `cachesDir`.
-/// - The encryption key is stored as `.cache.key` (raw 32 bytes) inside the
-///   cache directory. The directory is created with mode `0700` and the key
-///   file with `0600` (owner-only read/write). When running as the FSKit
-///   extension the directory is also inside the sandbox container, giving
-///   defence-in-depth. On shared or non-sandboxed systems the POSIX
-///   permissions are the primary access control.
-///   Note: FSKit extensions run as system daemons and cannot call
-///   `SecItemAdd`, so Keychain storage is not available in this context.
-/// - File names are the SHA-256 hash of the cache key, so no path
-///   information is visible on disk without the key.
+/// - The master encryption key is supplied by the caller (resolved from the
+///   shared data-protection Keychain via `KeychainManager.loadOrCreateCacheKey`)
+///   and is **never** written to disk. Two purpose-specific keys are derived
+///   from it with HKDF-SHA256: one for AES-GCM payload encryption and one for
+///   the filename HMAC, so the same key material is not reused across
+///   primitives.
+/// - File names are `HMAC-SHA256(filenameKey, cacheKey)` (truncated), so they
+///   are not guessable from a predictable `cacheKey` without the key, and no
+///   path information is visible on disk.
+/// - The cache directory is created with mode `0700`. Note: storing the
+///   directory inside the FSKit extension's sandbox container only limits
+///   access by *other sandboxed* apps; it is NOT a security boundary against
+///   the same user, unsandboxed processes, Full Disk Access tools, backups, or
+///   malware running with the user's privileges. The on-disk encryption exists
+///   to avoid persisting API responses as plaintext, not to defend against an
+///   attacker who can read the Keychain. Credentials live separately in the
+///   Keychain; the disk cache only holds cached copies of API responses.
+/// - If `diskEnabled` is requested but no encryption key is available (e.g. a
+///   transient Keychain failure), the cache falls back to memory-only (logging
+///   the condition). It never writes a plaintext key as a fallback.
 ///
 /// `synchronize()` clears both layers (called from `FSVolume.synchronize`).
 public actor CacheManager {
@@ -37,7 +47,8 @@ public actor CacheManager {
 
     private let diskEnabled: Bool
     private let cacheDir: URL?          // nil when diskEnabled == false
-    private let encryptionKey: SymmetricKey?
+    private let encryptionKey: SymmetricKey?   // HKDF-derived AES-GCM key
+    private let filenameKey: SymmetricKey?     // HKDF-derived filename HMAC key
 
     // MARK: - Init
 
@@ -47,18 +58,89 @@ public actor CacheManager {
     ///   - diskEnabled: When `true`, entries are also persisted to disk.
     ///   - cachesDir:   Per-instance cache directory. The directory is created
     ///                  if it does not exist. Only used when `diskEnabled` is `true`.
-    public init(diskEnabled: Bool = false, cachesDir: URL? = nil) {
-        self.diskEnabled = diskEnabled
+    ///   - encryptionKey: Master key (from the Keychain) used to derive the
+    ///                  disk encryption and filename keys. Required for disk
+    ///                  persistence; if `nil`, the cache falls back to
+    ///                  memory-only even when `diskEnabled` is `true`.
+    public init(diskEnabled: Bool = false, cachesDir: URL? = nil,
+                encryptionKey masterKey: SymmetricKey? = nil) {
+        // Disk persistence requires ALL of: the flag, a directory, and a key.
+        // Computing a single effective flag guarantees we never end up with a
+        // cacheDir but no key (which would make evictExpiredDiskEntries treat
+        // every file as undecryptable and delete it).
+        let effective = diskEnabled && cachesDir != nil && masterKey != nil
+        // Always purge a legacy plaintext key file when disk caching was
+        // requested for this directory, even if we ultimately fall back to
+        // memory-only — leaving old sensitive key material on disk would
+        // contradict the migration guarantee.
         if diskEnabled, let dir = cachesDir {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                     attributes: [.posixPermissions: 0o700])
+            CacheManager.removeLegacyKeyFile(in: dir)
+        }
+        // Disk persistence further requires a usable directory. Creating it can
+        // fail (permissions / I/O), and an already-existing directory may not be
+        // writable, so probe writability after creation. If the directory cannot
+        // be used, fall back to memory-only instead of pretending disk caching is
+        // on while every write silently no-ops.
+        var diskReady = effective
+        if effective, let dir = cachesDir {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                let probe = dir.appendingPathComponent(".probe-\(UUID().uuidString)")
+                try Data().write(to: probe, options: .atomic)
+                try? FileManager.default.removeItem(at: probe)
+            } catch {
+                diskReady = false
+                cacheLogger.error("CacheManager init: cache directory unusable; falling back to memory-only: \(String(describing: error))")
+            }
+        }
+        if diskReady, let dir = cachesDir, let master = masterKey {
+            self.diskEnabled = true
             self.cacheDir = dir
-            self.encryptionKey = CacheManager.loadOrCreateEncryptionKey(in: dir)
-            cacheLogger.info("CacheManager init: diskEnabled=true hasKey=\(self.encryptionKey != nil)")
+            self.encryptionKey = CacheManager.deriveKey(from: master, info: Self.encryptionKeyInfo)
+            self.filenameKey = CacheManager.deriveKey(from: master, info: Self.filenameKeyInfo)
+            cacheLogger.info("CacheManager init: diskEnabled=true (key from Keychain)")
         } else {
+            // Only the missing-prerequisite case is reported here; a directory
+            // failure already logged its own, more specific reason above.
+            if diskEnabled && !effective {
+                cacheLogger.error("CacheManager init: disk cache requested but unavailable; falling back to memory-only (cachesDirMissing=\(cachesDir == nil), encryptionKeyMissing=\(masterKey == nil))")
+            }
+            self.diskEnabled = false
             self.cacheDir = nil
             self.encryptionKey = nil
+            self.filenameKey = nil
             cacheLogger.info("CacheManager init: diskEnabled=false")
+        }
+    }
+
+    /// Stable, product-agnostic HKDF context labels. These are a compatibility
+    /// boundary for the on-disk format: changing them changes the derived keys
+    /// and invalidates existing `.cache` files, so they are versioned and must
+    /// not be edited casually. `CacheManager` is shared by jirafs and
+    /// confluencefs, so the labels are deliberately product-neutral.
+    private static let encryptionKeyInfo = "com.zumix.atlassian.cache.encryption.v1"
+    private static let filenameKeyInfo = "com.zumix.atlassian.cache.filename-hmac.v1"
+
+    /// Derives a purpose-specific 256-bit key from the Keychain master key so
+    /// that AES-GCM encryption and the filename HMAC never share key material.
+    /// An empty salt is intentional: the master key is a uniformly random 256-bit
+    /// Keychain key, so HKDF needs no salt to condition the input; purpose
+    /// separation is provided entirely by the versioned `info` labels. Passing an
+    /// explicit empty salt is byte-equivalent to the salt-less overload, so it
+    /// does not change derived keys or the on-disk format.
+    private static func deriveKey(from master: SymmetricKey, info: String) -> SymmetricKey {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: master, salt: Data(),
+                               info: Data(info.utf8), outputByteCount: 32)
+    }
+
+    /// Best-effort removal of the legacy plaintext `.cache.key` file from older
+    /// versions that stored the key on disk next to the ciphertext.
+    private static func removeLegacyKeyFile(in dir: URL) {
+        let legacy = dir.appendingPathComponent(".cache.key")
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            try? FileManager.default.removeItem(at: legacy)
+            cacheLogger.info("removed legacy plaintext .cache.key")
         }
     }
 
@@ -225,14 +307,21 @@ public actor CacheManager {
     /// - Parameter staleWindow: Extra grace period after TTL expiry before a file is deleted.
     ///   Defaults to 7 days so stale-while-revalidate can use expired entries across remounts.
     public func evictExpiredDiskEntries(staleWindow: TimeInterval = 7 * 24 * 3600) {
-        guard diskEnabled, let dir = cacheDir else { return }
+        guard diskEnabled, let dir = cacheDir, encryptionKey != nil else { return }
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
         let cutoff = Date().addingTimeInterval(-staleWindow)
         for url in urls where url.pathExtension == "cache" {
-            if let envelope = try? Data(contentsOf: url),
-               let expiry = diskExpiry(from: envelope),
-               expiry < cutoff {
+            // A read failure (permissions / transient I/O) must NOT trigger a
+            // delete — only act on files we could actually read.
+            guard let envelope = try? Data(contentsOf: url) else { continue }
+            if let expiry = diskExpiry(from: envelope) {
+                if expiry < cutoff { try? fm.removeItem(at: url) }
+            } else {
+                // Readable but undecryptable with the current key: an orphan
+                // left behind by an old plaintext-file key or an older filename
+                // scheme. There is only one key per per-instance directory, so
+                // this is safe to purge.
                 try? fm.removeItem(at: url)
             }
         }
@@ -244,7 +333,7 @@ public actor CacheManager {
     /// The decrypted payload is: expiry(8, big-endian UInt64 unix timestamp) + JSON-encoded value.
     /// The expiry is inside the encrypted payload — it is NOT a plaintext field in the file.
     private func diskSet<T: Codable>(key: String, value: T, ttl: TimeInterval) {
-        guard let dir = cacheDir, let encKey = encryptionKey else { return }
+        guard let dir = cacheDir, let encKey = encryptionKey, let nameKey = filenameKey else { return }
         guard let plaintext = try? JSONEncoder().encode(value) else { return }
         let expiry = Date().addingTimeInterval(ttl)
         var expiryBytes = UInt64(expiry.timeIntervalSince1970).bigEndian
@@ -252,13 +341,13 @@ public actor CacheManager {
         let payload = expiryData + plaintext
         guard let sealed = try? AES.GCM.seal(payload, using: encKey) else { return }
         guard let combined = sealed.combined else { return }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         try? combined.write(to: fileURL, options: .atomic)
     }
 
     private func diskGet<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {
-        guard let dir = cacheDir, let encKey = encryptionKey else { return nil }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
+        guard let dir = cacheDir, let encKey = encryptionKey, let nameKey = filenameKey else { return nil }
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         guard let combined = try? Data(contentsOf: fileURL) else { return nil }
         guard let sealedBox = try? AES.GCM.SealedBox(combined: combined) else { return nil }
         guard let payload = try? AES.GCM.open(sealedBox, using: encKey) else { return nil }
@@ -274,11 +363,11 @@ public actor CacheManager {
 
     /// Like `diskGet` but skips the expiry check — for stale-while-revalidate.
     private func diskGetStale<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {
-        guard let dir = cacheDir, let encKey = encryptionKey else {
+        guard let dir = cacheDir, let encKey = encryptionKey, let nameKey = filenameKey else {
             cacheLogger.info("diskGetStale: no dir or key for \(key, privacy: .private)")
             return nil
         }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         let fileExists = FileManager.default.fileExists(atPath: fileURL.path)
         cacheLogger.info("diskGetStale: file=\(fileURL.lastPathComponent, privacy: .public) exists=\(fileExists)")
         guard let combined = try? Data(contentsOf: fileURL) else {
@@ -305,8 +394,8 @@ public actor CacheManager {
     }
 
     private func diskRemove(key: String) {
-        guard let dir = cacheDir else { return }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key)).appendingPathExtension("cache")
+        guard let dir = cacheDir, let nameKey = filenameKey else { return }
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         try? FileManager.default.removeItem(at: fileURL)
     }
 
@@ -328,38 +417,18 @@ public actor CacheManager {
         return Date(timeIntervalSince1970: TimeInterval(ts))
     }
 
-    /// File name = first 32 hex chars of SHA-256(cacheKey). Not reversible.
-    private func diskFileName(for key: String) -> String {
-        let digest = SHA256.hash(data: Data(key.utf8))
-        return digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+    /// File name = first 32 hex chars of HMAC-SHA256(filenameKey, cacheKey).
+    /// Keyed so it is not guessable from a predictable `cacheKey`, and not
+    /// reversible.
+    private func diskFileName(for key: String, using nameKey: SymmetricKey) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(key.utf8), using: nameKey)
+        return mac.prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Key management
     //
-    // The 256-bit AES-GCM key is stored as a raw 32-byte file (.cache.key)
-    // inside the cache directory. The directory is created with mode 0700 and
-    // the key file itself is written with mode 0600 (owner-only read/write).
-    // When running as the FSKit extension the directory is additionally inside
-    // the macOS sandbox container. On shared or non-sandboxed systems the POSIX
-    // permissions are the primary access control.
-    // FSKit extensions run as system daemons and cannot call SecItemAdd,
-    // making Keychain storage unavailable in this context.
-
-    private static func loadOrCreateEncryptionKey(in dir: URL) -> SymmetricKey {
-        let keyURL = dir.appendingPathComponent(".cache.key")
-        if let keyData = try? Data(contentsOf: keyURL), keyData.count == 32 {
-            cacheLogger.info("loadOrCreateEncryptionKey: loaded existing key")
-            return SymmetricKey(data: keyData)
-        }
-        let newKey = SymmetricKey(size: .bits256)
-        let keyData = newKey.withUnsafeBytes { Data($0) }
-        do {
-            try keyData.write(to: keyURL, options: [.atomic, .completeFileProtection])
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
-            cacheLogger.info("loadOrCreateEncryptionKey: generated and saved new key")
-        } catch {
-            cacheLogger.error("loadOrCreateEncryptionKey: write failed \(error, privacy: .public)")
-        }
-        return newKey
-    }
+    // The disk cache's master key lives in the shared data-protection Keychain
+    // (see KeychainManager.loadOrCreateCacheKey) and is passed into `init`. It
+    // is never written to disk. The AES-GCM and filename-HMAC keys are derived
+    // from it via HKDF-SHA256.
 }

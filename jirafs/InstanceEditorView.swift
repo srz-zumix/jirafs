@@ -23,6 +23,9 @@ struct InstanceEditorView: View {
         case failure(String)
     }
     @State private var verifyState: VerifyState = .idle
+    /// Non-nil when `save()` was aborted (e.g. Keychain provisioning failed),
+    /// surfaced to the user instead of silently swallowing the failure.
+    @State private var saveError: String?
 
     private let originalName: String?
     /// Stored to detect when the Keychain account key changes (method or email
@@ -207,6 +210,14 @@ struct InstanceEditorView: View {
             .padding()
         }
         .frame(minWidth: 460, minHeight: 400)
+        .alert("Could not save", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) { saveError = nil }
+        } message: {
+            Text(saveError ?? "")
+        }
     }
 
     @ViewBuilder
@@ -354,12 +365,26 @@ struct InstanceEditorView: View {
 
     private func save() {
         guard let url = URL(string: urlString) else { return }
+        saveError = nil
+        // Provision the disk-cache encryption key before any other Keychain
+        // mutation so a provisioning failure aborts the save without leaving an
+        // orphaned credential behind (e.g. when editing + renaming an instance).
+        if diskCache && !name.isEmpty {
+            do {
+                _ = try KeychainManager().loadOrCreateCacheKey(instanceName: name, product: "jirafs")
+            } catch {
+                print("Cache key provisioning failed: \(error)")
+                saveError = "Disk cache could not be enabled because its encryption key could not be created in the Keychain. Turn off Disk Cache to save, or try again. (\(error.localizedDescription))"
+                return
+            }
+        }
         if !token.isEmpty {
             do {
                 let account = method == .apiToken ? (email.isEmpty ? "api_token" : email) : "pat"
                 try KeychainManager().setPassword(token, instanceName: name, account: account)
             } catch {
                 print("Keychain save failed: \(error)")
+                saveError = "Could not save the credential to the Keychain. \(error.localizedDescription)"
                 return
             }
         }
@@ -376,6 +401,15 @@ struct InstanceEditorView: View {
             diskCache: diskCache,
             htmlView: htmlView
         )
+        // Best-effort cleanup of the previous instance's orphaned cache key when
+        // the instance was renamed. Non-fatal: a failure must not abort the save.
+        if let original = originalName, original != name {
+            do {
+                try KeychainManager().deleteCacheKey(instanceName: original, product: "jirafs")
+            } catch {
+                print("Old cache key cleanup failed: \(error)")
+            }
+        }
         onSave(entry)
     }
 }
