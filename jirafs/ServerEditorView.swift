@@ -156,6 +156,20 @@ struct ServerEditorView: View {
 
             Divider()
 
+            if let warning = httpsWarning {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(warning).foregroundStyle(.primary)
+                    Spacer()
+                }
+                .font(.callout)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(Color(nsColor: .controlBackgroundColor))
+
+                Divider()
+            }
+
             if verifyState != .idle {
                 HStack(spacing: 6) {
                     switch verifyState {
@@ -292,16 +306,38 @@ struct ServerEditorView: View {
             && (!enableConfluence || effectiveConfluenceURL != nil)
     }
 
+    /// Non-nil when any active URL uses a scheme other than `https` (e.g. plain
+    /// `http://`). Basic / Bearer tokens are sent in clear text over HTTP, so
+    /// the UI shows a warning and blocks save.
+    private var httpsWarning: String? {
+        if isCloud {
+            if let url = effectiveJiraURL ?? effectiveConfluenceURL,
+               url.scheme?.lowercased() != "https" {
+                return "URL must start with https://"
+            }
+        } else {
+            if enableJira, let url = effectiveJiraURL,
+               url.scheme?.lowercased() != "https" {
+                return "JIRA URL must start with https://"
+            }
+            if enableConfluence, let url = effectiveConfluenceURL,
+               url.scheme?.lowercased() != "https" {
+                return "Confluence URL must start with https://"
+            }
+        }
+        return nil
+    }
+
     private var tokenAvailable: Bool {
         !token.isEmpty || (!isNew && !keychainKeyChanged)
     }
 
     private var isValid: Bool {
-        !name.isEmpty && hasProduct && urlsValid && tokenAvailable
+        !name.isEmpty && hasProduct && urlsValid && httpsWarning == nil && tokenAvailable
     }
 
     private var canVerify: Bool {
-        hasProduct && urlsValid && tokenAvailable
+        hasProduct && urlsValid && httpsWarning == nil && tokenAvailable
     }
 
     private var account: String { method.keychainAccount(email: email) }
