@@ -23,19 +23,19 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
             // before it processes the reply(volume:) call, so we ensure it here.
             // (If probeResource was called it already set .ready; this is idempotent.)
             self.containerStatus = .ready
-            let hostname = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
-            logger.info("loadResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
-            let (instanceName, config, auth, allowedProjectKeys, ttl, pagination, diskCacheEnabled, htmlEnabled) =
-                try JiraFileSystem.lookupInstance(hostname: hostname)
+            let mountID = JiraFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
+            logger.info("loadResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
+            let (volumeName, cacheID, config, auth, allowedProjectKeys, ttl, pagination, diskCacheEnabled, htmlEnabled) =
+                try JiraFileSystem.lookupInstance(mountID: mountID)
             let client = JiraRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
-                ? CacheManager.cacheDirectory(for: instanceName,
+                ? CacheManager.cacheDirectory(for: cacheID,
                                               baseCachesDir: CacheManager.processCachesBaseURL())
                 : nil
             let encryptionKey: SymmetricKey?
             if diskCacheEnabled {
                 do {
-                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: instanceName, product: "jirafs")
+                    encryptionKey = try KeychainManager().loadOrCreateCacheKey(instanceName: cacheID, product: "jirafs")
                 } catch {
                     encryptionKey = nil
                     logger.error("disk cache enabled but cache key unavailable; using memory-only cache: \(String(describing: error), privacy: .public)")
@@ -56,8 +56,8 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
                 allowedProjectKeys: allowedProjectKeys
             )
             let isReadOnly = true
-            let volume = JiraVolume(name: instanceName, dataSource: dataSource, isReadOnly: isReadOnly, htmlEnabled: htmlEnabled)
-            logger.info("loaded volume for \(instanceName, privacy: .public)")
+            let volume = JiraVolume(name: volumeName, dataSource: dataSource, isReadOnly: isReadOnly, htmlEnabled: htmlEnabled)
+            logger.info("loaded volume for \(volumeName, privacy: .public)")
             // FSKit automatically transitions containerStatus notReady → active
             // when reply(volume, nil) is called. Do NOT set it manually here
             // or FSKit reports "unexpected container state".
@@ -76,24 +76,24 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
     }
 
     func probeResource(resource: FSResource, replyHandler reply: @escaping (FSProbeResult?, Error?) -> Void) {
-        // URL ベースのマウントでは resource から hostname を KVC で取得し、
-        // config.json の対応インスタンスを選択する。
-        let hostname = JiraFileSystem.hostname(from: resource, taskOptions: [])
-        logger.info("probeResource hostname=\(hostname ?? "<unknown>", privacy: .public)")
+        // URL ベースのマウントでは resource から mountID (URL host) を KVC で取得し、
+        // config.json の対応マウントを選択する。
+        let mountID = JiraFileSystem.hostname(from: resource, taskOptions: [])
+        logger.info("probeResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
         let entry: Configuration.InstanceEntry?
-        if let hostname {
-            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        if let mountID {
+            entry = config.instances.first { $0.mountID == mountID } ?? config.instances.first
         } else {
             entry = config.instances.first
         }
         let name = entry?.name ?? "jirafs"
-        // Deterministic UUID keyed on the hostname (or instance name) so fskitd
+        // Deterministic UUID keyed on the mountID (or instance name) so fskitd
         // recognises the same container across the probe → load state machine.
         // Using a random UUID causes EAGAIN because fskitd treats every attempt
         // as an unknown container and immediately closes it.
-        let seedKey = hostname ?? name
+        let seedKey = mountID ?? name
         let containerID = FSContainerIdentifier(uuid: JiraFileSystem.deterministicUUID(for: seedKey))
         // Transition notReady → ready so that fskitd can subsequently call
         // loadResource. FSKit requires the container to be in "ready" state
@@ -109,8 +109,9 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
 
     // MARK: - Configuration lookup
 
-    /// Extracts the JIRA hostname from the FSResource (via KVC) or from the
-    /// raw taskOptions strings (looks for a "jira://" URL).
+    /// Extracts the mount identifier (carried as the URL host of the
+    /// `jira://<mountID>` mount URL) from the FSResource (via KVC) or from the
+    /// raw taskOptions strings.
     static func hostname(from resource: FSResource, taskOptions: [String]) -> String? {
         // Approach 1: FSResource may carry a URL property (non-public API).
         // Use KVC so we don't crash if the property doesn't exist.
@@ -128,12 +129,6 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         return nil
     }
 
-    static func firstInstance() -> Configuration.InstanceEntry? {
-        let configURL = JiraFileSystem.configURL()
-        let config = (try? Configuration.load(from: configURL)) ?? Configuration()
-        return config.instances.first
-    }
-
     static func deterministicUUID(for key: String) -> UUID {
         // Derive a UUID from SHA-256 so different keys have negligible collision risk.
         // Version/variant bits are set per RFC 4122 §4.3 (name-based UUID, version 5).
@@ -146,16 +141,19 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
                            bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
-    /// Resolve the instance matching `hostname` (falls back to the first entry).
-    static func lookupInstance(hostname: String?) throws
-        -> (String, JiraInstanceConfig, AuthProvider, [String]?,
+    /// Resolve the mount matching `mountID` (falls back to the first entry).
+    /// Returns `(volumeName, cacheID, config, auth, allowedProjectKeys, ttl, pagination, diskCache, htmlView)`.
+    /// Credentials are read from the Keychain by the mount's `serverID`; the
+    /// disk cache is namespaced by the mount's `mountID` (`cacheID`).
+    static func lookupInstance(mountID: String?) throws
+        -> (String, String, JiraInstanceConfig, AuthProvider, [String]?,
             Configuration.CacheTTLConfig, Configuration.Pagination, Bool, Bool)
     {
         let configURL = JiraFileSystem.configURL()
         let config = (try? Configuration.load(from: configURL)) ?? Configuration()
         let entry: Configuration.InstanceEntry?
-        if let hostname {
-            entry = config.instances.first { $0.url.host == hostname } ?? config.instances.first
+        if let mountID {
+            entry = config.instances.first { $0.mountID == mountID } ?? config.instances.first
         } else {
             entry = config.instances.first
         }
@@ -167,13 +165,13 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         case .apiToken:
             let email = entry.auth.email ?? ""
             let account = email.isEmpty ? "api_token" : email
-            let token = try keychain.password(instanceName: entry.name, account: account)
+            let token = try keychain.serverPassword(serverID: entry.serverID, account: account)
             auth = APITokenAuth(email: email, token: token)
         case .pat:
-            let token = try keychain.password(instanceName: entry.name, account: "pat")
+            let token = try keychain.serverPassword(serverID: entry.serverID, account: "pat")
             auth = PATAuth(token: token)
         }
-        return (entry.name, cfg, auth, entry.allowedProjectKeys,
+        return (entry.name, entry.mountID, cfg, auth, entry.allowedProjectKeys,
                 config.cache, config.pagination, entry.diskCache, entry.htmlView)
     }
 

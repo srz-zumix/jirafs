@@ -34,12 +34,42 @@ public struct KeychainManager: Sendable {
         "\(Self.servicePrefix).\(instanceName)"
     }
 
+    /// Keychain service name for a server's shared credentials. Servers are
+    /// keyed by a stable UUID so several mounts can reuse one credential and so
+    /// renaming a server never orphans its stored token.
+    public func service(forServer serverID: String) -> String {
+        "\(Self.servicePrefix).server.\(serverID)"
+    }
+
+    /// Store a credential against a server (shared by all of its mounts).
+    public func setServerPassword(_ password: String, serverID: String, account: String) throws {
+        try setPassword(password, service: service(forServer: serverID), account: account)
+    }
+
+    /// Read a server credential. Used by both the host app and the extension.
+    public func serverPassword(serverID: String, account: String) throws -> String {
+        try password(service: service(forServer: serverID), account: account)
+    }
+
+    /// Remove a server credential (used when the server is deleted).
+    public func deleteServerPassword(serverID: String, account: String) throws {
+        try delete(service: service(forServer: serverID), account: account)
+    }
+
     public func setPassword(
         _ password: String,
         instanceName: String,
         account: String
     ) throws {
-        let service = service(forInstance: instanceName)
+        try setPassword(password, service: service(forInstance: instanceName), account: account)
+    }
+
+    /// Core write keyed directly by Keychain `service`.
+    public func setPassword(
+        _ password: String,
+        service: String,
+        account: String
+    ) throws {
         guard let data = password.data(using: .utf8) else {
             throw AtlassianError.missingCredentials
         }
@@ -71,7 +101,11 @@ public struct KeychainManager: Sendable {
     }
 
     public func password(instanceName: String, account: String) throws -> String {
-        let service = service(forInstance: instanceName)
+        try password(service: service(forInstance: instanceName), account: account)
+    }
+
+    /// Core read keyed directly by Keychain `service`.
+    public func password(service: String, account: String) throws -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -101,7 +135,11 @@ public struct KeychainManager: Sendable {
     }
 
     public func delete(instanceName: String, account: String) throws {
-        let service = service(forInstance: instanceName)
+        try delete(service: service(forInstance: instanceName), account: account)
+    }
+
+    /// Core delete keyed directly by Keychain `service`.
+    public func delete(service: String, account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
