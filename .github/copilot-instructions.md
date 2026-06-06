@@ -1,33 +1,40 @@
 ## Project: jirafs
 
-JIRA のデータを macOS のファイルシステムとしてマウントするツール。
-Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装。
+JIRA / Confluence のデータを macOS のファイルシステムとしてマウントするツール。
+Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装（JIRA / Confluence それぞれ独立の拡張 + 単一のホストアプリ）。
 
 ### Tech Stack
 
 - Swift 6.0, macOS 15.4+
 - FSKit (FSUnaryFileSystem / FSVolume)
 - JIRA REST API v2 (Server) / v3 (Cloud)
+- Confluence REST API v1 (Data Center) / v2 (Cloud)
 - SwiftUI (ホストアプリ)
 - macOS Keychain (認証情報保存)
 
 ### Architecture
 
-- `jirafs/` — ホストアプリ (設定 UI)
-- `jirafs-extension/` — FSKit App Extension (ファイルシステム実装)
-- `JiraAPI/` — JIRA REST API クライアント (共有フレームワーク)
-- `JiraFSCore/` — パス解決・キャッシュ・変換ロジック (共有フレームワーク)
+- `jirafs/` — ホストアプリ (設定 UI / メニューバー。Server/Mount モデル + AppStore)
+- `jirafs-extension/` — JIRA FSKit App Extension
+- `confluencefs-extension/` — Confluence FSKit App Extension
+- `AtlassianCore/` — プロダクト非依存の共有ロジック (認証 / HTTP / RateLimiter / Keychain / 2 層キャッシュ / サニタイザ / ADF レンダラ)
+- `JiraAPI/` — JIRA REST API クライアント・モデル (共有フレームワーク)
+- `JiraFSCore/` — JIRA 用パス解決・データソース・本文変換 (共有フレームワーク)
+- `ConfluenceAPI/` — Confluence REST API クライアント・モデル (共有フレームワーク)
+- `ConfluenceFSCore/` — Confluence 用パス解決・データソース・本文変換 (共有フレームワーク)
 
 ### Key Conventions
 
 - FSKit の reply handler パターンに従う (completion handler ベース)
 - 内部 API は async/await で実装し、FSKit 境界で変換
 - エラーは POSIXError に変換して返却
-- ログは os.Logger で出力 (subsystem: `com.zumix.jirafs`)
-- 認証情報は Keychain に保存、平文保存禁止
+- ログは os.Logger で出力 (subsystem: `com.zumix.jirafs`)。HTTP エラーのレスポンスボディは `privacy: .private`、URL / ステータスコードのみ `.public`
+- 認証情報は Keychain に保存、平文保存禁止。クレデンシャルは Server 単位で共有 (JIRA / Confluence 共通)
+- **接続 URL は `https://` 必須**。ServerEditorView が非 HTTPS URL を拒否する (Save / Verify を無効化)
 - ファイル名はサニタイズ必須 (パストラバーサル防止)
-- JIRA API レスポンスは Codable モデルにデコード
-- キャッシュは TTL ベース (In-Memory)
+- API レスポンスは Codable モデルにデコード
+- キャッシュは TTL ベース (In-Memory + オプションで AES-GCM 暗号化ディスク)
+- 設定はホストアプリの `AppStore` (appstore.json) が source of truth。保存時に各拡張のサンドボックスに `config.json` を派生
 
 ### File System Layout
 
@@ -43,11 +50,11 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装。
 ### Coding Rules
 
 - コーディング中の TEMP ディレクトリは .gitignore された `tmp/` を使用
-- フォルダ命名は Swift 慣例: `Tests/` `Documentation/` `JiraAPI/` `JiraFSCore/` は PascalCase、製品名そのものの `jirafs/` `jirafs-extension/` は lowercase
+- フォルダ命名は Swift 慣例: `Tests/` `Documentation/` `AtlassianCore/` `JiraAPI/` `JiraFSCore/` `ConfluenceAPI/` `ConfluenceFSCore/` は PascalCase、製品名そのものの `jirafs/` `jirafs-extension/` `confluencefs-extension/` は lowercase
 - 新規 Swift ソースを追加したら `xcodegen generate` を実行 (`project.yml` がソース・オブ・トゥルース、`jirafs.xcodeproj` は gitignore 済)
 - ビルド・テストは Xcode 16.4+ / `DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer` 必須
 - `xcodebuild` で `CODE_SIGNING_ALLOWED=NO` を付与するのは CI / unit test / 署名不要ビルドに限定する。FSKit Extension を実際に mount・検証するビルドや release 用ビルドでは署名が必要なので、`Documentation/INSTRUCTIONS.md` と release workflow の手順に従う
-- ホスト/拡張は `MACOSX_DEPLOYMENT_TARGET=15.4`、`JiraAPI` / `JiraFSCore` / Tests は `14.0` を維持
+- ホスト/拡張は `MACOSX_DEPLOYMENT_TARGET=15.4`、共有フレームワーク (`AtlassianCore` / `JiraAPI` / `JiraFSCore` / `ConfluenceAPI` / `ConfluenceFSCore`) / Tests は `14.0` を維持
 - Swift 6 strict concurrency 準拠。FSKit reply handler を `Task` でキャプチャするときは `SendableBox(reply)` でラップ
 - `actor` 内の `while` ループで mutable var をクロージャに渡す前に `let` で不変コピーを取る
 - `*/Info.plist` の `CFBundleShortVersionString` / `CFBundleVersion` は `.github/workflows/release-drafter.yml` が自動更新するため、Agent は変更しないこと
