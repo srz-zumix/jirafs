@@ -2,6 +2,9 @@ import SwiftUI
 import JiraAPI
 import ConfluenceAPI
 import AtlassianCore
+import os
+
+private let serverEditorLogger = Logger(subsystem: "com.zumix.jirafs", category: "server-editor")
 
 /// Editor for a reusable `Server`: connection details for JIRA and/or
 /// Confluence plus a single shared credential. The credential token lives in
@@ -387,18 +390,25 @@ struct ServerEditorView: View {
 
         if !token.isEmpty {
             do {
-                // Delete the old credential entry if the Keychain account key
-                // changed (method or email changed). Leaving orphaned entries
-                // causes confusion and wastes Keychain space.
-                if keychainKeyChanged, let origMethod = originalMethod {
-                    let origAccount = origMethod.keychainAccount(email: originalEmail)
-                    try? KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
-                }
                 try KeychainManager().setServerPassword(token, serverID: serverID, account: account)
             } catch {
-                print("Keychain save failed: \(error)")
+                serverEditorLogger.error("Keychain save failed: \(error.localizedDescription, privacy: .public)")
                 saveError = "Could not save the credential to the Keychain. \(error.localizedDescription)"
                 return
+            }
+            // Delete the old credential entry only after the new one is stored
+            // successfully, so a delete failure can never leave the server
+            // without any credential. The account key changes when the auth
+            // method or email changes; leaving the stale entry would orphan a
+            // token in the shared Keychain. A failure here is non-fatal (the new
+            // credential is already saved) but must not be silently discarded.
+            if keychainKeyChanged, let origMethod = originalMethod {
+                let origAccount = origMethod.keychainAccount(email: originalEmail)
+                do {
+                    try KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
+                } catch {
+                    serverEditorLogger.error("Failed to delete orphaned Keychain entry (serverID=\(serverID, privacy: .public), account=\(origAccount, privacy: .private)): \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
 
