@@ -366,6 +366,18 @@ struct InstanceEditorView: View {
     private func save() {
         guard let url = URL(string: urlString) else { return }
         saveError = nil
+        // Provision the disk-cache encryption key before any other Keychain
+        // mutation so a provisioning failure aborts the save without leaving an
+        // orphaned credential behind (e.g. when editing + renaming an instance).
+        if diskCache && !name.isEmpty {
+            do {
+                _ = try KeychainManager().loadOrCreateCacheKey(instanceName: name, product: "jirafs")
+            } catch {
+                print("Cache key provisioning failed: \(error)")
+                saveError = "Disk cache could not be enabled because its encryption key could not be created in the Keychain. Turn off Disk Cache to save, or try again. (\(error.localizedDescription))"
+                return
+            }
+        }
         if !token.isEmpty {
             do {
                 let account = method == .apiToken ? (email.isEmpty ? "api_token" : email) : "pat"
@@ -389,15 +401,6 @@ struct InstanceEditorView: View {
             diskCache: diskCache,
             htmlView: htmlView
         )
-        if diskCache && !name.isEmpty {
-            do {
-                _ = try KeychainManager().loadOrCreateCacheKey(instanceName: name, product: "jirafs")
-            } catch {
-                print("Cache key provisioning failed: \(error)")
-                saveError = "Disk cache could not be enabled because its encryption key could not be created in the Keychain. Turn off Disk Cache to save, or try again. (\(error.localizedDescription))"
-                return
-            }
-        }
         onSave(entry)
     }
 }
