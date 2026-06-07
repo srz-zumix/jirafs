@@ -74,4 +74,20 @@ public protocol ConfluenceClient: Sendable {
     func listLabels(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceLabel>
 
     func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data
+
+    /// Returns the IDs of **root** pages (depth=root) of a space that have any
+    /// user/group restriction (read or update). Cloud uses v1 Space content API
+    /// scoped to `depth=root`; Data Center always returns an empty set because
+    /// restriction data is embedded inline via `expand` in the list response.
+    /// - Parameters:
+    ///   - spaceKey: The space key (e.g. "DOC").
+    ///   - status: `"current"` or `"archived"`.
+    func restrictedRootPageIDs(spaceKey: String, status: String) async throws -> Set<String>
+
+    /// Returns the IDs of **direct child pages** of `pageId` that have any
+    /// user/group restriction. Same Cloud/DC split as `restrictedRootPageIDs`.
+    /// - Parameters:
+    ///   - pageId: The parent page ID.
+    ///   - status: `"current"` or `"archived"`.
+    func restrictedChildPageIDs(pageId: String, status: String) async throws -> Set<String>
 }

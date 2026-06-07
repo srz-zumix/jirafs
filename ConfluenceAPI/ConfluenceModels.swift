@@ -49,6 +49,10 @@ public struct ConfluencePage: Codable, Sendable, Equatable, Identifiable {
     public let createdAt: String?
     /// Absolute or relative URL to view the page in a browser, when known.
     public let webURL: String?
+    /// `true` if the page has any user/group restrictions (read or update operation).
+    /// `nil` means restriction status is unknown (e.g., loaded from older cache or
+    /// Cloud list where restriction data is fetched separately).
+    public let hasRestrictions: Bool?
 
     public init(
         id: String,
@@ -59,7 +63,8 @@ public struct ConfluencePage: Codable, Sendable, Equatable, Identifiable {
         version: Int? = nil,
         authorId: String? = nil,
         createdAt: String? = nil,
-        webURL: String? = nil
+        webURL: String? = nil,
+        hasRestrictions: Bool? = nil
     ) {
         self.id = id
         self.title = title
@@ -70,6 +75,7 @@ public struct ConfluencePage: Codable, Sendable, Equatable, Identifiable {
         self.authorId = authorId
         self.createdAt = createdAt
         self.webURL = webURL
+        self.hasRestrictions = hasRestrictions
     }
 }
 

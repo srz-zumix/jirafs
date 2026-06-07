@@ -187,4 +187,130 @@ final class ConfluenceRESTClientTests: XCTestCase {
             XCTAssertEqual(error, .notFound)
         }
     }
+
+    // MARK: - Restrictions
+
+    func testDCListRootPagesRestrictionsExpandAndMapping() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "10", "title": "Open",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } }
+              }
+            },
+            {
+              "id": "20", "title": "UserRead",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 2}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } }
+              }
+            },
+            {
+              "id": "30", "title": "GroupUpdate",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 1} } }
+              }
+            }
+          ],
+          "start": 0, "limit": 25, "size": 3, "_links": {}
+        }
+        """
+        stub.responses["/rest/api/space/TEAM/content/page"] = (200, Data(json.utf8))
+        let client = dcClient(stub)
+        let space = ConfluenceSpace(id: "98306", key: "TEAM", name: "Team")
+        let page = try await client.listRootPages(space: space, cursor: nil, limit: 25)
+        XCTAssertEqual(page.items.count, 3)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("expand="), "URL should include expand: \(url)")
+        XCTAssertTrue(url.contains("restrictions.read.restrictions.user"), "URL should include read-user expand: \(url)")
+        let open = page.items.first { $0.id == "10" }
+        let userRestricted = page.items.first { $0.id == "20" }
+        let groupRestricted = page.items.first { $0.id == "30" }
+        XCTAssertEqual(open?.hasRestrictions, false)
+        XCTAssertEqual(userRestricted?.hasRestrictions, true)
+        XCTAssertEqual(groupRestricted?.hasRestrictions, true)
+    }
+
+    func testCloudRestrictedRootPageIDsScopedToRootOnly() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "100",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } }
+              }
+            },
+            {
+              "id": "200",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 1}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } }
+              }
+            },
+            {
+              "id": "300",
+              "restrictions": {
+                "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 2} } }
+              }
+            }
+          ],
+          "start": 0, "size": 3, "_links": {}
+        }
+        """
+        stub.responses["/wiki/rest/api/space/DOC/content/page"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current")
+        XCTAssertFalse(ids.contains("100"), "Page 100 has no restrictions")
+        XCTAssertTrue(ids.contains("200"), "Page 200 has user read restriction")
+        XCTAssertTrue(ids.contains("300"), "Page 300 has group update restriction")
+        XCTAssertEqual(ids.count, 2)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        // Must use the scoped space content endpoint, NOT the global content search
+        XCTAssertTrue(url.contains("/wiki/rest/api/space/DOC/content/page"), "Should use space-scoped API: \(url)")
+        XCTAssertTrue(url.contains("depth=root"), "Should restrict to root depth: \(url)")
+        XCTAssertTrue(url.contains("status=current"), "Should filter by status: \(url)")
+        XCTAssertFalse(url.contains("spaceKey="), "Must NOT use global content search: \(url)")
+    }
+
+    func testCloudRestrictedChildPageIDsScopedToParent() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            { "id": "500",
+              "restrictions": { "read": { "restrictions": { "user": {"size": 3}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } }
+          ],
+          "start": 0, "size": 1, "_links": {}
+        }
+        """
+        stub.responses["/wiki/rest/api/content/42/child/page"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedChildPageIDs(pageId: "42", status: "current")
+        XCTAssertTrue(ids.contains("500"))
+        XCTAssertEqual(ids.count, 1)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("/wiki/rest/api/content/42/child/page"), "Should use parent-scoped API: \(url)")
+        XCTAssertFalse(url.contains("depth="), "Child endpoint does not need depth param: \(url)")
+    }
+
+    func testCloudRestrictedPageIDsReturnsEmptyForDC() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let rootIDs = try await client.restrictedRootPageIDs(spaceKey: "TEAM", status: "current")
+        let childIDs = try await client.restrictedChildPageIDs(pageId: "1", status: "current")
+        XCTAssertTrue(rootIDs.isEmpty, "DC must return empty set for restrictedRootPageIDs")
+        XCTAssertTrue(childIDs.isEmpty, "DC must return empty set for restrictedChildPageIDs")
+        XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
+    }
 }
+

@@ -104,12 +104,16 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     var htmlView: Bool
     /// Confluence-only: include archived pages. Ignored for JIRA.
     var includeArchived: Bool
+    /// Confluence-only: include pages with user/group restrictions. Ignored for JIRA.
+    /// Defaults to `false` (restricted pages are excluded).
+    var includeRestricted: Bool
     var autoMount: Bool
 
     init(id: String = UUID().uuidString, serverID: String, product: MountProduct,
          name: String, mountPath: String? = nil, allowedKeys: [String]? = nil,
          diskCache: Bool = true, htmlView: Bool = false,
-         includeArchived: Bool = false, autoMount: Bool = false) {
+         includeArchived: Bool = false, includeRestricted: Bool = false,
+         autoMount: Bool = false) {
         self.id = id
         self.serverID = serverID
         self.product = product
@@ -119,7 +123,23 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         self.diskCache = diskCache
         self.htmlView = htmlView
         self.includeArchived = includeArchived
+        self.includeRestricted = includeRestricted
         self.autoMount = autoMount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id              = try c.decode(String.self, forKey: .id)
+        serverID        = try c.decode(String.self, forKey: .serverID)
+        product         = try c.decode(MountProduct.self, forKey: .product)
+        name            = try c.decode(String.self, forKey: .name)
+        mountPath       = try c.decodeIfPresent(String.self, forKey: .mountPath)
+        allowedKeys     = try c.decodeIfPresent([String].self, forKey: .allowedKeys)
+        diskCache       = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? true
+        htmlView        = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
+        includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
+        includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
+        autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
     }
 
     var effectiveMountPath: String {

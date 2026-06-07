@@ -235,7 +235,7 @@ extension ConfluenceVolume: FSVolume.Operations {
             return result
         case .pageDir(let spaceKey, let pageId):
             var kids = ConfluencePathResolver.childKinds(of: kind)
-            let entries = try await dataSource.childPageEntries(pageId: pageId)
+            let entries = try await dataSource.childPageEntries(pageId: pageId, spaceKey: spaceKey)
             kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
             if await dataSource.includeArchived {
                 kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId)))
@@ -246,7 +246,7 @@ extension ConfluenceVolume: FSVolume.Operations {
                 await withTaskGroup(of: Void.self) { group in
                     for entry in entries {
                         let id = entry.page.id
-                        group.addTask { _ = try? await self.dataSource.childPageEntries(pageId: id) }
+                        group.addTask { _ = try? await self.dataSource.childPageEntries(pageId: id, spaceKey: spaceKey) }
                     }
                 }
             }
@@ -272,7 +272,7 @@ extension ConfluenceVolume: FSVolume.Operations {
             let entries = try await dataSource.archivedRootPageEntries(space: space)
             return pageEntries(entries, spaceKey: spaceKey)
         case .archivedChildPagesDir(let spaceKey, let pageId):
-            let entries = try await dataSource.archivedChildPageEntries(pageId: pageId)
+            let entries = try await dataSource.archivedChildPageEntries(pageId: pageId, spaceKey: spaceKey)
             return pageEntries(entries, spaceKey: spaceKey)
         default:
             return []

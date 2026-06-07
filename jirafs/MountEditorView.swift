@@ -17,6 +17,7 @@ struct MountEditorView: View {
     @State private var diskCache: Bool
     @State private var htmlView: Bool
     @State private var includeArchived: Bool
+    @State private var includeRestricted: Bool
     @State private var autoMount: Bool
     @State private var saveError: String?
 
@@ -51,6 +52,7 @@ struct MountEditorView: View {
         _diskCache = State(initialValue: initial?.diskCache ?? true)
         _htmlView = State(initialValue: initial?.htmlView ?? false)
         _includeArchived = State(initialValue: initial?.includeArchived ?? false)
+        _includeRestricted = State(initialValue: initial?.includeRestricted ?? false)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -125,6 +127,12 @@ struct MountEditorView: View {
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .help("Include archived pages.")
+                            }
+                            fieldRow("Restricted") {
+                                Toggle("", isOn: $includeRestricted)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .help("Include pages with user/group restrictions. Off by default.")
                             }
                         }
                         fieldRow("Auto-mount") {
@@ -266,6 +274,7 @@ struct MountEditorView: View {
             diskCache: diskCache,
             htmlView: htmlView,
             includeArchived: product == .confluence ? includeArchived : false,
+            includeRestricted: product == .confluence ? includeRestricted : false,
             autoMount: autoMount
         )
         onSave(mount)

@@ -107,6 +107,7 @@ enum AppConfig {
                 diskCache: mount.diskCache,
                 htmlView: mount.htmlView,
                 includeArchived: mount.includeArchived,
+                includeRestricted: mount.includeRestricted,
                 autoMount: mount.autoMount
             )
         }
