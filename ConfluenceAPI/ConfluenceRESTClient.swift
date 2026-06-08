@@ -224,7 +224,13 @@ public actor ConfluenceRESTClient: ConfluenceClient {
                 restricted.insert(item.id)
             }
             let size = page.size ?? page.results.count
-            if size < limit || page.links?.next == nil { break }
+            // A short page is always the last page.
+            if size < limit { break }
+            // A full page with an explicit `next == nil` (the `_links` envelope is
+            // present but carries no next link) is the last page. When the
+            // `_links` envelope is absent entirely we cannot conclude there are no
+            // more pages, so keep paging by `start`/`size` until a short page.
+            if let links = page.links, links.next == nil { break }
             start += size
         }
         return restricted

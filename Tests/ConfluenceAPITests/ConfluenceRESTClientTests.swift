@@ -303,6 +303,44 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertFalse(url.contains("depth="), "Child endpoint does not need depth param: \(url)")
     }
 
+    func testCloudRestrictedPageIDsContinuesPagingWhenLinksEnvelopeAbsent() async throws {
+        // Regression: a full first page (size == limit) that omits the `_links`
+        // envelope entirely must NOT terminate pagination. Restricted IDs on
+        // later pages would otherwise be missed, leaking restricted pages.
+        let stub = ConfluenceStubTransport()
+        let limit = 50
+        func unrestricted(_ id: String) -> String {
+            """
+            { "id": "\(id)",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } }
+            """
+        }
+        func restricted(_ id: String) -> String {
+            """
+            { "id": "\(id)",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 1}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } }
+            """
+        }
+        // Page 1: exactly `limit` items, one restricted ("r0"), and NO `_links`.
+        var page1Items = (0..<(limit - 1)).map { unrestricted("u\($0)") }
+        page1Items.append(restricted("r0"))
+        let page1 = "{ \"results\": [\(page1Items.joined(separator: ","))], \"start\": 0, \"size\": \(limit) }"
+        // Page 2: a short page (terminates) with another restricted id ("r1").
+        let page2 = "{ \"results\": [\(restricted("r1"))], \"start\": \(limit), \"size\": 1, \"_links\": {} }"
+
+        stub.responses["start=0&limit=\(limit)"] = (200, Data(page1.utf8))
+        stub.responses["start=\(limit)&limit=\(limit)"] = (200, Data(page2.utf8))
+
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current")
+        XCTAssertTrue(ids.contains("r0"), "Page 1 restricted id must be collected")
+        XCTAssertTrue(ids.contains("r1"), "Page 2 restricted id must be collected even though page 1 had no _links")
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(stub.requests.count, 2, "Should fetch both pages")
+    }
+
     func testCloudRestrictedPageIDsReturnsEmptyForDC() async throws {
         let stub = ConfluenceStubTransport()
         let client = dcClient(stub)
