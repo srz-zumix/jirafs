@@ -1,4 +1,5 @@
 import Foundation
+import AtlassianCore
 
 /// Confluence edition. Cloud uses REST API v2 (`/wiki/api/v2/`) with cursor
 /// pagination; Data Center / Server uses REST API v1 (`/rest/api/`) with
@@ -82,12 +83,16 @@ public protocol ConfluenceClient: Sendable {
     /// - Parameters:
     ///   - spaceKey: The space key (e.g. "DOC").
     ///   - status: `"current"` or `"archived"`.
-    func restrictedRootPageIDs(spaceKey: String, status: String) async throws -> Set<String>
+    ///   - limiter: Wraps each page request so 429 / server-error retries and
+    ///     backoff are applied per page during pagination.
+    func restrictedRootPageIDs(spaceKey: String, status: String, limiter: RateLimiter) async throws -> Set<String>
 
     /// Returns the IDs of **direct child pages** of `pageId` that have any
     /// user/group restriction. Same Cloud/DC split as `restrictedRootPageIDs`.
     /// - Parameters:
     ///   - pageId: The parent page ID.
     ///   - status: `"current"` or `"archived"`.
-    func restrictedChildPageIDs(pageId: String, status: String) async throws -> Set<String>
+    ///   - limiter: Wraps each page request so 429 / server-error retries and
+    ///     backoff are applied per page during pagination.
+    func restrictedChildPageIDs(pageId: String, status: String, limiter: RateLimiter) async throws -> Set<String>
 }

@@ -268,7 +268,7 @@ final class ConfluenceRESTClientTests: XCTestCase {
         """
         stub.responses["/wiki/rest/api/space/DOC/content/page"] = (200, Data(json.utf8))
         let client = cloudClient(stub)
-        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current")
+        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current", limiter: RateLimiter())
         XCTAssertFalse(ids.contains("100"), "Page 100 has no restrictions")
         XCTAssertTrue(ids.contains("200"), "Page 200 has user read restriction")
         XCTAssertTrue(ids.contains("300"), "Page 300 has group update restriction")
@@ -295,7 +295,7 @@ final class ConfluenceRESTClientTests: XCTestCase {
         """
         stub.responses["/wiki/rest/api/content/42/child/page"] = (200, Data(json.utf8))
         let client = cloudClient(stub)
-        let ids = try await client.restrictedChildPageIDs(pageId: "42", status: "current")
+        let ids = try await client.restrictedChildPageIDs(pageId: "42", status: "current", limiter: RateLimiter())
         XCTAssertTrue(ids.contains("500"))
         XCTAssertEqual(ids.count, 1)
         let url = stub.requests.first?.url?.absoluteString ?? ""
@@ -334,7 +334,7 @@ final class ConfluenceRESTClientTests: XCTestCase {
         stub.responses["start=\(limit)&limit=\(limit)"] = (200, Data(page2.utf8))
 
         let client = cloudClient(stub)
-        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current")
+        let ids = try await client.restrictedRootPageIDs(spaceKey: "DOC", status: "current", limiter: RateLimiter())
         XCTAssertTrue(ids.contains("r0"), "Page 1 restricted id must be collected")
         XCTAssertTrue(ids.contains("r1"), "Page 2 restricted id must be collected even though page 1 had no _links")
         XCTAssertEqual(ids.count, 2)
@@ -344,8 +344,8 @@ final class ConfluenceRESTClientTests: XCTestCase {
     func testCloudRestrictedPageIDsReturnsEmptyForDC() async throws {
         let stub = ConfluenceStubTransport()
         let client = dcClient(stub)
-        let rootIDs = try await client.restrictedRootPageIDs(spaceKey: "TEAM", status: "current")
-        let childIDs = try await client.restrictedChildPageIDs(pageId: "1", status: "current")
+        let rootIDs = try await client.restrictedRootPageIDs(spaceKey: "TEAM", status: "current", limiter: RateLimiter())
+        let childIDs = try await client.restrictedChildPageIDs(pageId: "1", status: "current", limiter: RateLimiter())
         XCTAssertTrue(rootIDs.isEmpty, "DC must return empty set for restrictedRootPageIDs")
         XCTAssertTrue(childIDs.isEmpty, "DC must return empty set for restrictedChildPageIDs")
         XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")

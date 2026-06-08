@@ -179,7 +179,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return data
     }
 
-    public func restrictedRootPageIDs(spaceKey: String, status: String) async throws -> Set<String> {
+    public func restrictedRootPageIDs(spaceKey: String, status: String, limiter: RateLimiter) async throws -> Set<String> {
         // Data Center: restriction data is embedded inline via `expand` in list responses.
         guard config.edition.isCloud else { return [] }
         // Cloud: v1 Space content API scoped to depth=root — fetches only the
@@ -190,10 +190,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             URLQueryItem(name: "expand", value: Self.restrictionsExpand)
         ]
         return try await v1PaginatedRestrictedIDs(path: "space/\(spaceKey)/content/page",
-                                                  baseQuery: baseQuery)
+                                                  baseQuery: baseQuery,
+                                                  limiter: limiter)
     }
 
-    public func restrictedChildPageIDs(pageId: String, status: String) async throws -> Set<String> {
+    public func restrictedChildPageIDs(pageId: String, status: String, limiter: RateLimiter) async throws -> Set<String> {
         // Data Center: restriction data is embedded inline via `expand` in list responses.
         guard config.edition.isCloud else { return [] }
         // Cloud: v1 child page API for this specific parent — only the direct
@@ -203,14 +204,18 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             URLQueryItem(name: "expand", value: Self.restrictionsExpand)
         ]
         return try await v1PaginatedRestrictedIDs(path: "content/\(pageId)/child/page",
-                                                  baseQuery: baseQuery)
+                                                  baseQuery: baseQuery,
+                                                  limiter: limiter)
     }
 
     /// Paginates a Cloud v1 API endpoint with `start`/`limit` and collects the
-    /// IDs of items where `restrictions.hasAny == true`.
+    /// IDs of items where `restrictions.hasAny == true`. Each page request is
+    /// routed through `limiter` so 429 / server-error retries and backoff are
+    /// applied independently per page.
     private func v1PaginatedRestrictedIDs(
         path: String,
-        baseQuery: [URLQueryItem]
+        baseQuery: [URLQueryItem],
+        limiter: RateLimiter
     ) async throws -> Set<String> {
         let limit = 50
         var start = 0
@@ -219,7 +224,10 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             var query = baseQuery
             query.append(URLQueryItem(name: "start", value: String(start)))
             query.append(URLQueryItem(name: "limit", value: String(limit)))
-            let page: V1ContentList = try await sendDecoding(url: try cloudV1URL(path, query: query))
+            let url = try cloudV1URL(path, query: query)
+            let page: V1ContentList = try await limiter.run {
+                try await self.sendDecoding(url: url)
+            }
             for item in page.results where item.restrictions?.hasAny == true {
                 restricted.insert(item.id)
             }

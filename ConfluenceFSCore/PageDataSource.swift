@@ -114,7 +114,7 @@ public actor PageDataSource {
             let filtered = try await self.filterRestricted(
                 pages,
                 restrictedIDsKey: "restrictedIDs/root/\(space.key)/current"
-            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "current") }
+            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "current", limiter: self.limiter) }
             return self.makeEntries(filtered)
         }
     }
@@ -129,7 +129,7 @@ public actor PageDataSource {
             let filtered = try await self.filterRestricted(
                 pages,
                 restrictedIDsKey: "restrictedIDs/root/\(space.key)/archived"
-            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "archived") }
+            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "archived", limiter: self.limiter) }
             return self.makeEntries(filtered)
         }
     }
@@ -144,7 +144,7 @@ public actor PageDataSource {
             let filtered = try await self.filterRestricted(
                 pages,
                 restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/current"
-            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "current") }
+            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "current", limiter: self.limiter) }
             return self.makeEntries(filtered)
         }
     }
@@ -160,7 +160,7 @@ public actor PageDataSource {
             let filtered = try await self.filterRestricted(
                 pages,
                 restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/archived"
-            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "archived") }
+            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "archived", limiter: self.limiter) }
             return self.makeEntries(filtered)
         }
     }
@@ -251,8 +251,12 @@ public actor PageDataSource {
     /// tasks share one in-flight API call per cache key.
     private func restrictedIDsSingleFlight(
         cacheKey: String,
-        fetch: @Sendable @escaping () async throws -> Set<String>
+        fetch rawFetch: @Sendable @escaping () async throws -> Set<String>
     ) async throws -> Set<String> {
+        // Single-flight + cache only; per-page rate limiting is applied inside
+        // the client's paginated restricted-ID fetch so each page request honours
+        // 429 / server-error retries and backoff independently.
+        let fetch = rawFetch
         if let fresh = await cache.get(cacheKey, as: Set<String>.self) { return fresh }
         if let stale = await cache.getStale(cacheKey, as: Set<String>.self) {
             scheduleRefresh(cacheKey, ttl: ttl.pages, fetch: fetch)
@@ -267,8 +271,13 @@ public actor PageDataSource {
         pendingRestrictedIDsFetch[cacheKey] = task
         do {
             let ids = try await task.value
-            pendingRestrictedIDsFetch[cacheKey] = nil
+            // Write the cache *before* clearing the pending entry. Because
+            // `cache.set` is an `await` suspension point, the actor can be
+            // re-entered during it; keeping the task registered until the cache
+            // is populated ensures a concurrent caller joins this fetch instead
+            // of starting a duplicate one (single-flight guarantee).
             await cache.set(cacheKey, value: ids, ttl: ttl.pages)
+            pendingRestrictedIDsFetch[cacheKey] = nil
             return ids
         } catch {
             pendingRestrictedIDsFetch[cacheKey] = nil
