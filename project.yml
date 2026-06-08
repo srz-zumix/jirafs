@@ -254,6 +254,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSMultipleInstancesProhibited: true
         NSHumanReadableCopyright: "Copyright © 2026"
         NSPrincipalClass: NSApplication
         CFBundleURLTypes:

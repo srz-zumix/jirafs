@@ -35,6 +35,9 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装（
 - API レスポンスは Codable モデルにデコード
 - キャッシュは TTL ベース (In-Memory + オプションで AES-GCM 暗号化ディスク)
 - 設定はホストアプリの `AppStore` (appstore.json) が source of truth。保存時に各拡張のサンドボックスに `config.json` を派生
+- **フィルタ設定をキャッシュキーに反映**する: `includeRestricted` / `includeArchived` などのフラグや allowedKeys の変更がマウント再読み込みで即反映されるよう、キャッシュキーにフラグ値またはフィンガープリントを組み込む。ただし全スペース/プロジェクトのリストは未フィルタでキャッシュし読み出し時にフィルタする (フィルタ変更でキャッシュを捨てない)
+- **Confluence 制限フィルタ** (`includeRestricted: false` がデフォルト): Cloud は `restrictedRootPageIDs(spaceKey:status:)` / `restrictedChildPageIDs(pageId:status:)` でディレクトリ単位に制限 ID を取得 (全スペーススキャン禁止)。DC は list expand で inline 取得。単一フライトで並列重複呼び出しを防ぐ (`pendingRestrictedIDsFetch`)
+- **新しいオプションを Mount / ConfluenceConfiguration.InstanceEntry に追加する手順**: `Mount` struct → `ConfluenceConfiguration.InstanceEntry` → `AppConfig.deriveConfluence` → `ConfluenceFileSystem.lookupInstance` タプル → `PageDataSource` init の順でスタック全体を通す。`includeArchived` / `includeRestricted` の実装を参照すること
 
 ### File System Layout
 

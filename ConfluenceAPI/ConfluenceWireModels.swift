@@ -268,7 +268,10 @@ struct DCPage: Decodable {
 
 // MARK: - Cloud v1 Content list (for restricted page ID collection)
 
-/// Wire model for `GET /wiki/rest/api/content?spaceKey=...&expand=restrictions...`.
+/// Wire model for the Cloud v1 page-list endpoints used to collect restricted
+/// page IDs: `GET /wiki/rest/api/space/{spaceKey}/content/page` (root pages) and
+/// `GET /wiki/rest/api/content/{id}/child/page` (child pages), both expanded
+/// with the read/update restriction users and groups.
 /// Only the fields needed for restriction detection are decoded.
 struct V1ContentList: Decodable {
     let results: [V1ContentItem]

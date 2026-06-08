@@ -37,7 +37,8 @@ public actor PageDataSource {
 
     private var refreshing: Set<String> = []
     /// Single-flight guard for Cloud restricted-page-ID fetches. Prevents N
-    /// concurrent tasks from each initiating the same full-space v1 API scan
+    /// concurrent tasks from each initiating the same directory-scoped
+    /// restricted-ID fetch (root pages of a space, or one parent's children)
     /// when the background pre-caching fills child-page entries in parallel.
     private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
 
@@ -135,13 +136,14 @@ public actor PageDataSource {
 
     /// Sanitized, deduplicated child-page entries for a page, sorted by title.
     public func childPageEntries(pageId: String, spaceKey: String) async throws -> [ConfluencePageEntry] {
-        try await cached("childpages/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("childpages/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
             let pages = try await self.fetchAll { cursor in
                 try await self.client.listChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
             }
             let filtered = try await self.filterRestricted(
                 pages,
-                restrictedIDsKey: "restrictedIDs/children/\(pageId)/current"
+                restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/current"
             ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "current") }
             return self.makeEntries(filtered)
         }
@@ -150,13 +152,14 @@ public actor PageDataSource {
     /// Sanitized, deduplicated archived child-page entries. Only fetched when `includeArchived` is true.
     public func archivedChildPageEntries(pageId: String, spaceKey: String) async throws -> [ConfluencePageEntry] {
         guard includeArchived else { return [] }
-        return try await cached("archivedChildPages/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("archivedChildPages/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
             let pages = try await self.fetchAll { cursor in
                 try await self.client.listArchivedChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
             }
             let filtered = try await self.filterRestricted(
                 pages,
-                restrictedIDsKey: "restrictedIDs/children/\(pageId)/archived"
+                restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/archived"
             ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "archived") }
             return self.makeEntries(filtered)
         }
