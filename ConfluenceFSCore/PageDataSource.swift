@@ -235,6 +235,10 @@ public actor PageDataSource {
         fetchRestrictedIDs: @Sendable @escaping () async throws -> Set<String>
     ) async throws -> [ConfluencePage] {
         guard !includeRestricted else { return pages }
+        // An empty listing has nothing to filter; skip the restricted-ID fetch
+        // entirely so empty spaces/parents don't trigger a needless API request
+        // (and cache entry) on Cloud.
+        guard !pages.isEmpty else { return pages }
         if client.config.edition.isCloud {
             let ids = try await restrictedIDsSingleFlight(
                 cacheKey: restrictedIDsKey,
