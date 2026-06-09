@@ -115,6 +115,78 @@ mount -F -t jirafs jira://jira.internal.example.com ~/jirafs/internal
 
 > **注**: `.jirafs/` ディレクトリはマウント内に表示されるが、設定の source of truth (`appstore.json`) はホストアプリの `~/Library/Application Support/jirafs/appstore.json` に保存され、各 Extension はそこから派生した `config.json` を自身のサンドボックスコンテナから読む (詳細は後述の「設定ファイル」)。マウント内の `.jirafs/config.json` は読み取り専用ビュー (Phase 1 では空オブジェクトを返すスタブ)。
 
+## 動的検索ビュー (`search/`) — 将来構想
+
+> **ステータス**: 設計のみ確定。実装は未着手 (Phase 2 以降)。本節は採用方針 (B/C ハイブリッド) を記録するもので、`FSNodeKind` やボリューム操作の実装はまだ存在しない。
+
+### 背景と課題
+
+マウント時に JQL / CQL を 1 つ固定する方式 (`mount -o jql=...`) には次の制約がある。
+
+1. **クエリを変更できない** — 別クエリを使うには再マウントが必要。
+2. **動的クエリを表現しづらい** — 1 マウント = 1 クエリでは、複数・即席のクエリを同時に扱えない。
+
+「クエリをパスに載せる」案 (パス = クエリ) はパス制約と衝突するため不採用とした。
+
+- `/` がパス区切りと衝突する (`created >= 2024/01/01`, `project IN (A/B)` 等)。
+- 1 パスコンポーネントは **255 バイト上限**。複雑なクエリが収まらない。
+- **APFS は既定で case-insensitive** のため、大小のみ異なるクエリが同一パスに衝突しうる。
+- 演算子 (`=` `~` `<` `>` `()` `"`) がシェルメタ文字でクォート必須となり、可読パスという唯一の利点が失われる。
+
+→ 結論: **クエリは「パス」ではなく「ファイルの内容」として表現する**。パス名には「ユーザー / AI が付ける安全な識別子」だけを使い、クエリ本文は内部の `query` ファイルに逃がす。これにより文字種・長さ・大小・シェル安全性の問題をすべて回避できる。
+
+### 採用方針: B/C ハイブリッド (コントロールファイル方式)
+
+マウント内に「クエリ名前空間」 `search/` を置く。クエリの指定・変更はファイルへの書き込みで表現し、結果は canonical な issue / page ディレクトリへの **シンボリックリンク** で返す (実体を二重に持たずキャッシュを共有する。Phase 2 の `filters/` ビュー方針と一致)。
+
+```
+/jirafs/
+└── search/
+    ├── query           # B: 使い捨ての即席クエリ。echo '...' > query で更新
+    ├── results/        # B: query 反映後の結果 (symlink 群)
+    │   ├── PROJ1-1/ → ../../projects/PROJ1/issues/PROJ1-1
+    │   └── ...
+    ├── status.json     # B: 実行状態 (件数・実行時刻・鮮度・エラー・truncated)
+    └── <name>/         # C: mkdir で作る名前付き保存クエリ
+        ├── query.jql   #    クエリ本文 (任意の文字 OK。/ " 改行 長文すべて可)
+        ├── results/    #    再評価後の symlink 群
+        └── status.json
+```
+
+- **B (即席クエリ)**: `search/` 直下の `query` / `results/` / `status.json`。`echo 'project=FOO AND status=Open' > query` で更新し、`ls results/` で結果を得る。使い捨て用途。
+- **C (保存クエリ)**: `mkdir search/<name>` で名前付きビューを作成し、内部の `query.jql` (JIRA) / `query.cql` (Confluence) を書き換えると再評価される。定常的なビューを複数保持・命名でき、`ls search/` で一覧できる。
+- **read-only との両立**: 全体の read-only ポリシーは維持し、**書き込みを許可するのは `query` / `query.jql` / `query.cql` とディレクトリ作成のみ**に限定する。これらは **ローカル状態のみを変更し、リモート (JIRA / Confluence) を一切変更しない** ため、「リモートを mutate しない」という安全性の中核は崩れない。それ以外への書き込みは従来どおり拒否する。
+
+### 決めるべきセマンティクス (実装時に確定)
+
+| 項目 | 方針案 |
+|---|---|
+| 列挙の有限性 | 任意クエリは無限。`ls search/` には保存クエリ (C) と即席 (B) のみ出す。任意クエリのワンショット解決を許す場合は `lookupItem` 専用とし、列挙には載せない |
+| 再評価トリガ | `query` への write 完了時に再評価。加えて `results/` 列挙時の TTL 失効でバックグラウンドリフレッシュ (既存の stale-while-revalidate を流用) |
+| 鮮度の可視化 | `status.json` に `fetchedAt` / `stale` / `count` / `truncated` / `generation` を持たせ、AI / ツールが「反映済みか」「古いか」「途中までか」を判定できるようにする |
+| 結果上限 | 大量ヒット時に全 symlink を作ると重い。`maxResults` と `truncated: true` を設け、必要なら `results.pageN/` でページ分割 |
+| パス安全性 | C の `<name>` はユーザー / AI が付ける識別子なので [FileNameSanitizer](../AtlassianCore/FileNameSanitizer.swift) を適用 (パストラバーサル防止)。クエリ本文はファイル内容なのでサニタイズ不要 |
+| クエリ種別 | JIRA は JQL (`query.jql`)、Confluence は CQL (`query.cql`)。`search/` 直下の即席 `query` はマウント対象プロダクトの言語に従う |
+
+### status.json の例
+
+```json
+{
+  "query": "project = PROJ AND status = Open",
+  "count": 42,
+  "truncated": false,
+  "maxResults": 100,
+  "fetchedAt": "2024-01-15T12:00:00Z",
+  "stale": false,
+  "generation": 3,
+  "error": null
+}
+```
+
+### 補足: パス = クエリ案の限定採用
+
+パス = クエリ方式は、記号を含まない単純なキー指定 (例: `search/PROJ-123`) に限れば `lookupItem` での解決が可能であり、ショートカットとして任意で併設し得る。ただし複雑クエリは B/C に委ね、`search/` 直下に記号付きの可変パスを列挙することはしない。
+
 ## 動作モード (read-only / read-write)
 
 MVP では **2 つのモード**を切り替え可能とする。マウント時のオプションまたは設定 (`config.json`) で選択する。
