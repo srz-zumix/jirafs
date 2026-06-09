@@ -13,6 +13,15 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     private let decoder: JSONDecoder
     private let logger = AtlassianLog.logger("confluence-api")
 
+    /// Expand string that fetches restriction subjects (user + group) for both
+    /// read and update operations. Used in DC list requests and Cloud v1 content.
+    private static let restrictionsExpand = [
+        "restrictions.read.restrictions.user",
+        "restrictions.read.restrictions.group",
+        "restrictions.update.restrictions.user",
+        "restrictions.update.restrictions.group"
+    ].joined(separator: ",")
+
     public init(
         config: ConfluenceInstanceConfig,
         auth: AuthProvider,
@@ -50,7 +59,8 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let page: DCList<DCPage> = try await dcGet(
                 "space/\(space.key)/content/page",
                 cursor: cursor, limit: limit,
-                extraQuery: [URLQueryItem(name: "depth", value: "root")] + statusQuery
+                extraQuery: [URLQueryItem(name: "depth", value: "root"),
+                             URLQueryItem(name: "expand", value: Self.restrictionsExpand)] + statusQuery
             )
             return mapDC(page) { $0.domain }
         }
@@ -69,7 +79,8 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let page: DCList<DCPage> = try await dcGet(
                 "space/\(space.key)/content/page",
                 cursor: cursor, limit: limit,
-                extraQuery: [URLQueryItem(name: "depth", value: "root")] + statusQuery
+                extraQuery: [URLQueryItem(name: "depth", value: "root"),
+                             URLQueryItem(name: "expand", value: Self.restrictionsExpand)] + statusQuery
             )
             return mapDC(page) { $0.domain }
         }
@@ -81,7 +92,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let page: CloudList<CloudPage> = try await cloudGet("pages/\(pageId)/children", cursor: cursor, limit: limit, extraQuery: statusQuery)
             return ConfluencePageList(items: page.results.map { $0.domain(format: nil) }, nextCursor: page.cursor)
         } else {
-            let page: DCList<DCPage> = try await dcGet("content/\(pageId)/child/page", cursor: cursor, limit: limit, extraQuery: statusQuery)
+            let page: DCList<DCPage> = try await dcGet(
+                "content/\(pageId)/child/page",
+                cursor: cursor, limit: limit,
+                extraQuery: statusQuery + [URLQueryItem(name: "expand", value: Self.restrictionsExpand)]
+            )
             return mapDC(page) { $0.domain }
         }
     }
@@ -92,7 +107,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let page: CloudList<CloudPage> = try await cloudGet("pages/\(pageId)/children", cursor: cursor, limit: limit, extraQuery: statusQuery)
             return ConfluencePageList(items: page.results.map { $0.domain(format: nil) }, nextCursor: page.cursor)
         } else {
-            let page: DCList<DCPage> = try await dcGet("content/\(pageId)/child/page", cursor: cursor, limit: limit, extraQuery: statusQuery)
+            let page: DCList<DCPage> = try await dcGet(
+                "content/\(pageId)/child/page",
+                cursor: cursor, limit: limit,
+                extraQuery: statusQuery + [URLQueryItem(name: "expand", value: Self.restrictionsExpand)]
+            )
             return mapDC(page) { $0.domain }
         }
     }
@@ -160,6 +179,71 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return data
     }
 
+    public func restrictedRootPageIDs(spaceKey: String, status: String, limiter: RateLimiter) async throws -> Set<String> {
+        // Data Center: restriction data is embedded inline via `expand` in list responses.
+        guard config.edition.isCloud else { return [] }
+        // Cloud: v1 Space content API scoped to depth=root — fetches only the
+        // root pages of this space, not the entire page tree.
+        let baseQuery: [URLQueryItem] = [
+            URLQueryItem(name: "depth",  value: "root"),
+            URLQueryItem(name: "status", value: status),
+            URLQueryItem(name: "expand", value: Self.restrictionsExpand)
+        ]
+        return try await v1PaginatedRestrictedIDs(path: "space/\(spaceKey)/content/page",
+                                                  baseQuery: baseQuery,
+                                                  limiter: limiter)
+    }
+
+    public func restrictedChildPageIDs(pageId: String, status: String, limiter: RateLimiter) async throws -> Set<String> {
+        // Data Center: restriction data is embedded inline via `expand` in list responses.
+        guard config.edition.isCloud else { return [] }
+        // Cloud: v1 child page API for this specific parent — only the direct
+        // children are scanned, not the entire space.
+        let baseQuery: [URLQueryItem] = [
+            URLQueryItem(name: "status", value: status),
+            URLQueryItem(name: "expand", value: Self.restrictionsExpand)
+        ]
+        return try await v1PaginatedRestrictedIDs(path: "content/\(pageId)/child/page",
+                                                  baseQuery: baseQuery,
+                                                  limiter: limiter)
+    }
+
+    /// Paginates a Cloud v1 API endpoint with `start`/`limit` and collects the
+    /// IDs of items where `restrictions.hasAny == true`. Each page request is
+    /// routed through `limiter` so 429 / server-error retries and backoff are
+    /// applied independently per page.
+    private func v1PaginatedRestrictedIDs(
+        path: String,
+        baseQuery: [URLQueryItem],
+        limiter: RateLimiter
+    ) async throws -> Set<String> {
+        let limit = 50
+        var start = 0
+        var restricted = Set<String>()
+        while true {
+            var query = baseQuery
+            query.append(URLQueryItem(name: "start", value: String(start)))
+            query.append(URLQueryItem(name: "limit", value: String(limit)))
+            let url = try cloudV1URL(path, query: query)
+            let page: V1ContentList = try await limiter.run {
+                try await self.sendDecoding(url: url)
+            }
+            for item in page.results where item.restrictions?.hasAny == true {
+                restricted.insert(item.id)
+            }
+            let size = page.size ?? page.results.count
+            // A short page is always the last page.
+            if size < limit { break }
+            // A full page with an explicit `next == nil` (the `_links` envelope is
+            // present but carries no next link) is the last page. When the
+            // `_links` envelope is absent entirely we cannot conclude there are no
+            // more pages, so keep paging by `start`/`size` until a short page.
+            if let links = page.links, links.next == nil { break }
+            start += size
+        }
+        return restricted
+    }
+
     // MARK: - Cloud (v2) helpers
 
     private func cloudGet<T: Decodable>(
@@ -176,6 +260,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
 
     private func cloudURL(_ path: String, query: [URLQueryItem]) throws -> URL {
         try buildURL(basePath: "/wiki/api/v2/\(path)", query: query)
+    }
+
+    /// Cloud v1 REST API URL builder: `/wiki/rest/api/{path}`.
+    private func cloudV1URL(_ path: String, query: [URLQueryItem]) throws -> URL {
+        try buildURL(basePath: "/wiki/rest/api/\(path)", query: query)
     }
 
     // MARK: - Data Center (v1) helpers

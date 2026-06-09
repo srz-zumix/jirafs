@@ -47,6 +47,9 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// When `true`, archived pages are included in directory listings.
         /// Defaults to `false` (only current/active pages are shown).
         public var includeArchived: Bool
+        /// When `false` (default), pages with any user/group restriction (read or
+        /// update) are excluded from directory listings.
+        public var includeRestricted: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
         /// Defaults to `false`.
         public var autoMount: Bool
@@ -62,7 +65,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
                     url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
-                    autoMount: Bool = false) {
+                    includeRestricted: Bool = false, autoMount: Bool = false) {
             self.mountID = mountID
             self.serverID = serverID
             self.name = name
@@ -74,6 +77,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             self.diskCache = diskCache
             self.htmlView = htmlView
             self.includeArchived = includeArchived
+            self.includeRestricted = includeRestricted
             self.autoMount = autoMount
         }
 
@@ -90,6 +94,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             diskCache       = try c.decodeIfPresent(Bool.self, forKey: .diskCache) ?? true
             htmlView        = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
             includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
+            includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
             autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }

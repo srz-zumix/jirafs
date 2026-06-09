@@ -188,6 +188,35 @@ struct DCBody: Decodable {
     }
 }
 
+// MARK: - Restrictions (shared by DC list expand and Cloud v1 list)
+
+/// Restriction subjects for one operation (read / update).
+/// Only `size` is decoded; the full user/group objects are ignored.
+struct PageRestrictionSubjects: Decodable {
+    struct SizeOnly: Decodable { let size: Int? }
+    let user: SizeOnly?
+    let group: SizeOnly?
+
+    var hasAny: Bool {
+        (user?.size ?? 0) > 0 || (group?.size ?? 0) > 0
+    }
+}
+
+struct PageRestrictionOperation: Decodable {
+    let restrictions: PageRestrictionSubjects?
+}
+
+/// Page-level restrictions object: `{ "read": {...}, "update": {...} }`.
+struct PageRestrictions: Decodable {
+    let read: PageRestrictionOperation?
+    let update: PageRestrictionOperation?
+
+    /// `true` if any user/group restriction exists for any operation.
+    var hasAny: Bool {
+        (read?.restrictions?.hasAny ?? false) || (update?.restrictions?.hasAny ?? false)
+    }
+}
+
 struct DCUser: Decodable { let displayName: String? }
 
 struct DCVersion: Decodable {
@@ -209,10 +238,11 @@ struct DCPage: Decodable {
     let version: DCVersion?
     let history: DCHistory?
     let body: DCBody?
+    let restrictions: PageRestrictions?
     let links: Links?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, space, ancestors, version, history, body
+        case id, title, space, ancestors, version, history, body, restrictions
         case links = "_links"
     }
 
@@ -230,9 +260,35 @@ struct DCPage: Decodable {
             version: version?.number,
             authorId: version?.by?.displayName ?? history?.createdBy?.displayName,
             createdAt: history?.createdDate ?? version?.when,
-            webURL: links?.webui
+            webURL: links?.webui,
+            hasRestrictions: restrictions.map(\.hasAny)
         )
     }
+}
+
+// MARK: - Cloud v1 Content list (for restricted page ID collection)
+
+/// Wire model for the Cloud v1 page-list endpoints used to collect restricted
+/// page IDs: `GET /wiki/rest/api/space/{spaceKey}/content/page` (root pages) and
+/// `GET /wiki/rest/api/content/{id}/child/page` (child pages), both expanded
+/// with the read/update restriction users and groups.
+/// Only the fields needed for restriction detection are decoded.
+struct V1ContentList: Decodable {
+    let results: [V1ContentItem]
+    let start: Int?
+    let size: Int?
+    let links: Links?
+
+    enum CodingKeys: String, CodingKey {
+        case results, start, size
+        case links = "_links"
+    }
+    struct Links: Decodable { let next: String? }
+}
+
+struct V1ContentItem: Decodable {
+    let id: String
+    let restrictions: PageRestrictions?
 }
 
 struct DCComment: Decodable {

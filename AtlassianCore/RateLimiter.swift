@@ -9,6 +9,7 @@ public actor RateLimiter {
     public init(maxRetries: Int = 3, baseDelay: TimeInterval = 0.5) {
         self.maxRetries = maxRetries
         self.baseDelay = baseDelay
+        self.maxRetryAfter = 60
     }
 
     /// Maximum seconds to honour from a server-supplied `Retry-After` value.

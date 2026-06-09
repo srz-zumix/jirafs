@@ -87,8 +87,16 @@ public actor IssueDataSource {
 
     // MARK: - Public API
 
+    /// Cache key for the filtered projects list. Embeds a fingerprint of the
+    /// allowlist so that changing `allowedProjectKeys` (and remounting) never
+    /// returns an old cached result from disk.
+    private var projectsListKey: String {
+        guard let keys = allowedProjectKeys, !keys.isEmpty else { return "projects/*" }
+        return "projects/\(keys.sorted().joined(separator: ","))"
+    }
+
     public func projects() async throws -> [JiraProject] {
-        let cacheKey = "projects"
+        let cacheKey = projectsListKey
         if let fresh = await cache.get(cacheKey, as: [JiraProject].self) { return fresh }
         if let stale = await cache.getStale(cacheKey, as: [JiraProject].self) {
             scheduleRefresh(cacheKey) { await self.bgRefreshProjects() }
@@ -196,7 +204,23 @@ public actor IssueDataSource {
     /// is never blocked by API I/O. Network refreshes are handled by
     /// `postWarmUpRefresh()`, which runs after `reply(nil)`.
     public func warmUp() async {
-        guard let projects = await cache.getStale("projects", as: [JiraProject].self) else { return }
+        // Read the project list from the filter-aware key written by
+        // `projects()`. Fall back to the legacy unfiltered "projects" key so
+        // disk caches written before the key change still warm the cache, and
+        // apply the allowlist to avoid iterating projects the mount hides.
+        let projects: [JiraProject]
+        if let list = await cache.getStale(projectsListKey, as: [JiraProject].self) {
+            projects = list
+        } else if let legacy = await cache.getStale("projects", as: [JiraProject].self) {
+            if let allowed = allowedProjectKeys, !allowed.isEmpty {
+                let set = Set(allowed.map { $0.uppercased() })
+                projects = legacy.filter { set.contains($0.key.uppercased()) }
+            } else {
+                projects = legacy
+            }
+        } else {
+            return
+        }
         for project in projects {
             _ = await cache.getStale("issues/\(project.key)", as: [String].self)
         }
@@ -236,7 +260,7 @@ public actor IssueDataSource {
 
     private func bgRefreshProjects() async {
         _ = try? await fetchAndCacheProjects()
-        finishRefresh("projects")
+        finishRefresh(projectsListKey)
     }
 
     private func bgRefreshProject(key: String) async {
@@ -316,11 +340,29 @@ public actor IssueDataSource {
         let filtered: [JiraProject]
         if let allowed = allowedProjectKeys, !allowed.isEmpty {
             filtered = try await withThrowingTaskGroup(of: JiraProject?.self) { group in
+                let cache = self.cache
                 let client = self.client
                 let limiter = self.limiter
+                let projectTTL = ttl.projects
                 for key in allowed {
                     group.addTask {
-                        try? await limiter.run { try await client.getProject(key: key) }
+                        // Reuse the individual project cache (fresh or stale) so
+                        // that narrowing the filter (e.g. AAA/BBB/CCC → BBB/CCC)
+                        // assembles the result from cache without any API call.
+                        let indivKey = "project/\(key)"
+                        if let fresh = await cache.get(indivKey, as: JiraProject.self) {
+                            return fresh
+                        }
+                        if let stale = await cache.getStale(indivKey, as: JiraProject.self) {
+                            return stale
+                        }
+                        // Populate the per-project cache on fetch so a later
+                        // allowlist change can assemble the list from cache.
+                        if let project = try? await limiter.run({ try await client.getProject(key: key) }) {
+                            await cache.set(indivKey, value: project, ttl: projectTTL)
+                            return project
+                        }
+                        return nil
                     }
                 }
                 var results: [JiraProject] = []
@@ -335,7 +377,7 @@ public actor IssueDataSource {
             }
             filtered = value
         }
-        await cache.set("projects", value: filtered, ttl: ttl.projects)
+        await cache.set(projectsListKey, value: filtered, ttl: ttl.projects)
         return filtered
     }
 

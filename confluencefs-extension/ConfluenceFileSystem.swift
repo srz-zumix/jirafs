@@ -22,7 +22,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             self.containerStatus = .ready
             let mountID = ConfluenceFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
-            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived) =
+            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived, includeRestricted) =
                 try ConfluenceFileSystem.lookupInstance(mountID: mountID)
             let client = ConfluenceRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
@@ -52,7 +52,8 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                 ttl: ttl,
                 limit: pagination.limit,
                 allowedSpaceKeys: allowedSpaceKeys,
-                includeArchived: includeArchived
+                includeArchived: includeArchived,
+                includeRestricted: includeRestricted
             )
             let volume = ConfluenceVolume(name: volumeName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
             logger.info("loaded volume for \(volumeName, privacy: .public)")
@@ -119,7 +120,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     /// Resolve the mount matching `mountID` (falls back to the first entry).
     static func lookupInstance(mountID: String?) throws
         -> (String, String, ConfluenceInstanceConfig, AuthProvider, [String]?,
-            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool)
+            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool, Bool)
     {
         let configURL = ConfluenceFileSystem.configURL()
         let config = (try? ConfluenceConfiguration.load(from: configURL)) ?? ConfluenceConfiguration()
@@ -144,7 +145,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             auth = PATAuth(token: token)
         }
         return (entry.name, entry.mountID, cfg, auth, entry.allowedSpaceKeys,
-                config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived)
+                config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived, entry.includeRestricted)
     }
 
     static func configURL() -> URL {

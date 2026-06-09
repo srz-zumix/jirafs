@@ -432,7 +432,7 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 設定の source of truth は **ホストアプリ**が保持する `AppStore` で、**`~/Library/Application Support/jirafs/appstore.json`** に保存される。`AppStore` は以下の 2 要素を持つ。
 
 - **Server**: 再利用可能な接続情報 + 共有クレデンシャル。1 つの Server で JIRA / Confluence の両方の接続先を持て、認証情報 (Keychain) は Server 単位で共有する。
-- **Mount**: Server とプロダクト (`jira` / `confluence`) をマウントポイントに束ねた単位。フィルタ (`allowedKeys`)、`diskCache`、`htmlView`、`autoMount` などのオプションを持つ。
+- **Mount**: Server とプロダクト (`jira` / `confluence`) をマウントポイントに束ねた単位。フィルタ (`allowedKeys`)、`diskCache`、`htmlView`、`includeArchived` (Confluence のみ)、`includeRestricted` (Confluence のみ)、`autoMount` などのオプションを持つ。
 
 ホストアプリは `AppStore` を保存するたびに、各 FSKit Extension が読む **派生 `config.json` を自動生成**する。Extension はサンドボックス化されているため、App Group を使わず各 Extension のサンドボックスコンテナ内に config.json を書き込む (ホストアプリは非サンドボックスのため直接書き込める)。
 
@@ -637,7 +637,17 @@ Confluence 用設定は JIRA とは別の config.json に保存する。
 - パス: `~/Library/Containers/com.zumix.jirafs.confluencefs.fskit/Data/Library/Application Support/confluencefs/config.json`
 - スキーマ: `ConfluenceConfiguration` (`instances` の各要素は
   `name` / `type` (cloud/dataCenter) / `url` / `auth` / `mountPath` /
-  `allowedSpaceKeys` / `diskCache` / `htmlView`)
+  `allowedSpaceKeys` / `diskCache` / `htmlView` / `includeArchived` / `includeRestricted`)
+
+#### 主要オプション
+
+| オプション | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `allowedSpaceKeys` | `[String]?` | `null` (全スペース) | 表示するスペースキーの許可リスト (大文字小文字不問) |
+| `diskCache` | `Bool` | `true` | AES-GCM 暗号化ディスクキャッシュを有効にする |
+| `htmlView` | `Bool` | `false` | 各ページの兄弟として `{Title}.html` ファイルを生成する |
+| `includeArchived` | `Bool` | `false` | アーカイブ済みページをディレクトリ一覧に含める |
+| `includeRestricted` | `Bool` | `false` | ユーザー/グループ閲覧制限・編集制限があるページをディレクトリ一覧に含める。`false` (デフォルト) の場合、read または update 操作に 1 件以上のユーザー/グループ制限が設定されているページは非表示になる |
 
 ### マウント
 
@@ -657,3 +667,8 @@ diskutil unmount force ~/confluencefs/myinstance
 - read-only のみ (ページ編集は未対応)
 - storage 形式 → Markdown 変換は主要タグのみ対応 (非対応タグは raw fallback)
 - 大規模スペース (数千ページ) ではページツリーの遅延読み込みに依存
+- `includeRestricted: false` (デフォルト) の Cloud での動作:
+  - ルートページ一覧表示時: スペースのルートページのみを対象に v1 API で制限情報を取得 (`/wiki/rest/api/space/{key}/content/page?depth=root&expand=restrictions...`)
+  - 子ページ一覧表示時: その親ページの直接の子ページのみを対象に取得 (`/wiki/rest/api/content/{id}/child/page?expand=restrictions...`)
+  - 取得結果はページ一覧と同じ TTL でキャッシュされるため、2 回目以降は API 呼び出しなし
+  - Data Center は list API の `expand=restrictions...` でインラインに制限情報を取得するため追加 API 呼び出しなし
