@@ -100,12 +100,16 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             // attachment is never fully buffered in memory. When the listing
             // omits `fileSize`, probe the size with a HEAD request: the kernel
             // never issues `read(...)` for a file reported as 0 bytes, so an
-            // unknown-size attachment would otherwise be unreadable.
+            // unknown-size attachment would otherwise be unreadable. A genuine
+            // probe failure (auth/network/server) is propagated so the open
+            // fails with a real error instead of silently appearing empty; only
+            // an undeterminable size (probe returns nil, e.g. no Content-Length)
+            // falls back to 0.
             let size: Int
             if let known = attachment.fileSize {
                 size = max(0, known)
             } else {
-                size = (try? await dataSource.attachmentSize(attachment)).flatMap { $0 } ?? 0
+                size = try await dataSource.attachmentSize(attachment) ?? 0
             }
             node.cachedSize = UInt64(size)
             return
