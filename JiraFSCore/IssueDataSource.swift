@@ -23,7 +23,16 @@ public actor IssueDataSource {
     public let maxResults: Int
     /// Project key allowlist. `nil` = all projects; non-empty = only listed keys.
     public let allowedProjectKeys: [String]?
+    /// Upper bound (bytes) for fully downloading + caching an attachment in
+    /// memory. At/under this size an attachment is fetched once and cached so
+    /// repeated reads are served locally. Larger (or unknown-size) attachments
+    /// are streamed via bounded HTTP Range requests instead, so the extension
+    /// never buffers a multi-GB file in memory (OOM/DoS guard).
+    public let maxInlineAttachmentBytes: Int
     private let limiter: RateLimiter
+
+    /// Default inline-attachment cap: 16 MiB.
+    public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
     /// Cache keys for which a background refresh is already in flight.
     private var refreshing: Set<String> = []
@@ -64,12 +73,14 @@ public actor IssueDataSource {
         ttl: Configuration.CacheTTLConfig = .default,
         maxResults: Int = 100,
         allowedProjectKeys: [String]? = nil,
+        maxInlineAttachmentBytes: Int = IssueDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
         self.cache = cache
         self.ttl = ttl
         self.maxResults = maxResults
+        self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         // Normalize: trim whitespace, uppercase, de-duplicate, then nil-ify if empty.
         // This ensures keys from manual config.json edits (or any external source)
         // match JIRA's canonical uppercase project keys regardless of how they were stored.
@@ -164,14 +175,38 @@ public actor IssueDataSource {
         return try await fetchAndCacheAttachments(issueKey: issueKey)
     }
 
-    public func attachmentData(_ attachment: JiraAttachment) async throws -> Data {
-        let cacheKey = "attachment-bin/\(attachment.id)"
-        if let cached = await cache.get(cacheKey, as: Data.self) { return cached }
-        let value = try await limiter.run { [client] in
-            try await client.downloadAttachment(attachment, range: nil)
+    /// Returns attachment bytes.
+    ///
+    /// - Small, known-size attachments (`size <= maxInlineAttachmentBytes`) are
+    ///   downloaded once, cached, and sliced locally — repeated reads issue no
+    ///   network traffic.
+    /// - Large or unknown-size attachments are streamed via a bounded HTTP
+    ///   Range request and are **not** cached, so the extension never buffers a
+    ///   multi-GB file in memory (OOM/DoS guard). Callers reading such files
+    ///   must pass an explicit `range`.
+    public func attachmentData(_ attachment: JiraAttachment, range: Range<Int>? = nil) async throws -> Data {
+        let size = attachment.size
+        let inlineable = size > 0 && size <= maxInlineAttachmentBytes
+        if inlineable {
+            let cacheKey = "attachment-bin/\(attachment.id)"
+            let full: Data
+            if let cached = await cache.get(cacheKey, as: Data.self) {
+                full = cached
+            } else {
+                full = try await limiter.run { [client] in
+                    try await client.downloadAttachment(attachment, range: nil)
+                }
+                await cache.set(cacheKey, value: full, ttl: ttl.attachmentBinary)
+            }
+            guard let range else { return full }
+            let lo = min(max(range.lowerBound, 0), full.count)
+            let hi = min(max(range.upperBound, lo), full.count)
+            return full.subdata(in: lo..<hi)
         }
-        await cache.set(cacheKey, value: value, ttl: ttl.attachmentBinary)
-        return value
+        // Large or unknown size: stream only the requested window. Never cache.
+        return try await limiter.run { [client] in
+            try await client.downloadAttachment(attachment, range: range)
+        }
     }
 
     public func synchronize() async {

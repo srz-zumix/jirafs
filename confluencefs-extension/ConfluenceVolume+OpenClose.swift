@@ -94,7 +94,12 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
                 throw AtlassianError.notFound
             }
-            data = try await dataSource.downloadAttachment(attachment, range: nil)
+            // Do NOT download the attachment bytes here. The file size comes
+            // from listing metadata, and the byte content is served lazily by
+            // `read(...)` via bounded Range requests so that a multi-GB
+            // attachment is never fully buffered in memory.
+            node.cachedSize = UInt64(max(0, attachment.fileSize ?? 0))
+            return
         default:
             return
         }
