@@ -14,15 +14,17 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
         let b = SendableBox(buffer)
         makeTask {
             do {
-                try await self.loadPayload(for: node)
                 // Attachments are streamed lazily via bounded Range requests so
-                // that a multi-GB file is never fully buffered in memory.
+                // that a multi-GB file is never fully buffered in memory. Take
+                // this fast-path before `loadPayload` to avoid a redundant
+                // attachment-list fetch (readAttachment fetches it itself).
                 if case .attachment(_, let pageId, let attachmentId) = node.kind {
                     try await self.readAttachment(pageId: pageId, attachmentId: attachmentId,
                                                   node: node, offset: offset, length: length,
                                                   buffer: b, reply: r)
                     return
                 }
+                try await self.loadPayload(for: node)
                 guard let data = node.cachedData else {
                     r.value(0, FSKitError.notFound); return
                 }
@@ -56,18 +58,28 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
         offset: off_t, length: Int,
         buffer b: SendableBox<FSMutableFileDataBuffer>, reply r: SendableBox<(Int, Error?) -> Void>
     ) async throws {
-        guard offset >= 0, length > 0 else { r.value(0, nil); return }
+        guard length > 0, let start = Int(exactly: offset), start >= 0 else { r.value(0, nil); return }
         let atts = try await dataSource.attachments(pageId: pageId)
         guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
             r.value(0, FSKitError.notFound); return
         }
-        let start = Int(offset)
-        let total = Int(node.cachedSize)
-        // Clamp the window to the known size when available; an unknown size
-        // (total == 0) relies on the server to bound the response.
-        if total > 0 && start >= total { r.value(0, nil); return }
-        let end = total > 0 ? min(total, start + length) : start + length
-        guard end > start else { r.value(0, nil); return }
+        // Prefer the attachment's own size; fall back to the size discovered at
+        // open time (`node.cachedSize`) when the listing omitted `fileSize`. A
+        // nil total means the size is unknown — request exactly the asked window
+        // and rely on the server to bound the response.
+        let total: Int? = attachment.fileSize.map { max(0, $0) }
+            ?? Int(exactly: node.cachedSize).flatMap { $0 > 0 ? $0 : nil }
+        let end: Int
+        if let total {
+            if start >= total { r.value(0, nil); return }
+            let want = min(length, total - start) // start + want <= total, no overflow
+            guard want > 0 else { r.value(0, nil); return }
+            end = start + want
+        } else {
+            let (sum, overflow) = start.addingReportingOverflow(length)
+            guard !overflow else { r.value(0, nil); return }
+            end = sum
+        }
         let chunk = try await dataSource.downloadAttachment(attachment, range: start..<end)
         let copied = chunk.withUnsafeBytes { src -> Int in
             guard let baseAddress = src.baseAddress else { return 0 }

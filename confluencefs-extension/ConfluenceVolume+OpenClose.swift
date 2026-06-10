@@ -97,8 +97,17 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             // Do NOT download the attachment bytes here. The file size comes
             // from listing metadata, and the byte content is served lazily by
             // `read(...)` via bounded Range requests so that a multi-GB
-            // attachment is never fully buffered in memory.
-            node.cachedSize = UInt64(max(0, attachment.fileSize ?? 0))
+            // attachment is never fully buffered in memory. When the listing
+            // omits `fileSize`, probe the size with a HEAD request: the kernel
+            // never issues `read(...)` for a file reported as 0 bytes, so an
+            // unknown-size attachment would otherwise be unreadable.
+            let size: Int
+            if let known = attachment.fileSize {
+                size = max(0, known)
+            } else {
+                size = (try? await dataSource.attachmentSize(attachment)).flatMap { $0 } ?? 0
+            }
+            node.cachedSize = UInt64(size)
             return
         default:
             return

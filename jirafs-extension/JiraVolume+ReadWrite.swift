@@ -14,15 +14,17 @@ extension JiraVolume: FSVolume.ReadWriteOperations {
         let b = SendableBox(buffer)
         makeTask {
             do {
-                try await self.loadPayload(for: node)
                 // Attachments are streamed lazily via bounded Range requests so
-                // that a multi-GB file is never fully buffered in memory.
+                // that a multi-GB file is never fully buffered in memory. Take
+                // this fast-path before `loadPayload` to avoid a redundant
+                // attachment-list fetch (readAttachment fetches it itself).
                 if case .attachment(let issueKey, let attachmentId) = node.kind {
                     try await self.readAttachment(issueKey: issueKey, attachmentId: attachmentId,
-                                                  node: node, offset: offset, length: length,
+                                                  offset: offset, length: length,
                                                   buffer: b, reply: r)
                     return
                 }
+                try await self.loadPayload(for: node)
                 guard let data = node.cachedData else {
                     self.logger.warning("read: cachedData nil for \(String(describing: node.kind), privacy: .public)")
                     r.value(0, FSKitError.notFound); return
@@ -55,23 +57,24 @@ extension JiraVolume: FSVolume.ReadWriteOperations {
     /// file. The data source decides whether to cache (small files) or stream
     /// the requested Range (large/unknown-size files).
     private func readAttachment(
-        issueKey: String, attachmentId: String, node: JiraFSItem,
+        issueKey: String, attachmentId: String,
         offset: off_t, length: Int,
         buffer b: SendableBox<FSMutableFileDataBuffer>, reply r: SendableBox<(Int, Error?) -> Void>
     ) async throws {
-        guard offset >= 0, length > 0 else { r.value(0, nil); return }
+        guard length > 0, let start = Int(exactly: offset), start >= 0 else { r.value(0, nil); return }
         let atts = try await dataSource.attachments(issueKey: issueKey)
         guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
             r.value(0, FSKitError.notFound); return
         }
-        let start = Int(offset)
-        let total = Int(node.cachedSize)
-        // Clamp the window to the known size when available; an unknown size
-        // (total == 0) relies on the server to bound the response.
-        if total > 0 && start >= total { r.value(0, nil); return }
-        let end = total > 0 ? min(total, start + length) : start + length
-        guard end > start else { r.value(0, nil); return }
-        let chunk = try await dataSource.attachmentData(attachment, range: start..<end)
+        // JIRA always reports an exact size; treat it as authoritative and clamp
+        // the requested window to it. An empty (size 0) attachment yields EOF
+        // without issuing any network request.
+        let total = max(0, attachment.size)
+        if start >= total { r.value(0, nil); return }
+        // `want <= total - start`, so `start + want` never overflows.
+        let want = min(length, total - start)
+        guard want > 0 else { r.value(0, nil); return }
+        let chunk = try await dataSource.attachmentData(attachment, range: start..<(start + want))
         let copied = chunk.withUnsafeBytes { src -> Int in
             guard let baseAddress = src.baseAddress else { return 0 }
             return b.value.withUnsafeMutableBytes { dst -> Int in

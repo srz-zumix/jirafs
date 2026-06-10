@@ -179,6 +179,25 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return data
     }
 
+    public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
+        guard let link = attachment.downloadLink, let url = resolveURL(link) else {
+            throw AtlassianError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        try await auth.authorize(&request)
+        let (_, http) = try await transport.data(for: request)
+        guard (200..<300).contains(http.statusCode) else {
+            throw mapError(status: http.statusCode, http: http)
+        }
+        guard let value = http.value(forHTTPHeaderField: "Content-Length"),
+              let size = Int(value.trimmingCharacters(in: .whitespaces)),
+              size >= 0 else {
+            return nil
+        }
+        return size
+    }
+
     public func restrictedRootPageIDs(spaceKey: String, status: String, limiter: RateLimiter) async throws -> Set<String> {
         // Data Center: restriction data is embedded inline via `expand` in list responses.
         guard config.edition.isCloud else { return [] }

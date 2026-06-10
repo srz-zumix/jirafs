@@ -186,7 +186,7 @@ public actor IssueDataSource {
     ///   must pass an explicit `range`.
     public func attachmentData(_ attachment: JiraAttachment, range: Range<Int>? = nil) async throws -> Data {
         let size = attachment.size
-        let inlineable = size > 0 && size <= maxInlineAttachmentBytes
+        let inlineable = size >= 0 && size <= maxInlineAttachmentBytes
         if inlineable {
             let cacheKey = "attachment-bin/\(attachment.id)"
             let full: Data
@@ -204,6 +204,9 @@ public actor IssueDataSource {
             return full.subdata(in: lo..<hi)
         }
         // Large or unknown size: stream only the requested window. Never cache.
+        // An explicit range is required — a `nil` range would request the whole
+        // file and defeat the OOM/DoS guard, so reject it instead.
+        guard let range else { throw JiraAPIError.unsupported }
         return try await limiter.run { [client] in
             try await client.downloadAttachment(attachment, range: range)
         }

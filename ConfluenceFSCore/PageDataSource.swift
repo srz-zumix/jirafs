@@ -227,8 +227,23 @@ public actor PageDataSource {
             return full.subdata(in: lo..<hi)
         }
         // Large or unknown size: stream only the requested window. Never cache,
-        // so the extension never buffers a multi-GB file in memory.
+        // so the extension never buffers a multi-GB file in memory. An explicit
+        // range is required here — a `nil` range would request the whole file and
+        // defeat the OOM/DoS guard, so reject it instead of downloading it all.
+        guard let range else { throw AtlassianError.unsupported }
         return try await limiter.run { try await self.client.downloadAttachment(attachment, range: range) }
+    }
+
+    /// Returns the total byte size of an attachment whose listing metadata omits
+    /// `fileSize`. The result is cached so the size probe runs at most once per
+    /// TTL. Returns `nil` when the size cannot be determined.
+    public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
+        if let known = attachment.fileSize { return known }
+        let cacheKey = "attachment-size/\(attachment.id)"
+        if let cached = await cache.get(cacheKey, as: Int.self) { return cached }
+        let probed = try await limiter.run { try await self.client.attachmentSize(attachment) }
+        if let probed { await cache.set(cacheKey, value: probed, ttl: ttl.attachmentBinary) }
+        return probed
     }
 
     // MARK: - Naming
