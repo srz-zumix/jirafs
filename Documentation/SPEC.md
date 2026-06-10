@@ -283,6 +283,13 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
 
 添付ファイルをそのままの名前で表示。ファイルの読み取りは JIRA API 経由でダウンロード。
 
+**メモリ保護 (OOM/DoS ガード)**: 添付ファイルは一括バッファリングせず、サイズに応じて 2 通りに振り分ける。判定には一覧取得時のメタデータ (`size` / `fileSize`) を使い、本体ダウンロード前に決定する。
+
+- **小サイズ (`size <= maxInlineAttachmentBytes`)**: 一度だけ全体ダウンロードしてキャッシュし、以降の読み取りはローカルのスライスで応答する (再ダウンロードなし)。
+- **大サイズ / サイズ不明**: `read(offset:length:)` の要求窓だけを HTTP Range リクエストで取得する (キャッシュしない)。これにより数 GB の添付があっても Extension プロセスがファイル全体をメモリに展開せず、OOM を防ぐ。
+
+`maxInlineAttachmentBytes` の既定値は **16 MiB** (`IssueDataSource` / `PageDataSource` の init 引数で上書き可能)。
+
 ## JIRA API クライアント
 
 ### 対応 API バージョン

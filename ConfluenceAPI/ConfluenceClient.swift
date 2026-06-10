@@ -76,6 +76,14 @@ public protocol ConfluenceClient: Sendable {
 
     func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data
 
+    /// Probes the total byte size of an attachment without downloading its body,
+    /// for attachments whose listing metadata omits `fileSize` (unknown size).
+    /// Issues an HTTP `HEAD` and reads `Content-Length`. Returns `nil` when the
+    /// server does not report a determinable size. A `HEAD` is used (rather than
+    /// a ranged `GET`) so a server that ignores `Range` cannot be coerced into
+    /// streaming the whole file into memory while probing.
+    func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int?
+
     /// Returns the IDs of **root** pages (depth=root) of a space that have any
     /// user/group restriction (read or update). Cloud uses v1 Space content API
     /// scoped to `depth=root`; Data Center always returns an empty set because

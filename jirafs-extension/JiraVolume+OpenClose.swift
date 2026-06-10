@@ -95,11 +95,16 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
                 throw JiraAPIError.notFound
             }
-            data = try await dataSource.attachmentData(attachment)
+            // Do NOT download the attachment bytes here. The file size and
+            // timestamps come from listing metadata, and the byte content is
+            // served lazily by `read(...)` via bounded Range requests so that a
+            // multi-GB attachment is never fully buffered in memory.
             if let ts = parseJiraDate(attachment.created) {
                 node.cachedMTime = ts
                 node.cachedBirthTime = ts
             }
+            node.cachedSize = UInt64(max(0, attachment.size))
+            return
         case .issueHtml(let key):
             async let issueResult    = dataSource.issue(key: key)
             async let commentsResult = dataSource.comments(issueKey: key)

@@ -220,8 +220,8 @@ Phase 1 (MVP) の実装ステップとはどこまで進んだかを記録する
 
 - [x] `listAttachments` エンドポイント (`fields=attachment` を個別デコード)
 - [x] `downloadAttachment` (Range リクエスト対応)
-- [x] `IssueDataSource.attachmentData` でキャッシュ (TTL 1800s)
-- [ ] 大バイナリの真のストリーミング (現状は一括ダウンロード)
+- [x] `IssueDataSource.attachmentData` でキャッシュ (TTL 1800s、小サイズのみ)
+- [x] 大バイナリのストリーミング: `maxInlineAttachmentBytes` (既定 16 MiB) 超または不明サイズは Range で要求窓のみ取得しキャッシュしない (OOM/DoS ガード)
 
 ### ✅ Step 6: キャッシュ
 

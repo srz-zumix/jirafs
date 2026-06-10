@@ -94,7 +94,25 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
                 throw AtlassianError.notFound
             }
-            data = try await dataSource.downloadAttachment(attachment, range: nil)
+            // Do NOT download the attachment bytes here. The file size comes
+            // from listing metadata, and the byte content is served lazily by
+            // `read(...)` via bounded Range requests so that a multi-GB
+            // attachment is never fully buffered in memory. When the listing
+            // omits `fileSize`, probe the size with a HEAD request: the kernel
+            // never issues `read(...)` for a file reported as 0 bytes, so an
+            // unknown-size attachment would otherwise be unreadable. A genuine
+            // probe failure (auth/network/server) is propagated so the open
+            // fails with a real error instead of silently appearing empty; only
+            // an undeterminable size (probe returns nil, e.g. no Content-Length)
+            // falls back to 0.
+            let size: Int
+            if let known = attachment.fileSize {
+                size = max(0, known)
+            } else {
+                size = try await dataSource.attachmentSize(attachment) ?? 0
+            }
+            node.cachedSize = UInt64(size)
+            return
         default:
             return
         }

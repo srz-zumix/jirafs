@@ -32,8 +32,17 @@ public actor PageDataSource {
     /// When `false` (default), pages with any user/group restriction (read or update)
     /// are excluded from listings. Set to `true` to show restricted pages.
     public let includeRestricted: Bool
+    /// Upper bound (bytes) for fully downloading + caching an attachment in
+    /// memory. At/under this size an attachment is fetched once and cached;
+    /// larger (or unknown-size) attachments are streamed via bounded HTTP Range
+    /// requests instead, so the extension never buffers a multi-GB file in
+    /// memory (OOM/DoS guard).
+    public let maxInlineAttachmentBytes: Int
     private let limiter: RateLimiter
     private let logger = AtlassianLog.logger("confluence-datasource")
+
+    /// Default inline-attachment cap: 16 MiB.
+    public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
     private var refreshing: Set<String> = []
     /// Single-flight guard for Cloud restricted-page-ID fetches. Prevents N
@@ -50,6 +59,7 @@ public actor PageDataSource {
         allowedSpaceKeys: [String]? = nil,
         includeArchived: Bool = false,
         includeRestricted: Bool = false,
+        maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
@@ -58,6 +68,7 @@ public actor PageDataSource {
         self.limit = limit
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
+        self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         if let raw = allowedSpaceKeys {
             var seen = Set<String>()
             let normalized = raw
@@ -199,15 +210,40 @@ public actor PageDataSource {
     }
 
     public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data {
-        // Cache only full-file reads; partial reads (range != nil) are not cached.
-        guard range == nil else {
-            return try await limiter.run { try await self.client.downloadAttachment(attachment, range: range) }
+        let size = attachment.fileSize ?? -1
+        let inlineable = size >= 0 && size <= maxInlineAttachmentBytes
+        if inlineable {
+            let cacheKey = "attachment-bin/\(attachment.id)"
+            let full: Data
+            if let cached = await cache.get(cacheKey, as: Data.self) {
+                full = cached
+            } else {
+                full = try await limiter.run { try await self.client.downloadAttachment(attachment, range: nil) }
+                await cache.set(cacheKey, value: full, ttl: ttl.attachmentBinary)
+            }
+            guard let range else { return full }
+            let lo = min(max(range.lowerBound, 0), full.count)
+            let hi = min(max(range.upperBound, lo), full.count)
+            return full.subdata(in: lo..<hi)
         }
-        let cacheKey = "attachment-bin/\(attachment.id)"
-        if let cached = await cache.get(cacheKey, as: Data.self) { return cached }
-        let value = try await limiter.run { try await self.client.downloadAttachment(attachment, range: nil) }
-        await cache.set(cacheKey, value: value, ttl: ttl.attachmentBinary)
-        return value
+        // Large or unknown size: stream only the requested window. Never cache,
+        // so the extension never buffers a multi-GB file in memory. An explicit
+        // range is required here — a `nil` range would request the whole file and
+        // defeat the OOM/DoS guard, so reject it instead of downloading it all.
+        guard let range else { throw AtlassianError.unsupported }
+        return try await limiter.run { try await self.client.downloadAttachment(attachment, range: range) }
+    }
+
+    /// Returns the total byte size of an attachment whose listing metadata omits
+    /// `fileSize`. The result is cached so the size probe runs at most once per
+    /// TTL. Returns `nil` when the size cannot be determined.
+    public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
+        if let known = attachment.fileSize { return known }
+        let cacheKey = "attachment-size/\(attachment.id)"
+        if let cached = await cache.get(cacheKey, as: Int.self) { return cached }
+        let probed = try await limiter.run { try await self.client.attachmentSize(attachment) }
+        if let probed { await cache.set(cacheKey, value: probed, ttl: ttl.attachmentBinary) }
+        return probed
     }
 
     // MARK: - Naming

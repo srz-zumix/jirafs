@@ -5,13 +5,15 @@ import AtlassianCore
 /// In-memory transport stub used by `ConfluenceRESTClient` tests.
 final class ConfluenceStubTransport: HTTPTransport, @unchecked Sendable {
     var responses: [String: (Int, Data)] = [:]
+    var responseHeaders: [String: [String: String]] = [:]
     var requests: [URLRequest] = []
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         requests.append(request)
         let key = request.url?.absoluteString ?? ""
         let pair = responses.first { key.contains($0.key) }?.value ?? (404, Data())
-        let response = HTTPURLResponse(url: request.url!, statusCode: pair.0, httpVersion: nil, headerFields: nil)!
+        let headers = responseHeaders.first { key.contains($0.key) }?.value
+        let response = HTTPURLResponse(url: request.url!, statusCode: pair.0, httpVersion: nil, headerFields: headers)!
         return (pair.1, response)
     }
 }
@@ -349,6 +351,41 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertTrue(rootIDs.isEmpty, "DC must return empty set for restrictedRootPageIDs")
         XCTAssertTrue(childIDs.isEmpty, "DC must return empty set for restrictedChildPageIDs")
         XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
+    }
+
+    // MARK: - attachmentSize (unknown-size probe)
+
+    func testAttachmentSizeUsesHeadAndParsesContentLength() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/att1"] = (200, Data())
+        stub.responseHeaders["/download/att1"] = ["Content-Length": "123456"]
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "att1", title: "f.bin", fileSize: nil, downloadLink: "/download/att1")
+
+        let size = try await client.attachmentSize(att)
+        XCTAssertEqual(size, 123456)
+        XCTAssertEqual(stub.requests.last?.httpMethod, "HEAD", "Size probe must use HEAD, never a body-returning GET")
+    }
+
+    func testAttachmentSizeReturnsNilWhenContentLengthMissing() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/att2"] = (200, Data())
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "att2", title: "f.bin", fileSize: nil, downloadLink: "/download/att2")
+
+        let size = try await client.attachmentSize(att)
+        XCTAssertNil(size, "Without Content-Length the size is undeterminable")
+    }
+
+    func testDownloadAttachmentSetsRangeHeader() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/att3"] = (206, Data([1, 2, 3, 4]))
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "att3", title: "f.bin", fileSize: 1_000_000, downloadLink: "/download/att3")
+
+        let data = try await client.downloadAttachment(att, range: 10..<14)
+        XCTAssertEqual(Array(data), [1, 2, 3, 4])
+        XCTAssertEqual(stub.requests.last?.value(forHTTPHeaderField: "Range"), "bytes=10-13")
     }
 }
 
