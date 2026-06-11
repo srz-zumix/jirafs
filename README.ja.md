@@ -117,4 +117,6 @@ sudo diskutil unmount ~/confluencefs/myinstance
 
 ## ライセンス
 
-[LICENSE](LICENSE) を参照
+[LICENSE](LICENSE) を参照。
+
+本プロジェクトはサードパーティコンポーネントを同梱しています。各ライセンスと帰属表示は [NOTICE.txt](NOTICE.txt) を参照してください。
