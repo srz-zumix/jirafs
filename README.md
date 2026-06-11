@@ -120,3 +120,5 @@ Project/space filtering and other options (disk cache, HTML view) are configured
 ## License
 
 See [LICENSE](LICENSE).
+
+This project bundles third-party components. See [NOTICE.txt](NOTICE.txt) for their licenses and attributions.

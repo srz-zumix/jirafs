@@ -15,7 +15,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     MACOSX_DEPLOYMENT_TARGET: "15.4"
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: "KPZ4FUM7GD"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
@@ -231,6 +231,8 @@ targets:
     platform: macOS
     sources:
       - path: jirafs
+      - path: NOTICE.txt
+        buildPhase: resources
     dependencies:
       - target: AtlassianCore
         embed: true
@@ -255,7 +257,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSMultipleInstancesProhibited: true
-        NSHumanReadableCopyright: "Copyright © 2026"
+        NSHumanReadableCopyright: "Copyright © 2026 srz_zumix"
         NSPrincipalClass: NSApplication
         CFBundleURLTypes:
           - CFBundleURLName: JIRA File System

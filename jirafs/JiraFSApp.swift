@@ -18,6 +18,13 @@ struct JiraFSApp: App {
                 .environmentObject(appStore)
         }
         .defaultSize(width: 800, height: 600)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About jirafs") {
+                    AboutPanel.show()
+                }
+            }
+        }
 
         MenuBarExtra {
             MenuBarMenuContent(monitor: monitor, navigation: navigation, launchAtLogin: launchAtLogin)
