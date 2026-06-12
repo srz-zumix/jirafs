@@ -17,7 +17,7 @@ updates:
           - minor
           - patch
 
-  - package-ecosystem: gomod
+  - package-ecosystem: swift
     directory: /
     schedule:
       interval: weekly
