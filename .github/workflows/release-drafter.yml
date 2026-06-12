@@ -38,7 +38,7 @@ jobs:
       TAG: ${{ needs.draft_release.outputs.tag_name }}
       BRANCH: "bump/${{ needs.draft_release.outputs.tag_name }}"
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
