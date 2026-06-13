@@ -113,8 +113,13 @@ extension ConfluenceVolume: FSVolume.Operations {
     /// refresh of every browsed page-listing directory. Finder is passive and
     /// only re-enumerates a directory when its mtime changes, so without this
     /// loop a newly created page would never appear while the user simply waits.
-    /// Tracked by `makeTask`, so `cancelAllTasks()` (called from `unmount`)
-    /// stops it cleanly.
+    /// The loop task is tracked by `makeTask`, so `cancelAllTasks()` (called from
+    /// `unmount`) cancels it. Note that this only cancels the loop itself: any
+    /// per-listing background refresh already dispatched via
+    /// `refreshBrowsedListings()` runs on an untracked `Task` and may finish
+    /// after unmount. Such a completion only writes to the data-source cache and
+    /// fires `onListingRefreshed`, whose handler captures `[weak self]` and
+    /// no-ops once the volume is gone.
     func startPeriodicRefresh() {
         makeTask { [weak self] in
             guard let self else { return }

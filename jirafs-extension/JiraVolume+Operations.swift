@@ -145,8 +145,13 @@ extension JiraVolume: FSVolume.Operations {
     /// The refresh fires `onIssueKeysRefreshed`, which bumps the directory mtime
     /// and triggers Finder's kqueue watcher to re-enumerate.
     ///
-    /// The task is tracked by `makeTask`, so `cancelAllTasks()` (called from
-    /// `unmount`) stops it cleanly.
+    /// The loop task is tracked by `makeTask`, so `cancelAllTasks()` (called from
+    /// `unmount`) cancels it. Note that this only cancels the loop itself: any
+    /// per-project background refresh already dispatched via
+    /// `IssueDataSource.scheduleRefresh` runs on an untracked `Task` and may
+    /// finish after unmount. Such a completion only writes to the data-source
+    /// cache and fires `onIssueKeysRefreshed`, whose handler captures `[weak
+    /// self]` and no-ops once the volume is gone.
     func startPeriodicRefresh() {
         makeTask { [weak self] in
             guard let self else { return }
