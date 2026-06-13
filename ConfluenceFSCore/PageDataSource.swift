@@ -130,16 +130,18 @@ public actor PageDataSource {
     /// - Returns: the number of browsed listings a refresh was scheduled for.
     @discardableResult
     public func refreshBrowsedListings() async -> Int {
+        var scheduled = 0
         for kind in browsedListings {
             let refreshKey = "listing-refresh/\(kind)"
             guard !refreshing.contains(refreshKey) else { continue }
             refreshing.insert(refreshKey)
+            scheduled += 1
             Task {
                 defer { Task { await self.clearRefreshing(refreshKey) } }
                 await self.forceRefreshListing(kind)
             }
         }
-        return browsedListings.count
+        return scheduled
     }
 
     /// Performs a fresh network fetch for one page-listing directory, overwrites

@@ -133,7 +133,11 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
         // though the underlying page body was updated. (`cat page.md` re-reads
         // each time and so refreshes regardless, which is why only the HTML
         // sibling appeared stale.)
-        let versionOffset = TimeInterval(max(0, page.version ?? 0))
+        //
+        // `version` starts at 1 for a brand-new page, so subtract 1 to map the
+        // initial version onto the creation time (mtime == birthTime); a nil
+        // version is treated as the initial version.
+        let versionOffset = TimeInterval(max(0, (page.version ?? 1) - 1))
         node.cachedMTime = created.addingTimeInterval(versionOffset)
     }
 }

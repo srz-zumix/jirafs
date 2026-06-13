@@ -305,20 +305,27 @@ public actor IssueDataSource {
     /// - Returns: the number of browsed projects a refresh was scheduled for.
     @discardableResult
     public func refreshBrowsedProjects() async -> Int {
+        var scheduled = 0
         for project in browsedProjects {
             let cacheKey = "issues/\(project)"
-            scheduleRefresh(cacheKey) { await self.bgRefreshIssueKeys(project: project) }
+            if scheduleRefresh(cacheKey, task: { await self.bgRefreshIssueKeys(project: project) }) {
+                scheduled += 1
+            }
         }
-        return browsedProjects.count
+        return scheduled
     }
 
     // MARK: - Background refresh scheduling
 
     /// Starts a background refresh task for `key` if one is not already running.
-    private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) {
-        guard !refreshing.contains(key) else { return }
+    /// - Returns: `true` if a refresh was scheduled, `false` if one was already
+    ///   in flight for `key` (so callers can report an accurate scheduled count).
+    @discardableResult
+    private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) -> Bool {
+        guard !refreshing.contains(key) else { return false }
         refreshing.insert(key)
         Task { await task() }
+        return true
     }
 
     private func finishRefresh(_ key: String) { refreshing.remove(key) }
