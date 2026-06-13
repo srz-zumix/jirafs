@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import JiraFSCore
 import ConfluenceFSCore
 import AtlassianCore

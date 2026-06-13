@@ -75,6 +75,22 @@ final class ConfluenceVolume: FSVolume, @unchecked Sendable {
         self.htmlEnabled = htmlEnabled
         super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
                    volumeName: FSFileName(string: "confluencefs-\(name)"))
+        // Wire the refresh handler synchronously at construction — before the
+        // volume is handed to FSKit and any enumeration can run — so a background
+        // refresh that completes early always bumps the directory mtime and
+        // Finder re-enumerates. (Installing it later from async mount setup would
+        // leave a window where a refresh could land with no handler, leaving
+        // Finder showing a stale listing.)
+        dataSource.setListingRefreshedHandler { [weak self] kind in
+            guard let self else { return }
+            // Bump the directory's mtime so Finder's kqueue watcher sees the
+            // change and re-enumerates the listing automatically. Match by `kind`
+            // (not fileID): a page directory's fileID encodes its possibly-renamed
+            // title, which this pageId-only callback doesn't know, so touchMTime
+            // updates every cached item of this kind.
+            self.touchMTime(for: kind)
+            self.logger.info("listing refreshed kind=\(String(describing: kind), privacy: .public): mtime updated")
+        }
     }
 
     func item(for kind: ConfluenceNodeKind) -> ConfluenceFSItem {

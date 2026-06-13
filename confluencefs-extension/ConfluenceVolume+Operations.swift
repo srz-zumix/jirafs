@@ -64,18 +64,9 @@ extension ConfluenceVolume: FSVolume.Operations {
         // `ls spaces/` and `ls spaces/KEY/pages/` are served from cache.
         // Tracked via makeTask so cancelAllTasks() (called on unmount) stops it.
         makeTask {
-            // Wire change notifications before warming up so that any background
-            // refresh that fires during warmup already has the handler in place.
-            await self.dataSource.setListingRefreshedHandler { [weak self] kind in
-                guard let self else { return }
-                // Bump the directory's mtime so Finder's kqueue watcher sees the
-                // change and re-enumerates the listing automatically. Match by
-                // `kind` (not fileID): a page directory's fileID encodes its
-                // possibly-renamed title, which this pageId-only callback doesn't
-                // know, so touchMTime updates every cached item of this kind.
-                self.touchMTime(for: kind)
-                self.logger.info("listing refreshed kind=\(String(describing: kind), privacy: .public): mtime updated")
-            }
+            // The refresh handler is installed synchronously in `init` (before any
+            // enumeration can run), so it is already in place for any background
+            // refresh that fires during warm-up below.
             do {
                 let spaces = try await self.dataSource.spaces()
                 self.logger.info("warmup: \(spaces.count, privacy: .public) spaces")

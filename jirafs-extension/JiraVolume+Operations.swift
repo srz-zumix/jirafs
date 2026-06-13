@@ -60,26 +60,9 @@ extension JiraVolume: FSVolume.Operations {
         guard shouldRun else { return }
         logger.info("performMountSetup instance=\(self.instanceName, privacy: .public)")
         makeTask {
-            // Wire change notifications before warming up so that any stale-while-revalidate
-            // refresh that fires during warmUp() already has the handler in place.
-            await self.dataSource.setIssueKeysRefreshedHandler { [weak self] projectKey in
-                guard let self else { return }
-                // Update the issuesDir mtime so Finder's kqueue watcher sees the
-                // change and re-enumerates the directory automatically.
-                // Called after every successful background refresh (not only on
-                // key-set change) to prevent stale partial listings in Finder.
-                let node = self.item(for: .issuesDir(project: projectKey))
-                node.cachedMTime = Date()
-                // Invalidate the enumeration entries cache and bump the
-                // generation so any in-flight children() call that captured
-                // the old generation will not overwrite the cleared cache.
-                self.itemsLock.withLock {
-                    self.issueEntriesCache[projectKey] = nil
-                    self.issueKeysSet[projectKey] = nil
-                    self.issueEntriesGeneration[projectKey, default: 0] += 1
-                }
-                self.logger.info("issueKeys refreshed project=\(projectKey, privacy: .public): mtime updated, entries cache invalidated")
-            }
+            // The refresh handler is installed synchronously in `init` (before any
+            // enumeration can run), so it is already in place for any
+            // stale-while-revalidate refresh that fires during warm-up below.
             // Phase 1: warm the in-memory cache from disk so Finder browsing is fast.
             await self.dataSource.warmUp()
             // Phase 2: schedule background API fetches for all projects so fresh

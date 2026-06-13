@@ -62,12 +62,21 @@ public actor PageDataSource {
     /// of a page-listing directory. The parameter is the directory node kind.
     /// `ConfluenceVolume` uses this to bump the directory's `cachedMTime` so
     /// Finder's kqueue watcher fires and the listing auto-refreshes.
-    public var onListingRefreshed: (@Sendable (ConfluenceNodeKind) -> Void)?
+    ///
+    /// Stored behind a lock (rather than as actor-isolated state) so the volume
+    /// can install it *synchronously* at construction time — before FSKit can
+    /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
+    /// background refresh could complete before an async setter ran, refreshing
+    /// the cache without bumping the directory mtime, and Finder would keep
+    /// serving a stale listing.
+    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (ConfluenceNodeKind) -> Void)?>(initialState: nil)
 
-    /// Sets the handler invoked after every successful background refresh of a
-    /// page-listing directory. Async because `PageDataSource` is an actor.
-    public func setListingRefreshedHandler(_ handler: @escaping @Sendable (ConfluenceNodeKind) -> Void) {
-        onListingRefreshed = handler
+    /// Installs the handler invoked after every successful background refresh of a
+    /// page-listing directory. `nonisolated` + synchronous so it can run during
+    /// volume construction, guaranteeing the handler is in place before any
+    /// refresh can fire (see `refreshedHandler`).
+    public nonisolated func setListingRefreshedHandler(_ handler: @escaping @Sendable (ConfluenceNodeKind) -> Void) {
+        refreshedHandler.withLock { $0 = handler }
     }
 
     /// Records that a page-listing directory has been browsed so the periodic
@@ -171,7 +180,8 @@ public actor PageDataSource {
             default:
                 return
             }
-            onListingRefreshed?(kind)
+            let handler = refreshedHandler.withLock { $0 }
+            handler?(kind)
         } catch {
             logger.debug("forceRefreshListing failed kind=\(String(describing: kind), privacy: .public): \(error, privacy: .public)")
         }

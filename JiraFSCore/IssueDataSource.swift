@@ -1,4 +1,5 @@
 import Foundation
+import os
 import JiraAPI
 
 /// High-level read-only data source backing the FSKit volume.
@@ -63,14 +64,21 @@ public actor IssueDataSource {
     /// Finder's kqueue watcher fires and the directory listing auto-refreshes.
     /// Fired regardless of whether the key set actually changed, to ensure Finder
     /// never shows a stale partial listing.
-    public var onIssueKeysRefreshed: (@Sendable (String) -> Void)?
+    ///
+    /// Stored behind a lock (rather than as actor-isolated state) so the volume
+    /// can install it *synchronously* at construction time — before FSKit can
+    /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
+    /// stale-while-revalidate refresh could complete before an async setter ran,
+    /// refreshing the cache without bumping the directory mtime, and Finder would
+    /// keep serving a stale listing.
+    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (String) -> Void)?>(initialState: nil)
 
-    /// Sets the handler invoked after every successful background refresh of the
-    /// issue key list for any project. This is an async setter because
-    /// `IssueDataSource` is an actor — the property can only be mutated on the
-    /// actor's executor.
-    public func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
-        onIssueKeysRefreshed = handler
+    /// Installs the handler invoked after every successful background refresh of
+    /// the issue key list for any project. `nonisolated` + synchronous so it can
+    /// run during volume construction, guaranteeing the handler is in place
+    /// before any refresh can fire (see `refreshedHandler`).
+    public nonisolated func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        refreshedHandler.withLock { $0 = handler }
     }
 
     public init(
@@ -352,7 +360,8 @@ public actor IssueDataSource {
         // Without this, a partial initial enumeration (large directory) would
         // leave Finder with a stale incomplete listing if no keys were added
         // or removed since the last refresh.
-        onIssueKeysRefreshed?(project)
+        let handler = refreshedHandler.withLock { $0 }
+        handler?(project)
     }
 
     private func bgRefreshIssue(key: String) async {

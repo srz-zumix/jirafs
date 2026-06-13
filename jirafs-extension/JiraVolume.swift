@@ -113,6 +113,30 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
         // Use random UUID per mount to avoid fskitd container cache collisions.
         super.init(volumeID: FSVolume.Identifier(uuid: UUID()),
                    volumeName: FSFileName(string: "jirafs-\(name)"))
+        // Wire the refresh handler synchronously at construction — before the
+        // volume is handed to FSKit and any enumeration can run — so a
+        // stale-while-revalidate refresh that completes early always bumps the
+        // directory mtime and invalidates the entries cache. (Installing it
+        // later from async mount setup would leave a window where a refresh
+        // could land with no handler, leaving Finder showing a stale listing.)
+        dataSource.setIssueKeysRefreshedHandler { [weak self] projectKey in
+            guard let self else { return }
+            // Update the issuesDir mtime so Finder's kqueue watcher sees the
+            // change and re-enumerates the directory automatically. Called after
+            // every successful background refresh (not only on key-set change)
+            // to prevent stale partial listings in Finder.
+            let node = self.item(for: .issuesDir(project: projectKey))
+            node.cachedMTime = Date()
+            // Invalidate the enumeration entries cache and bump the generation so
+            // any in-flight children() call that captured the old generation will
+            // not overwrite the cleared cache.
+            self.itemsLock.withLock {
+                self.issueEntriesCache[projectKey] = nil
+                self.issueKeysSet[projectKey] = nil
+                self.issueEntriesGeneration[projectKey, default: 0] += 1
+            }
+            self.logger.info("issueKeys refreshed project=\(projectKey, privacy: .public): mtime updated, entries cache invalidated")
+        }
     }
 
     func item(for kind: FSNodeKind) -> JiraFSItem {
