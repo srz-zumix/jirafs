@@ -74,9 +74,16 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         case .pagesDir(let space):                    return "pagesDir:\(space)"
         // Include the display name so a title change (= rename) yields a new
         // fileID, and `salt` (the page version) so an edit does too; see
-        // init(kind:displayName:salt:) for why this matters to Finder.
-        case .pageDir(let space, let id):             return "pageDir:\(space):\(id):\(displayName ?? ""):\(salt ?? "")"
-        case .pageHtml(let space, let id):            return "pageHtml:\(space):\(id):\(displayName ?? ""):\(salt ?? "")"
+        // init(kind:displayName:salt:) for why this matters to Finder. When both
+        // are nil the name/salt components are omitted entirely so the result is
+        // byte-identical to the legacy structural ID (honouring the documented
+        // "passing nil reproduces the legacy name-independent ID" contract).
+        case .pageDir(let space, let id):
+            let base = "pageDir:\(space):\(id)"
+            return (displayName == nil && salt == nil) ? base : "\(base):\(displayName ?? ""):\(salt ?? "")"
+        case .pageHtml(let space, let id):
+            let base = "pageHtml:\(space):\(id)"
+            return (displayName == nil && salt == nil) ? base : "\(base):\(displayName ?? ""):\(salt ?? "")"
         case .pageBody(let space, let id):            return "pageBody:\(space):\(id)"
         case .pageMeta(let space, let id):            return "pageMeta:\(space):\(id)"
         case .labels(let space, let id):              return "labels:\(space):\(id)"

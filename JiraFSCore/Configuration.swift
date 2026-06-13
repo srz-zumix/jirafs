@@ -115,9 +115,10 @@ public struct Configuration: Codable, Sendable, Equatable {
         /// Interval (seconds) for the background poll that auto-refreshes browsed
         /// issue lists so newly created issues appear without re-enumeration.
         /// Negative disables polling entirely; `0` (default) means "derive from
-        /// `issues`" for backward compatibility; a positive value sets the poll
-        /// interval independently of the cache TTL. The volume enforces a lower
-        /// bound to avoid hammering the API.
+        /// `issues`" for backward compatibility (and, when `issues` is `0` — i.e.
+        /// caching disabled — polling is disabled too); a positive value sets the
+        /// poll interval independently of the cache TTL. The volume enforces a
+        /// lower bound to avoid hammering the API.
         public var refreshInterval: TimeInterval
 
         public init(projects: TimeInterval, issues: TimeInterval, issueDetail: TimeInterval,
@@ -129,6 +130,20 @@ public struct Configuration: Codable, Sendable, Equatable {
             self.attachments = attachments
             self.attachmentBinary = attachmentBinary
             self.refreshInterval = refreshInterval
+        }
+
+        /// Resolves the effective periodic background-refresh interval (seconds),
+        /// or `nil` when polling should be disabled. `refreshInterval` semantics:
+        /// `< 0` → disabled; `> 0` → explicit; `0` → derive from the `issues` TTL
+        /// (disabled when that TTL is `<= 0`, i.e. caching disabled). Non-finite
+        /// (NaN/Inf) or negative inputs are treated as disabled, and the result is
+        /// clamped to `[minimum, maximum]`, so an invalid hand-edited config can
+        /// never produce a non-finite or out-of-range sleep duration.
+        public func periodicRefreshInterval(minimum: TimeInterval, maximum: TimeInterval) -> TimeInterval? {
+            guard refreshInterval.isFinite, refreshInterval >= 0 else { return nil }
+            let derived = refreshInterval > 0 ? refreshInterval : issues
+            guard derived.isFinite, derived > 0 else { return nil }
+            return Swift.min(Swift.max(derived, minimum), maximum)
         }
 
         // Custom decoder so config files written before `refreshInterval` existed

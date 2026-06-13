@@ -133,6 +133,11 @@ extension JiraVolume: FSVolume.Operations {
     /// very small TTL.
     private static let minPeriodicRefreshInterval: TimeInterval = 1
 
+    /// Upper bound on the periodic refresh interval (1 day), matching the
+    /// Preferences TTL slider cap, so a huge or non-finite hand-edited config
+    /// value can never overflow `UInt64(interval * 1e9)` in `Task.sleep`.
+    private static let maxPeriodicRefreshInterval: TimeInterval = 86_400
+
     /// Starts a single long-lived loop that periodically forces a background
     /// refresh of every browsed project's issue-key list. Finder is passive and
     /// only re-enumerates a directory when its mtime changes, so without this
@@ -146,15 +151,18 @@ extension JiraVolume: FSVolume.Operations {
         makeTask { [weak self] in
             guard let self else { return }
             let ttl = await self.dataSource.ttl
-            // A negative refreshInterval disables polling entirely (the user
-            // opted out); 0 falls back to the issues TTL; a positive value sets
-            // the interval explicitly. A 1s floor avoids hammering the API.
-            guard ttl.refreshInterval >= 0 else {
-                self.logger.info("periodic refresh disabled (refreshInterval < 0)")
+            // `periodicRefreshInterval` encodes the polling policy: negative
+            // disables it, 0 derives from the issues TTL (disabled when caching
+            // itself is off, i.e. TTL <= 0), positive sets it explicitly, and the
+            // result is clamped to [min, max] so the sleep duration is always a
+            // finite, in-range value.
+            guard let interval = ttl.periodicRefreshInterval(
+                minimum: JiraVolume.minPeriodicRefreshInterval,
+                maximum: JiraVolume.maxPeriodicRefreshInterval
+            ) else {
+                self.logger.info("periodic refresh disabled")
                 return
             }
-            let configured = ttl.refreshInterval > 0 ? ttl.refreshInterval : ttl.issues
-            let interval = max(configured, JiraVolume.minPeriodicRefreshInterval)
             self.logger.info("periodic refresh loop started interval=\(interval, privacy: .public)s")
             let nanos = UInt64(interval * 1_000_000_000)
             while !Task.isCancelled {

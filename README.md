@@ -120,8 +120,8 @@ FSKit volumes are passive: the kernel only re-enumerates a directory when its mo
 Configure it in the host app under **Preferences → Cache → Auto-Refresh Interval** (separately for JIRA and Confluence):
 
 - **Off** — disable polling (re-open or `ls` again to update)
-- **0** (default) — reuse the Issues/Pages cache TTL
-- **N seconds** — poll at that interval (minimum 1 s)
+- **0** (default) — reuse the Issues/Pages cache TTL (polling is disabled too when that TTL is 0)
+- **N seconds** — poll at that interval (clamped to 1 s – 1 day)
 
 Changes take effect after remounting.
 

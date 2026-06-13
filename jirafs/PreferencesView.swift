@@ -208,7 +208,7 @@ private struct CachePreferencesTab: View {
                     Image(systemName: "info.circle")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Text("Background poll that surfaces newly created issues/pages while a folder is open. Turn off to disable polling. 0 = use the Issues/Pages TTL. Values below 1s are clamped to 1s.")
+                    Text("Background poll that surfaces newly created issues/pages while a folder is open. Turn off to disable polling. 0 = use the Issues/Pages TTL (polling is also disabled when that TTL is 0). Values below 1s are clamped to 1s.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
