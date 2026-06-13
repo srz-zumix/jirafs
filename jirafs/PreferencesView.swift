@@ -16,6 +16,12 @@ struct PreferencesView: View {
                 .tabItem { Label("Cache", systemImage: "clock.arrow.2.circlepath") }
         }
         .frame(width: 520, height: 460)
+        // Close the Preferences window when Esc is pressed. `onExitCommand`
+        // fires for the Esc key; performClose mirrors clicking the close button
+        // (and is a no-op if a sheet is up, so it won't fight modal editors).
+        .onExitCommand {
+            NSApp.keyWindow?.performClose(nil)
+        }
     }
 }
 
@@ -188,6 +194,25 @@ private struct CachePreferencesTab: View {
                     ttlRow("File Content", value: confluenceBinding(\.attachmentBinary))
                 }
 
+                formSection("Auto-Refresh Interval") {
+                    refreshRow("JIRA",
+                               enabled: jiraRefreshEnabled,
+                               value: jiraRefreshValue)
+                    rowDivider
+                    refreshRow("Confluence",
+                               enabled: confluenceRefreshEnabled,
+                               value: confluenceRefreshValue)
+                }
+
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Background poll that surfaces newly created issues/pages while a folder is open. Turn off to disable polling. 0 = use the Issues/Pages TTL. Values below 1s are clamped to 1s.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack {
                     Button("Reset to Defaults") {
                         appStore.store.jiraCache = .default
@@ -230,6 +255,86 @@ private struct CachePreferencesTab: View {
                 appStore.saveCacheSettings()
             }
         )
+    }
+
+    // MARK: - Auto-refresh bindings
+    //
+    // `refreshInterval` encodes three states: negative = polling disabled,
+    // 0 = derive from the Issues/Pages TTL, positive = explicit interval.
+    // The toggle binding maps that to on/off, and the value binding edits the
+    // non-negative interval while polling is enabled. Disabling stores -1 so the
+    // volume's startPeriodicRefresh() skips the loop.
+
+    private var jiraRefreshEnabled: Binding<Bool> {
+        Binding(
+            get: { appStore.store.jiraCache.refreshInterval >= 0 },
+            set: {
+                appStore.store.jiraCache.refreshInterval = $0 ? 0 : -1
+                appStore.saveCacheSettings()
+            }
+        )
+    }
+
+    private var jiraRefreshValue: Binding<TimeInterval> {
+        Binding(
+            get: { max(0, appStore.store.jiraCache.refreshInterval) },
+            set: {
+                appStore.store.jiraCache.refreshInterval = max(Self.ttlMin, min(Self.ttlMax, $0.rounded()))
+                appStore.saveCacheSettings()
+            }
+        )
+    }
+
+    private var confluenceRefreshEnabled: Binding<Bool> {
+        Binding(
+            get: { appStore.store.confluenceCache.refreshInterval >= 0 },
+            set: {
+                appStore.store.confluenceCache.refreshInterval = $0 ? 0 : -1
+                appStore.saveCacheSettings()
+            }
+        )
+    }
+
+    private var confluenceRefreshValue: Binding<TimeInterval> {
+        Binding(
+            get: { max(0, appStore.store.confluenceCache.refreshInterval) },
+            set: {
+                appStore.store.confluenceCache.refreshInterval = max(Self.ttlMin, min(Self.ttlMax, $0.rounded()))
+                appStore.saveCacheSettings()
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func refreshRow(_ label: String, enabled: Binding<Bool>, value: Binding<TimeInterval>) -> some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 90, alignment: .trailing)
+                .padding(.trailing, 10)
+            Toggle("", isOn: enabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .padding(.trailing, 10)
+            TextField("", value: value, format: .number.precision(.fractionLength(0)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 80)
+                .disabled(!enabled.wrappedValue)
+            Text("sec")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 6)
+            Text(enabled.wrappedValue ? "(\(formatMinutes(value.wrappedValue)))" : "(off)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 4)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder

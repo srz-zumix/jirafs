@@ -447,6 +447,29 @@ L1 ミス→ L2 ヒット時、デコードした値を L1 にも書き戻す (*
 2. **L1/L2 Stale** (TTL 超過だが 7 日以内) → 即返却 + バックグラウンドで再取得
 3. **L1/L2 なし** → API フェッチ (初回アクセスのみ)
 
+### バックグラウンド自動更新 (ポーリング)
+
+FSKit のボリュームは受動的で、Finder (カーネル) はディレクトリの `mtime` が変わらない限り再列挙しない。そのため「フォルダを開いたまま待っているだけ」では、JIRA / Confluence 側で新規作成された issue / page は表示されない (誰も `enumerateDirectory` を呼ばないため stale-while-revalidate のトリガーも発火しない)。
+
+これを解決するため、各ボリュームはマウント時に**定期ポーリングループ**を起動する。
+
+- 一度でも列挙された (= ユーザーが開いた) プロジェクト / スペース・ページ一覧を対象に、一定間隔で一覧をバックグラウンド再取得する。
+- 再取得後にディレクトリの `cachedMTime` を更新し、Finder の kqueue ウォッチャを発火させて自動再列挙させる。これにより新規 issue / page が「待つだけ」で表示される。
+- 初期化 (ハンドラ配線・キャッシュウォームアップ・ポーリング起動) は `FSVolume.mount()` ではなく **`activate()`** で行う。fskitd は `FSUnaryFileSystem` のボリュームを `mount()` 経由で駆動しないことがあるため、`OSAllocatedUnfairLock<Bool>` の once-guard で一度だけ実行する。
+- ループのタスクは `makeTask` で追跡され、`unmount` 時の `cancelAllTasks()` で確実に停止する。
+
+#### ポーリング間隔の設定 (`refreshInterval`)
+
+ポーリング間隔は TTL とは独立した設定値 `CacheTTLConfig.refreshInterval` (秒) で制御する。
+
+| 値 | 挙動 |
+|---|---|
+| `nil` / 負値 (オフ) | ポーリングを無効化 (待つだけでは更新されない。再アクセスが必要) |
+| `0` (既定) | イシュー / ページ一覧 TTL を流用 (後方互換) |
+| 正値 | その秒数でポーリング。**下限 1 秒** (それ未満は 1 秒に丸め、API 過負荷を防止) |
+
+ホストアプリの Preferences → Cache タブ「Auto-Refresh Interval」で JIRA / Confluence 別に設定でき、トグルでオフにもできる。設定変更は再マウントで反映される。
+
 ### キャッシュ無効化
 
 - `synchronize()` 呼び出し時に L1・L2 を全クリア

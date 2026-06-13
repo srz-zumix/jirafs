@@ -51,6 +51,12 @@ public actor IssueDataSource {
     /// should share one network round-trip instead of each issuing their own.
     private var pendingIssueKeysFetch: [String: Task<[String], Error>] = [:]
 
+    /// Project keys whose issue-key list has been requested at least once
+    /// (i.e. directories the user has actually browsed). The periodic poll only
+    /// refreshes these, so projects that were never opened don't generate API
+    /// traffic.
+    private var browsedProjects: Set<String> = []
+
     /// Called on the actor's executor after every successful background refresh of
     /// the issue key list for a project. The parameter is the project key.
     /// `JiraVolume` uses this to update the directory's `cachedMTime` so that
@@ -136,6 +142,7 @@ public actor IssueDataSource {
     /// **Cloud edition** (cursor-based `nextPageToken`): pages are fetched
     /// sequentially as the token for page N+1 is only available after page N.
     public func issueKeys(forProject key: String) async throws -> [String] {
+        browsedProjects.insert(key)
         let cacheKey = "issues/\(key)"
         if let fresh = await cache.get(cacheKey, as: [String].self) { return fresh }
         if let stale = await cache.getStale(cacheKey, as: [String].self) {
@@ -281,6 +288,28 @@ public actor IssueDataSource {
             if await cache.get(key, as: [String].self) != nil { continue }
             scheduleRefresh(key) { await self.bgRefreshIssueKeys(project: project.key) }
         }
+    }
+
+    /// Force a background refresh of the issue-key list for every project the
+    /// user has browsed at least once.
+    ///
+    /// `JiraVolume` calls this on a timer (interval ≈ `ttl.issues`) so that
+    /// issues created in JIRA after the directory was last enumerated appear
+    /// without the user having to re-trigger enumeration. Each refresh fires
+    /// `onIssueKeysRefreshed`, which bumps the directory `mtime` so Finder's
+    /// kqueue watcher re-enumerates and surfaces the new entries.
+    ///
+    /// Refreshes run through `scheduleRefresh`, so a poll that overlaps an
+    /// in-flight refresh for the same project is a no-op (no duplicate fetch).
+    ///
+    /// - Returns: the number of browsed projects a refresh was scheduled for.
+    @discardableResult
+    public func refreshBrowsedProjects() async -> Int {
+        for project in browsedProjects {
+            let cacheKey = "issues/\(project)"
+            scheduleRefresh(cacheKey) { await self.bgRefreshIssueKeys(project: project) }
+        }
+        return browsedProjects.count
     }
 
     // MARK: - Background refresh scheduling

@@ -112,6 +112,36 @@ public struct Configuration: Codable, Sendable, Equatable {
         public var issueDetail: TimeInterval
         public var attachments: TimeInterval
         public var attachmentBinary: TimeInterval
+        /// Interval (seconds) for the background poll that auto-refreshes browsed
+        /// issue lists so newly created issues appear without re-enumeration.
+        /// Negative disables polling entirely; `0` (default) means "derive from
+        /// `issues`" for backward compatibility; a positive value sets the poll
+        /// interval independently of the cache TTL. The volume enforces a lower
+        /// bound to avoid hammering the API.
+        public var refreshInterval: TimeInterval
+
+        public init(projects: TimeInterval, issues: TimeInterval, issueDetail: TimeInterval,
+                    attachments: TimeInterval, attachmentBinary: TimeInterval,
+                    refreshInterval: TimeInterval = 0) {
+            self.projects = projects
+            self.issues = issues
+            self.issueDetail = issueDetail
+            self.attachments = attachments
+            self.attachmentBinary = attachmentBinary
+            self.refreshInterval = refreshInterval
+        }
+
+        // Custom decoder so config files written before `refreshInterval` existed
+        // (or hand-edited ones omitting it) decode with a 0 default.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            projects         = try c.decode(TimeInterval.self, forKey: .projects)
+            issues           = try c.decode(TimeInterval.self, forKey: .issues)
+            issueDetail      = try c.decode(TimeInterval.self, forKey: .issueDetail)
+            attachments      = try c.decode(TimeInterval.self, forKey: .attachments)
+            attachmentBinary = try c.decode(TimeInterval.self, forKey: .attachmentBinary)
+            refreshInterval  = try c.decodeIfPresent(TimeInterval.self, forKey: .refreshInterval) ?? 0
+        }
 
         public static let `default` = CacheTTLConfig(
             projects: 300,

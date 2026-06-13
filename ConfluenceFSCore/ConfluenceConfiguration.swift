@@ -116,14 +116,35 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public var pageDetail: TimeInterval
         public var attachments: TimeInterval
         public var attachmentBinary: TimeInterval
+        /// Interval (seconds) for the background poll that auto-refreshes browsed
+        /// page listings so newly created pages appear without re-enumeration.
+        /// Negative disables polling entirely; `0` (default) means "derive from
+        /// `pages`" for backward compatibility; a positive value sets the poll
+        /// interval independently of the cache TTL. The volume enforces a lower
+        /// bound to avoid hammering the API.
+        public var refreshInterval: TimeInterval
 
         public init(spaces: TimeInterval, pages: TimeInterval, pageDetail: TimeInterval,
-                    attachments: TimeInterval, attachmentBinary: TimeInterval) {
+                    attachments: TimeInterval, attachmentBinary: TimeInterval,
+                    refreshInterval: TimeInterval = 0) {
             self.spaces = spaces
             self.pages = pages
             self.pageDetail = pageDetail
             self.attachments = attachments
             self.attachmentBinary = attachmentBinary
+            self.refreshInterval = refreshInterval
+        }
+
+        // Custom decoder so config files written before `refreshInterval` existed
+        // (or hand-edited ones omitting it) decode with a 0 default.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            spaces           = try c.decode(TimeInterval.self, forKey: .spaces)
+            pages            = try c.decode(TimeInterval.self, forKey: .pages)
+            pageDetail       = try c.decode(TimeInterval.self, forKey: .pageDetail)
+            attachments      = try c.decode(TimeInterval.self, forKey: .attachments)
+            attachmentBinary = try c.decode(TimeInterval.self, forKey: .attachmentBinary)
+            refreshInterval  = try c.decodeIfPresent(TimeInterval.self, forKey: .refreshInterval) ?? 0
         }
 
         public static let `default` = CacheTTLConfig(

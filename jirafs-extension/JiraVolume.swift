@@ -51,6 +51,13 @@ final class JiraVolume: FSVolume, @unchecked Sendable {
     }
     private let taskStorage = OSAllocatedUnfairLock(initialState: TaskState())
 
+    /// Ensures the one-time mount setup (refresh handler wiring, cache warm-up,
+    /// post-warm-up refresh, periodic refresh loop) runs exactly once for the
+    /// volume's lifetime. fskitd drives the volume through `activate()` rather
+    /// than `mount()`, and `activate()` can be called more than once, so the
+    /// setup is gated on this flag instead of living in `mount()`.
+    let mountSetupOnce = OSAllocatedUnfairLock(initialState: false)
+
     /// Creates a `Task<Void, Never>` whose lifetime is tracked by this volume.
     /// The task removes itself from tracking when it finishes.
     /// Call `cancelAllTasks()` in `unmount` to abort in-flight work before

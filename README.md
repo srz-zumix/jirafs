@@ -16,6 +16,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
+- Background auto-refresh — newly created issues/pages appear while a folder stays open (configurable interval, can be turned off)
 - Optional `issue.html` / `{Title}.html` formatted view
 
 ## Requirements
@@ -111,6 +112,18 @@ sudo diskutil unmount ~/confluencefs/myinstance
 ```
 
 Project/space filtering and other options (disk cache, HTML view) are configured per instance in the host app.
+
+### Auto-Refresh
+
+FSKit volumes are passive: the kernel only re-enumerates a directory when its modification time changes. To make issues/pages created after a folder was opened appear automatically, each mount runs a background poll that refreshes browsed listings and bumps their mtime (so Finder re-enumerates).
+
+Configure it in the host app under **Preferences → Cache → Auto-Refresh Interval** (separately for JIRA and Confluence):
+
+- **Off** — disable polling (re-open or `ls` again to update)
+- **0** (default) — reuse the Issues/Pages cache TTL
+- **N seconds** — poll at that interval (minimum 1 s)
+
+Changes take effect after remounting.
 
 ## Documentation
 
