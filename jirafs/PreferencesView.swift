@@ -328,7 +328,9 @@ private struct CachePreferencesTab: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 6)
-            Text(enabled.wrappedValue ? "(\(formatMinutes(value.wrappedValue)))" : "(off)")
+            Text(enabled.wrappedValue
+                 ? (value.wrappedValue == 0 ? "(TTL)" : "(\(formatMinutes(value.wrappedValue)))")
+                 : "(off)")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.leading, 4)
