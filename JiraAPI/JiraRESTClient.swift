@@ -140,6 +140,13 @@ public actor JiraRESTClient: JiraClient {
               let url = URL(string: contentURLString) else {
             throw JiraAPIError.invalidURL
         }
+        // A compromised/malicious instance could return an attachment `content`
+        // URL on an attacker-controlled host. Authorizing such a request would
+        // leak the credentials (Basic email:token / Bearer PAT) to that host, so
+        // only authorize URLs that point at the configured instance host.
+        guard url.host?.lowercased() == config.baseURL.host?.lowercased() else {
+            throw JiraAPIError.invalidURL
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         try await auth.authorize(&request)

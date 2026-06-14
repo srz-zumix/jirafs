@@ -35,8 +35,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
 
     func closeItem(_ item: FSItem, modes: FSVolume.OpenModes, replyHandler reply: @escaping (Error?) -> Void) {
         if let node = item as? ConfluenceFSItem, modes.isEmpty {
-            node.cachedData = nil
-            node.cachedSize = 0
+            node.setPayload(nil, size: 0)
         }
         reply(nil)
     }
@@ -116,8 +115,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
         default:
             return
         }
-        node.cachedData = data
-        node.cachedSize = UInt64(data.count)
+        node.setPayload(data, size: UInt64(data.count))
     }
 
     private func applyPageTimes(_ page: ConfluencePage, to node: ConfluenceFSItem) {

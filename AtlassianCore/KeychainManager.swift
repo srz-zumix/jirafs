@@ -90,7 +90,7 @@ public struct KeychainManager: Sendable {
         if updateStatus == errSecItemNotFound {
             var insert = query
             insert[kSecValueData as String] = data
-            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(insert as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw AtlassianError.transport("Keychain add failed: \(addStatus)")
@@ -159,8 +159,9 @@ public struct KeychainManager: Sendable {
     // data-protection Keychain (same access group as credentials), NOT as a
     // plaintext file next to the encrypted cache. Both the host app and the
     // FSKit extension can read/create it because they share the access group.
-    // The item is `kSecAttrAccessibleAfterFirstUnlock` so the extension can use
-    // it without any user-presence prompt.
+    // The item is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so the
+    // extension can use it without any user-presence prompt, while keeping the
+    // key off iCloud Keychain and device backups (it never leaves this Mac).
 
     private static let cacheKeyAccount = "cache_encryption_key"
 
@@ -197,7 +198,7 @@ public struct KeychainManager: Sendable {
             kSecAttrAccount as String: Self.cacheKeyAccount,
             kSecAttrAccessGroup as String: Self.accessGroup,
             kSecUseDataProtectionKeychain as String: true,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: keyData,
         ]
         let status = SecItemAdd(insert as CFDictionary, nil)

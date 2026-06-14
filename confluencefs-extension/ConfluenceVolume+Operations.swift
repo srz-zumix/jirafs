@@ -159,8 +159,7 @@ extension ConfluenceVolume: FSVolume.Operations {
             // for any item that is accessed again.
             self.itemsLock.withLock {
                 for item in self.items.values {
-                    item.cachedData = nil
-                    item.cachedSize = 0
+                    item.setPayload(nil, size: 0)
                 }
             }
             r.value(nil)
