@@ -49,4 +49,66 @@ final class JiraRESTClientTests: XCTestCase {
             XCTAssertEqual(error, .notFound)
         }
     }
+
+    // MARK: - downloadAttachment URL validation (credential-leak prevention)
+
+    private func cloudClient(_ stub: StubTransport) -> JiraRESTClient {
+        let cfg = JiraInstanceConfig(name: "test", baseURL: URL(string: "https://example.atlassian.net")!, edition: .cloud)
+        return JiraRESTClient(config: cfg, auth: APITokenAuth(email: "x", token: "y"), transport: stub)
+    }
+
+    private func attachment(content: String?) -> JiraAttachment {
+        JiraAttachment(id: "1", filename: "f.txt", size: 4, mimeType: nil, content: content, created: nil, author: nil)
+    }
+
+    func testDownloadAttachmentAcceptsSameOrigin() async throws {
+        let stub = StubTransport()
+        stub.responses["/secure/attachment/1/f.txt"] = (200, Data([1, 2, 3, 4]))
+        let client = cloudClient(stub)
+        let data = try await client.downloadAttachment(
+            attachment(content: "https://example.atlassian.net/secure/attachment/1/f.txt"), range: nil)
+        XCTAssertEqual(Array(data), [1, 2, 3, 4])
+    }
+
+    func testDownloadAttachmentAcceptsExplicitDefaultPort() async throws {
+        let stub = StubTransport()
+        stub.responses["/secure/att443"] = (200, Data([9]))
+        let client = cloudClient(stub)
+        let data = try await client.downloadAttachment(
+            attachment(content: "https://example.atlassian.net:443/secure/att443"), range: nil)
+        XCTAssertEqual(Array(data), [9])
+    }
+
+    func testDownloadAttachmentRejectsCrossHost() async throws {
+        try await assertDownloadRejected(content: "https://evil.example.com/secure/x")
+    }
+
+    func testDownloadAttachmentRejectsSchemeDowngrade() async throws {
+        try await assertDownloadRejected(content: "http://example.atlassian.net/secure/x")
+    }
+
+    func testDownloadAttachmentRejectsDifferentPort() async throws {
+        try await assertDownloadRejected(content: "https://example.atlassian.net:8443/secure/x")
+    }
+
+    func testDownloadAttachmentRejectsEmbeddedUserInfo() async throws {
+        try await assertDownloadRejected(content: "https://user:pass@example.atlassian.net/secure/x")
+    }
+
+    func testDownloadAttachmentRejectsMissingContent() async throws {
+        try await assertDownloadRejected(content: nil)
+    }
+
+    private func assertDownloadRejected(content: String?,
+                                        file: StaticString = #filePath, line: UInt = #line) async throws {
+        let stub = StubTransport()
+        let client = cloudClient(stub)
+        do {
+            _ = try await client.downloadAttachment(attachment(content: content), range: nil)
+            XCTFail("expected invalidURL", file: file, line: line)
+        } catch let error as JiraAPIError {
+            XCTAssertEqual(error, .invalidURL, file: file, line: line)
+        }
+        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent", file: file, line: line)
+    }
 }

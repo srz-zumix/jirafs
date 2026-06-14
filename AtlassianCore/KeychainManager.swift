@@ -84,13 +84,18 @@ public struct KeychainManager: Sendable {
 
         let attributes: [String: Any] = [
             kSecValueData as String: data,
+            // Re-assert accessibility on every update so credentials written by
+            // an older build (which used `kSecAttrAccessibleAfterFirstUnlock`,
+            // eligible for iCloud Keychain / backups) are migrated to the
+            // device-only class rather than retaining the looser one.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var insert = query
             insert[kSecValueData as String] = data
-            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(insert as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw AtlassianError.transport("Keychain add failed: \(addStatus)")
@@ -159,8 +164,9 @@ public struct KeychainManager: Sendable {
     // data-protection Keychain (same access group as credentials), NOT as a
     // plaintext file next to the encrypted cache. Both the host app and the
     // FSKit extension can read/create it because they share the access group.
-    // The item is `kSecAttrAccessibleAfterFirstUnlock` so the extension can use
-    // it without any user-presence prompt.
+    // The item is `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` so the
+    // extension can use it without any user-presence prompt, while keeping the
+    // key off iCloud Keychain and device backups (it never leaves this Mac).
 
     private static let cacheKeyAccount = "cache_encryption_key"
 
@@ -187,6 +193,14 @@ public struct KeychainManager: Sendable {
     public func loadOrCreateCacheKey(instanceName: String, product: String) throws -> SymmetricKey {
         let service = Self.cacheKeyService(product: product, instanceName: instanceName)
         if let data = try readCacheKeyData(service: service) {
+            // The key may have been created by an older build with the looser
+            // `kSecAttrAccessibleAfterFirstUnlock` (eligible for iCloud Keychain
+            // / backups). Best-effort migrate it to the device-only class in
+            // place. A failure here must never break decryption of an
+            // already-readable key, so the status is intentionally ignored; an
+            // in-place update also avoids a delete+re-add race between the host
+            // app and the extension.
+            migrateCacheKeyAccessibility(service: service)
             return SymmetricKey(data: data)
         }
         let key = SymmetricKey(size: .bits256)
@@ -197,7 +211,7 @@ public struct KeychainManager: Sendable {
             kSecAttrAccount as String: Self.cacheKeyAccount,
             kSecAttrAccessGroup as String: Self.accessGroup,
             kSecUseDataProtectionKeychain as String: true,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: keyData,
         ]
         let status = SecItemAdd(insert as CFDictionary, nil)
@@ -237,6 +251,27 @@ public struct KeychainManager: Sendable {
             throw AtlassianError.transport("Keychain cache-key has unexpected size")
         }
         return data
+    }
+
+    /// Best-effort, in-place migration of an existing cache-key item to the
+    /// device-only accessibility class. Older builds created the key with
+    /// `kSecAttrAccessibleAfterFirstUnlock` (eligible for iCloud Keychain /
+    /// backups); re-asserting the device-only class enforces "never leaves this
+    /// Mac" on upgrade. Any failure is ignored so it can never break reads of an
+    /// already-accessible key, and an in-place `SecItemUpdate` avoids a
+    /// delete+re-add race between the host app and the extension.
+    private func migrateCacheKeyAccessibility(service: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: Self.cacheKeyAccount,
+            kSecAttrAccessGroup as String: Self.accessGroup,
+            kSecUseDataProtectionKeychain as String: true,
+        ]
+        let attributes: [String: Any] = [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        _ = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
 
     /// Deletes the stored cache key for an instance (used when the instance is

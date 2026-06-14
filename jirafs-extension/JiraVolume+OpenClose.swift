@@ -40,8 +40,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             // may have served outdated content on the first open, and
             // node.cachedData would otherwise pin that stale HTML/text
             // indefinitely while the background refresh already completed).
-            node.cachedData = nil
-            node.cachedSize = 0
+            node.setPayload(nil, size: 0)
         }
         reply(nil)
     }
@@ -135,8 +134,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
             return
         }
         logger.info("loadPayload: loaded kind=\(String(describing: node.kind), privacy: .public) bytes=\(data.count)")
-        node.cachedData = data
-        node.cachedSize = UInt64(data.count)
+        node.setPayload(data, size: UInt64(data.count))
     }
 
     /// Sets `cachedMTime` and `cachedBirthTime` on `node` from the issue's

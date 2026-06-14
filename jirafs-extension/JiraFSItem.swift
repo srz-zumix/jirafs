@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import FSKit
+import os
 import JiraAPI
 import JiraFSCore
 
@@ -11,8 +12,39 @@ import JiraFSCore
 final class JiraFSItem: FSItem, @unchecked Sendable {
     let kind: FSNodeKind
     let identifier: FSItem.Identifier
-    var cachedData: Data?
-    var cachedSize: UInt64 = 0
+
+    // `cachedData`/`cachedSize` are mutated from multiple concurrent FSKit
+    // operation tasks: `openItem`, `read`, and `closeItem` each run as an
+    // independent `makeTask` closure (or are invoked directly off the FSKit
+    // thread), so unsynchronized access is a genuine data race. `Data?` is
+    // backed by a reference-counted storage object, so concurrent mutation
+    // corrupts ARC. An unfair lock serializes the backing storage; the computed
+    // properties keep the same `node.cachedData` / `node.cachedSize` API the
+    // call sites already use, and `setPayload` updates the pair atomically.
+    private let payloadLock = OSAllocatedUnfairLock()
+    private var _cachedData: Data?
+    private var _cachedSize: UInt64 = 0
+
+    var cachedData: Data? {
+        get { payloadLock.withLock { _cachedData } }
+        set { payloadLock.withLock { _cachedData = newValue } }
+    }
+    var cachedSize: UInt64 {
+        get { payloadLock.withLock { _cachedSize } }
+        set { payloadLock.withLock { _cachedSize = newValue } }
+    }
+
+    /// Replaces the cached payload bytes and size together under a single lock so
+    /// a writer never leaves a half-updated pair. The `cachedData` and
+    /// `cachedSize` getters lock independently, so reading both is not an atomic
+    /// snapshot; this is harmless because the read path slices by
+    /// `cachedData.count` and never pairs it with `cachedSize`.
+    func setPayload(_ data: Data?, size: UInt64) {
+        payloadLock.withLock {
+            _cachedData = data
+            _cachedSize = size
+        }
+    }
     // Mutable from both FSKit operation tasks and the IssueDataSource change-notification
     // callback. `nonisolated(unsafe)` opts out of Swift 6 isolation checks; Date is a
     // simple struct (Double-backed) whose assignment is effectively atomic on 64-bit
