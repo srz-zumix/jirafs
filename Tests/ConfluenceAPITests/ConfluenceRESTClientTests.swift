@@ -387,5 +387,58 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(Array(data), [1, 2, 3, 4])
         XCTAssertEqual(stub.requests.last?.value(forHTTPHeaderField: "Range"), "bytes=10-13")
     }
+
+    // MARK: - resolveURL / downloadAttachment URL validation (credential-leak prevention)
+
+    func testDownloadAttachmentAcceptsRelativeLink() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/rel"] = (200, Data([7, 7]))
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "r", title: "f.bin", fileSize: nil, downloadLink: "/download/rel")
+        let data = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(Array(data), [7, 7])
+        // Relative link must resolve against the instance origin.
+        XCTAssertTrue(stub.requests.last?.url?.absoluteString.hasPrefix("https://example.atlassian.net/") ?? false)
+    }
+
+    func testDownloadAttachmentAcceptsSameOriginAbsolute() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/abs"] = (200, Data([8]))
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "a", title: "f.bin", fileSize: nil,
+                                       downloadLink: "https://example.atlassian.net:443/download/abs")
+        let data = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(Array(data), [8])
+    }
+
+    func testDownloadAttachmentRejectsCrossHost() async throws {
+        try await assertConfluenceDownloadRejected("https://evil.example.com/download/x")
+    }
+
+    func testDownloadAttachmentRejectsSchemeDowngrade() async throws {
+        try await assertConfluenceDownloadRejected("http://example.atlassian.net/download/x")
+    }
+
+    func testDownloadAttachmentRejectsDifferentPort() async throws {
+        try await assertConfluenceDownloadRejected("https://example.atlassian.net:8443/download/x")
+    }
+
+    func testDownloadAttachmentRejectsEmbeddedUserInfo() async throws {
+        try await assertConfluenceDownloadRejected("https://user:pass@example.atlassian.net/download/x")
+    }
+
+    private func assertConfluenceDownloadRejected(_ downloadLink: String,
+                                                  file: StaticString = #filePath, line: UInt = #line) async throws {
+        let stub = ConfluenceStubTransport()
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "x", title: "f.bin", fileSize: nil, downloadLink: downloadLink)
+        do {
+            _ = try await client.downloadAttachment(att, range: nil)
+            XCTFail("expected invalidURL", file: file, line: line)
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .invalidURL, file: file, line: line)
+        }
+        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent", file: file, line: line)
+    }
 }
 

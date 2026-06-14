@@ -136,15 +136,16 @@ public actor JiraRESTClient: JiraClient {
     }
 
     public func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data {
-        guard let contentURLString = attachment.content,
-              let url = URL(string: contentURLString) else {
+        guard let contentURLString = attachment.content else {
             throw JiraAPIError.invalidURL
         }
         // A compromised/malicious instance could return an attachment `content`
-        // URL on an attacker-controlled host. Authorizing such a request would
-        // leak the credentials (Basic email:token / Bearer PAT) to that host, so
-        // only authorize URLs that point at the configured instance host.
-        guard url.host?.lowercased() == config.baseURL.host?.lowercased() else {
+        // URL on an attacker-controlled origin. Authorizing such a request would
+        // leak the credentials (Basic email:token / Bearer PAT) to that origin,
+        // so only authorize URLs that resolve to the configured instance origin
+        // (same scheme, host, and port — blocking cross-host, http downgrade,
+        // alternate-port, and user-info URLs).
+        guard let url = InstanceURLValidator.sameOriginURL(contentURLString, base: config.baseURL) else {
             throw JiraAPIError.invalidURL
         }
         var request = URLRequest(url: url)

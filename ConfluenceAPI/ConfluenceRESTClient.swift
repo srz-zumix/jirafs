@@ -363,24 +363,16 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     /// Resolves a possibly-relative link (e.g. `/download/attachments/...`)
     /// against the instance base URL.
     ///
-    /// Returns `nil` for any URL whose host does not match the configured
-    /// instance host. A compromised/malicious instance could otherwise return an
-    /// attachment download link on an attacker-controlled host; authorizing that
-    /// request would leak the credentials (Basic email:token / Bearer PAT) to
-    /// the third-party host. Relative links resolve against `config.baseURL` and
-    /// so always satisfy the host check.
+    /// Returns `nil` for any URL that does not resolve to the configured
+    /// instance origin (same scheme, host, and port). A compromised/malicious
+    /// instance could otherwise return an attachment download link on an
+    /// attacker-controlled origin; authorizing that request would leak the
+    /// credentials (Basic email:token / Bearer PAT) to the third-party origin.
+    /// This also blocks `http://` downgrades, alternate-port services, and
+    /// user-info URLs on the same host. Relative links resolve against
+    /// `config.baseURL` and so always satisfy the origin check.
     private func resolveURL(_ link: String) -> URL? {
-        let resolved: URL?
-        if let absolute = URL(string: link), absolute.scheme != nil {
-            resolved = absolute
-        } else {
-            resolved = URL(string: link, relativeTo: config.baseURL)?.absoluteURL
-        }
-        guard let url = resolved,
-              url.host?.lowercased() == config.baseURL.host?.lowercased() else {
-            return nil
-        }
-        return url
+        InstanceURLValidator.sameOriginURL(link, base: config.baseURL)
     }
 
     private func validate(http: HTTPURLResponse, data: Data) throws {
