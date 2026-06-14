@@ -16,8 +16,10 @@ public enum InstanceURLValidator {
     ///
     /// Rejected cases include a different host, an `http://` downgrade of the
     /// same host, an alternate service on a different port, and any URL carrying
-    /// embedded `user:password@` credentials. Relative links inherit `base`'s
-    /// origin and so always pass the origin check.
+    /// embedded `user:password@` credentials. Relative links are resolved
+    /// against `base` and then still origin-checked: path-relative links inherit
+    /// `base`'s origin and pass, but network-path references like `//host/path`
+    /// can resolve to a different host and are rejected.
     public static func sameOriginURL(_ link: String, base: URL) -> URL? {
         let resolved: URL?
         if let absolute = URL(string: link), absolute.scheme != nil {

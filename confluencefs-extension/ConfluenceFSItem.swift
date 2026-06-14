@@ -35,8 +35,11 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         set { payloadLock.withLock { _cachedSize = newValue } }
     }
 
-    /// Atomically replaces both the cached payload bytes and the cached size so
-    /// a concurrent reader never observes data and size from different loads.
+    /// Replaces the cached payload bytes and size together under a single lock so
+    /// a writer never leaves a half-updated pair. The `cachedData` and
+    /// `cachedSize` getters lock independently, so reading both is not an atomic
+    /// snapshot; this is harmless because the read path slices by
+    /// `cachedData.count` and never pairs it with `cachedSize`.
     func setPayload(_ data: Data?, size: UInt64) {
         payloadLock.withLock {
             _cachedData = data

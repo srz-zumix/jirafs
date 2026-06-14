@@ -370,7 +370,9 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     /// credentials (Basic email:token / Bearer PAT) to the third-party origin.
     /// This also blocks `http://` downgrades, alternate-port services, and
     /// user-info URLs on the same host. Relative links resolve against
-    /// `config.baseURL` and so always satisfy the origin check.
+    /// `config.baseURL` and are then still origin-checked: path-relative links
+    /// inherit the instance origin, but network-path references like
+    /// `//host/path` can resolve elsewhere and are rejected.
     private func resolveURL(_ link: String) -> URL? {
         InstanceURLValidator.sameOriginURL(link, base: config.baseURL)
     }
