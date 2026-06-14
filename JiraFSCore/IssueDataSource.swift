@@ -356,6 +356,13 @@ public actor IssueDataSource {
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         refreshing.removeAll()
+        // Also cancel the unstructured single-flight fetch Tasks. Cancelling a
+        // caller awaiting `task.value` does not propagate into these stored
+        // Tasks, so without this they keep issuing network requests after unmount.
+        pendingProjectsFetch?.cancel()
+        pendingProjectsFetch = nil
+        for task in pendingIssueKeysFetch.values { task.cancel() }
+        pendingIssueKeysFetch.removeAll()
     }
 
     // MARK: - Background refresh tasks

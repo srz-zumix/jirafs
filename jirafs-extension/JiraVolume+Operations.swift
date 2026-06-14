@@ -85,8 +85,13 @@ extension JiraVolume: FSVolume.Operations {
         // Also cancel the data source's stale-while-revalidate / periodic refresh
         // tasks, which run on untracked Tasks that `cancelAllTasks()` does not
         // reach and would otherwise keep issuing network requests after unmount.
-        Task { [dataSource] in await dataSource.cancelBackgroundRefreshes() }
-        reply()
+        // Defer reply() until cancellation has been issued so unmount does not
+        // report completion while background refreshes are still tearing down.
+        let r = SendableBox(reply)
+        Task { [dataSource] in
+            await dataSource.cancelBackgroundRefreshes()
+            r.value()
+        }
     }
 
     func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping (Error?) -> Void) {

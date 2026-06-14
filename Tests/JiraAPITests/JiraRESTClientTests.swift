@@ -99,6 +99,22 @@ final class JiraRESTClientTests: XCTestCase {
         try await assertDownloadRejected(content: nil)
     }
 
+    // MARK: - HTTPS-only credential enforcement (config.baseURL hand-edited to http://)
+
+    func testHTTPBaseURLRejectedBeforeSendingCredentials() async throws {
+        let stub = StubTransport()
+        stub.responses["/rest/api/3/project"] = (200, Data("[]".utf8))
+        let cfg = JiraInstanceConfig(name: "insecure", baseURL: URL(string: "http://example.atlassian.net")!, edition: .cloud)
+        let client = JiraRESTClient(config: cfg, auth: APITokenAuth(email: "x", token: "y"), transport: stub)
+        do {
+            _ = try await client.listProjects()
+            XCTFail("expected invalidURL for http:// base URL")
+        } catch let error as JiraAPIError {
+            XCTAssertEqual(error, .invalidURL)
+        }
+        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent over http://")
+    }
+
     private func assertDownloadRejected(content: String?,
                                         file: StaticString = #filePath, line: UInt = #line) async throws {
         let stub = StubTransport()
