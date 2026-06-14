@@ -121,9 +121,23 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
     }
 
     private func applyPageTimes(_ page: ConfluencePage, to node: ConfluenceFSItem) {
-        if let ts = parseConfluenceDate(page.createdAt) {
-            node.cachedMTime = ts
-            node.cachedBirthTime = ts
-        }
+        guard let created = parseConfluenceDate(page.createdAt) else { return }
+        node.cachedBirthTime = created
+        // Confluence's domain model exposes the page *creation* time but not a
+        // distinct "last modified" timestamp; both Cloud (`version.number`) and
+        // DC (`version.number`) increment `version` on every edit, though. Fold
+        // it into the modification time so each edit advances `mtime` by one
+        // second past the creation time. Without this, `mtime` never changes on
+        // edit, and mtime-based cache consumers — notably a browser or QuickLook
+        // viewing `{Title}.html` — keep serving the stale rendered file even
+        // though the underlying page body was updated. (`cat page.md` re-reads
+        // each time and so refreshes regardless, which is why only the HTML
+        // sibling appeared stale.)
+        //
+        // `version` starts at 1 for a brand-new page, so subtract 1 to map the
+        // initial version onto the creation time (mtime == birthTime); a nil
+        // version is treated as the initial version.
+        let versionOffset = TimeInterval(max(0, (page.version ?? 1) - 1))
+        node.cachedMTime = created.addingTimeInterval(versionOffset)
     }
 }

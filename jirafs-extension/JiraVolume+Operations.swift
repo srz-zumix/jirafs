@@ -39,42 +39,40 @@ extension JiraVolume: FSVolume.Operations {
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
-        // Wrap reply so it can be captured by the async task below.
-        let r = SendableBox(reply)
+        performMountSetupIfNeeded()
+        reply(nil)
+    }
+
+    /// Runs the one-time mount setup: wires the refresh handler, warms the cache
+    /// from disk, schedules a post-warm-up network refresh, and starts the
+    /// periodic refresh loop. Safe to call from both `mount()` and `activate()`;
+    /// the body runs at most once per volume (guarded by `mountSetupOnce`).
+    ///
+    /// fskitd drives `FSUnaryFileSystem` volumes through `activate()`, and may
+    /// never call `mount()` — so this setup must not live solely in `mount()`,
+    /// or the periodic refresh (and even the initial warm-up) would never run.
+    func performMountSetupIfNeeded() {
+        let shouldRun = mountSetupOnce.withLock { alreadyRan -> Bool in
+            if alreadyRan { return false }
+            alreadyRan = true
+            return true
+        }
+        guard shouldRun else { return }
+        logger.info("performMountSetup instance=\(self.instanceName, privacy: .public)")
         makeTask {
-            // Wire change notifications before warming up so that any stale-while-revalidate
-            // refresh that fires during warmUp() already has the handler in place.
-            await self.dataSource.setIssueKeysRefreshedHandler { [weak self] projectKey in
-                guard let self else { return }
-                // Update the issuesDir mtime so Finder's kqueue watcher sees the
-                // change and re-enumerates the directory automatically.
-                // Called after every successful background refresh (not only on
-                // key-set change) to prevent stale partial listings in Finder.
-                let node = self.item(for: .issuesDir(project: projectKey))
-                node.cachedMTime = Date()
-                // Invalidate the enumeration entries cache and bump the
-                // generation so any in-flight children() call that captured
-                // the old generation will not overwrite the cleared cache.
-                self.itemsLock.withLock {
-                    self.issueEntriesCache[projectKey] = nil
-                    self.issueKeysSet[projectKey] = nil
-                    self.issueEntriesGeneration[projectKey, default: 0] += 1
-                }
-                self.logger.info("issueKeys refreshed project=\(projectKey, privacy: .public): mtime updated, entries cache invalidated")
-            }
-            // Phase 1: warm from disk cache BEFORE replying to FSKit.
-            // On a warm disk cache (the common case on every mount after the first),
-            // this only reads disk — it completes in tens of milliseconds.
-            // Delaying reply(nil) until after warmUp() ensures that Finder's very
-            // first enumerateDirectory call hits a populated memory cache, preventing
-            // the race condition where Finder caches an empty listing because it
-            // enumerated the directory before warmUp had a chance to load any data.
+            // The refresh handler is installed synchronously in `init` (before any
+            // enumeration can run), so it is already in place for any
+            // stale-while-revalidate refresh that fires during warm-up below.
+            // Phase 1: warm the in-memory cache from disk so Finder browsing is fast.
             await self.dataSource.warmUp()
-            // Signal FSKit that the mount is complete now that the cache is warm.
-            r.value(nil)
             // Phase 2: schedule background API fetches for all projects so fresh
             // data arrives as soon as possible after mount, without blocking Finder.
             await self.dataSource.postWarmUpRefresh()
+            // Phase 3: start the periodic refresh loop so issues created in JIRA
+            // after a directory was last enumerated appear automatically (Finder
+            // is passive and only re-enumerates when the directory mtime changes,
+            // which a background refresh triggers via onIssueKeysRefreshed).
+            self.startPeriodicRefresh()
         }
     }
 
@@ -106,8 +104,67 @@ extension JiraVolume: FSVolume.Operations {
     }
 
     func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, Error?) -> Void) {
+        // fskitd drives the volume through activate() (not always mount()), so
+        // the one-time mount setup is triggered here to guarantee it runs.
+        performMountSetupIfNeeded()
         let root = item(for: .root)
         reply(root, nil)
+    }
+
+    /// Minimum interval between periodic refresh passes, regardless of the
+    /// configured issues TTL, to avoid hammering the JIRA API when a user sets a
+    /// very small TTL.
+    private static let minPeriodicRefreshInterval: TimeInterval = 1
+
+    /// Upper bound on the periodic refresh interval (1 day), matching the
+    /// Preferences TTL slider cap, so a huge or non-finite hand-edited config
+    /// value can never overflow `UInt64(interval * 1e9)` in `Task.sleep`.
+    private static let maxPeriodicRefreshInterval: TimeInterval = 86_400
+
+    /// Starts a single long-lived loop that periodically forces a background
+    /// refresh of every browsed project's issue-key list. Finder is passive and
+    /// only re-enumerates a directory when its mtime changes, so without this
+    /// loop a newly created issue would never appear while the user simply waits.
+    /// The refresh fires `onIssueKeysRefreshed`, which bumps the directory mtime
+    /// and triggers Finder's kqueue watcher to re-enumerate.
+    ///
+    /// The loop task is tracked by `makeTask`, so `cancelAllTasks()` (called from
+    /// `unmount`) cancels it. Note that this only cancels the loop itself: any
+    /// per-project background refresh already dispatched via
+    /// `IssueDataSource.scheduleRefresh` runs on an untracked `Task` and may
+    /// finish after unmount. Such a completion only writes to the data-source
+    /// cache and fires `onIssueKeysRefreshed`, whose handler captures `[weak
+    /// self]` and no-ops once the volume is gone.
+    func startPeriodicRefresh() {
+        makeTask { [weak self] in
+            guard let self else { return }
+            let ttl = await self.dataSource.ttl
+            // `periodicRefreshInterval` encodes the polling policy: negative
+            // disables it, 0 derives from the issues TTL (disabled when caching
+            // itself is off, i.e. TTL <= 0), positive sets it explicitly, and the
+            // result is clamped to [min, max] so the sleep duration is always a
+            // finite, in-range value.
+            guard let interval = ttl.periodicRefreshInterval(
+                minimum: JiraVolume.minPeriodicRefreshInterval,
+                maximum: JiraVolume.maxPeriodicRefreshInterval
+            ) else {
+                self.logger.info("periodic refresh disabled")
+                return
+            }
+            self.logger.info("periodic refresh loop started interval=\(interval, privacy: .public)s")
+            let nanos = UInt64(interval * 1_000_000_000)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: nanos)
+                } catch {
+                    break  // cancelled
+                }
+                if Task.isCancelled { break }
+                let count = await self.dataSource.refreshBrowsedProjects()
+                self.logger.info("periodic refresh tick: \(count, privacy: .public) project(s)")
+            }
+            self.logger.info("periodic refresh loop ended")
+        }
     }
 
     func deactivate(options: FSDeactivateOptions = [], replyHandler reply: @escaping (Error?) -> Void) {

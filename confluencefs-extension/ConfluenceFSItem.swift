@@ -27,11 +27,33 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         super.init()
     }
 
+    /// Creates an item whose `fileID` also depends on its directory-entry
+    /// display name. Used for page directories/HTML siblings so that **renaming**
+    /// a page (title changes, `pageId` stays the same) produces a *new* fileID.
+    /// Finder caches a directory entry's name keyed by its fileID and will not
+    /// refresh a renamed entry whose fileID is unchanged; changing the fileID
+    /// makes Finder treat the rename as a remove + add and redraw the new name.
+    ///
+    /// `salt` adds a further fileID input that is independent of the name — used
+    /// for the page version on `{Title}.html`, so that **editing** a page (body
+    /// changes, name stays the same) also yields a new fileID. Finder caches a
+    /// rendered HTML preview keyed by fileID; without a fileID change it keeps
+    /// showing the stale rendered preview even though mtime/size changed.
+    init(kind: ConfluenceNodeKind, displayName: String?, salt: String? = nil) {
+        self.kind = kind
+        self.identifier = FSItem.Identifier(rawValue: ConfluenceFSItem.stableID(for: kind, displayName: displayName, salt: salt))!
+        super.init()
+    }
+
     /// Stable, deterministic identifier derived from the kind.
     /// Reserved identifiers: 0 = invalid, 2 = root (FSItem.Identifier.rootDirectory).
-    static func stableID(for kind: ConfluenceNodeKind) -> UInt64 {
+    ///
+    /// `displayName` and `salt` only affect `pageDir`/`pageHtml`; all other kinds
+    /// ignore them so their IDs stay purely structural. Passing `nil` reproduces
+    /// the legacy name-independent ID (used where the name is not known).
+    static func stableID(for kind: ConfluenceNodeKind, displayName: String? = nil, salt: String? = nil) -> UInt64 {
         if case .root = kind { return 2 }
-        let canonical = canonicalString(for: kind)
+        let canonical = canonicalString(for: kind, displayName: displayName, salt: salt)
         let digest = SHA256.hash(data: Data(canonical.utf8))
         let raw = digest.withUnsafeBytes { ptr in
             ptr.loadUnaligned(fromByteOffset: 0, as: UInt64.self)
@@ -39,7 +61,7 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         return raw < 16 ? raw &+ 16 : raw
     }
 
-    private static func canonicalString(for kind: ConfluenceNodeKind) -> String {
+    private static func canonicalString(for kind: ConfluenceNodeKind, displayName: String? = nil, salt: String? = nil) -> String {
         switch kind {
         case .root:                                   return "root"
         case .agentsGuide:                            return "agentsGuide"
@@ -50,8 +72,18 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         case .space(let key):                         return "space:\(key)"
         case .spaceMeta(let key):                     return "spaceMeta:\(key)"
         case .pagesDir(let space):                    return "pagesDir:\(space)"
-        case .pageDir(let space, let id):             return "pageDir:\(space):\(id)"
-        case .pageHtml(let space, let id):            return "pageHtml:\(space):\(id)"
+        // Include the display name so a title change (= rename) yields a new
+        // fileID, and `salt` (the page version) so an edit does too; see
+        // init(kind:displayName:salt:) for why this matters to Finder. When both
+        // are nil the name/salt components are omitted entirely so the result is
+        // byte-identical to the legacy structural ID (honouring the documented
+        // "passing nil reproduces the legacy name-independent ID" contract).
+        case .pageDir(let space, let id):
+            let base = "pageDir:\(space):\(id)"
+            return (displayName == nil && salt == nil) ? base : "\(base):\(displayName ?? ""):\(salt ?? "")"
+        case .pageHtml(let space, let id):
+            let base = "pageHtml:\(space):\(id)"
+            return (displayName == nil && salt == nil) ? base : "\(base):\(displayName ?? ""):\(salt ?? "")"
         case .pageBody(let space, let id):            return "pageBody:\(space):\(id)"
         case .pageMeta(let space, let id):            return "pageMeta:\(space):\(id)"
         case .labels(let space, let id):              return "labels:\(space):\(id)"

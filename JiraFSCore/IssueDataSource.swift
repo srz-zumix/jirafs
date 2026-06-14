@@ -1,4 +1,5 @@
 import Foundation
+import os
 import JiraAPI
 
 /// High-level read-only data source backing the FSKit volume.
@@ -51,20 +52,33 @@ public actor IssueDataSource {
     /// should share one network round-trip instead of each issuing their own.
     private var pendingIssueKeysFetch: [String: Task<[String], Error>] = [:]
 
+    /// Project keys whose issue-key list has been requested at least once
+    /// (i.e. directories the user has actually browsed). The periodic poll only
+    /// refreshes these, so projects that were never opened don't generate API
+    /// traffic.
+    private var browsedProjects: Set<String> = []
+
     /// Called on the actor's executor after every successful background refresh of
     /// the issue key list for a project. The parameter is the project key.
     /// `JiraVolume` uses this to update the directory's `cachedMTime` so that
     /// Finder's kqueue watcher fires and the directory listing auto-refreshes.
     /// Fired regardless of whether the key set actually changed, to ensure Finder
     /// never shows a stale partial listing.
-    public var onIssueKeysRefreshed: (@Sendable (String) -> Void)?
+    ///
+    /// Stored behind a lock (rather than as actor-isolated state) so the volume
+    /// can install it *synchronously* at construction time — before FSKit can
+    /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
+    /// stale-while-revalidate refresh could complete before an async setter ran,
+    /// refreshing the cache without bumping the directory mtime, and Finder would
+    /// keep serving a stale listing.
+    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (String) -> Void)?>(initialState: nil)
 
-    /// Sets the handler invoked after every successful background refresh of the
-    /// issue key list for any project. This is an async setter because
-    /// `IssueDataSource` is an actor — the property can only be mutated on the
-    /// actor's executor.
-    public func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
-        onIssueKeysRefreshed = handler
+    /// Installs the handler invoked after every successful background refresh of
+    /// the issue key list for any project. `nonisolated` + synchronous so it can
+    /// run during volume construction, guaranteeing the handler is in place
+    /// before any refresh can fire (see `refreshedHandler`).
+    public nonisolated func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        refreshedHandler.withLock { $0 = handler }
     }
 
     public init(
@@ -136,6 +150,7 @@ public actor IssueDataSource {
     /// **Cloud edition** (cursor-based `nextPageToken`): pages are fetched
     /// sequentially as the token for page N+1 is only available after page N.
     public func issueKeys(forProject key: String) async throws -> [String] {
+        browsedProjects.insert(key)
         let cacheKey = "issues/\(key)"
         if let fresh = await cache.get(cacheKey, as: [String].self) { return fresh }
         if let stale = await cache.getStale(cacheKey, as: [String].self) {
@@ -283,13 +298,42 @@ public actor IssueDataSource {
         }
     }
 
+    /// Force a background refresh of the issue-key list for every project the
+    /// user has browsed at least once.
+    ///
+    /// `JiraVolume` calls this on a timer (interval ≈ `ttl.issues`) so that
+    /// issues created in JIRA after the directory was last enumerated appear
+    /// without the user having to re-trigger enumeration. Each refresh fires
+    /// `onIssueKeysRefreshed`, which bumps the directory `mtime` so Finder's
+    /// kqueue watcher re-enumerates and surfaces the new entries.
+    ///
+    /// Refreshes run through `scheduleRefresh`, so a poll that overlaps an
+    /// in-flight refresh for the same project is a no-op (no duplicate fetch).
+    ///
+    /// - Returns: the number of browsed projects a refresh was scheduled for.
+    @discardableResult
+    public func refreshBrowsedProjects() async -> Int {
+        var scheduled = 0
+        for project in browsedProjects {
+            let cacheKey = "issues/\(project)"
+            if scheduleRefresh(cacheKey, task: { await self.bgRefreshIssueKeys(project: project) }) {
+                scheduled += 1
+            }
+        }
+        return scheduled
+    }
+
     // MARK: - Background refresh scheduling
 
     /// Starts a background refresh task for `key` if one is not already running.
-    private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) {
-        guard !refreshing.contains(key) else { return }
+    /// - Returns: `true` if a refresh was scheduled, `false` if one was already
+    ///   in flight for `key` (so callers can report an accurate scheduled count).
+    @discardableResult
+    private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) -> Bool {
+        guard !refreshing.contains(key) else { return false }
         refreshing.insert(key)
         Task { await task() }
+        return true
     }
 
     private func finishRefresh(_ key: String) { refreshing.remove(key) }
@@ -316,7 +360,8 @@ public actor IssueDataSource {
         // Without this, a partial initial enumeration (large directory) would
         // leave Finder with a stale incomplete listing if no keys were added
         // or removed since the last refresh.
-        onIssueKeysRefreshed?(project)
+        let handler = refreshedHandler.withLock { $0 }
+        handler?(project)
     }
 
     private func bgRefreshIssue(key: String) async {

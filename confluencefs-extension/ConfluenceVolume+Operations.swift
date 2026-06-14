@@ -40,11 +40,33 @@ extension ConfluenceVolume: FSVolume.Operations {
 
     func mount(options: FSTaskOptions, replyHandler reply: @escaping (Error?) -> Void) {
         logger.info("mount instance=\(self.instanceName, privacy: .public) ro=\(self.isReadOnly)")
+        performMountSetupIfNeeded()
         reply(nil)
+    }
+
+    /// Runs the one-time mount setup: wires the refresh handler, warms the cache,
+    /// and starts the periodic refresh loop. Safe to call from both `mount()` and
+    /// `activate()`; the body runs at most once per volume (guarded by
+    /// `mountSetupOnce`).
+    ///
+    /// fskitd drives `FSUnaryFileSystem` volumes through `activate()`, and may
+    /// never call `mount()` — so this setup must not live solely in `mount()`,
+    /// or the periodic refresh (and even the initial warm-up) would never run.
+    func performMountSetupIfNeeded() {
+        let shouldRun = mountSetupOnce.withLock { alreadyRan -> Bool in
+            if alreadyRan { return false }
+            alreadyRan = true
+            return true
+        }
+        guard shouldRun else { return }
+        logger.info("performMountSetup instance=\(self.instanceName, privacy: .public)")
         // Background warmup: pre-cache spaces and root-page lists so the first
         // `ls spaces/` and `ls spaces/KEY/pages/` are served from cache.
         // Tracked via makeTask so cancelAllTasks() (called on unmount) stops it.
         makeTask {
+            // The refresh handler is installed synchronously in `init` (before any
+            // enumeration can run), so it is already in place for any background
+            // refresh that fires during warm-up below.
             do {
                 let spaces = try await self.dataSource.spaces()
                 self.logger.info("warmup: \(spaces.count, privacy: .public) spaces")
@@ -60,8 +82,67 @@ extension ConfluenceVolume: FSVolume.Operations {
             } catch {
                 self.logger.debug("warmup failed: \(error, privacy: .public)")
             }
+            // Start the periodic refresh loop so pages created in Confluence after
+            // a directory was last enumerated appear automatically (Finder is
+            // passive and only re-enumerates when the directory mtime changes,
+            // which a background refresh triggers via onListingRefreshed).
+            self.startPeriodicRefresh()
         }
     }
+
+    /// Minimum interval between periodic refresh passes, regardless of the
+    /// configured pages TTL, to avoid hammering the Confluence API when a user
+    /// sets a very small TTL.
+    private static let minPeriodicRefreshInterval: TimeInterval = 1
+
+    /// Upper bound on the periodic refresh interval (1 day), matching the
+    /// Preferences TTL slider cap, so a huge or non-finite hand-edited config
+    /// value can never overflow `UInt64(interval * 1e9)` in `Task.sleep`.
+    private static let maxPeriodicRefreshInterval: TimeInterval = 86_400
+
+    /// Starts a single long-lived loop that periodically forces a background
+    /// refresh of every browsed page-listing directory. Finder is passive and
+    /// only re-enumerates a directory when its mtime changes, so without this
+    /// loop a newly created page would never appear while the user simply waits.
+    /// The loop task is tracked by `makeTask`, so `cancelAllTasks()` (called from
+    /// `unmount`) cancels it. Note that this only cancels the loop itself: any
+    /// per-listing background refresh already dispatched via
+    /// `refreshBrowsedListings()` runs on an untracked `Task` and may finish
+    /// after unmount. Such a completion only writes to the data-source cache and
+    /// fires `onListingRefreshed`, whose handler captures `[weak self]` and
+    /// no-ops once the volume is gone.
+    func startPeriodicRefresh() {
+        makeTask { [weak self] in
+            guard let self else { return }
+            let ttl = await self.dataSource.ttl
+            // `periodicRefreshInterval` encodes the polling policy: negative
+            // disables it, 0 derives from the pages TTL (disabled when caching
+            // itself is off, i.e. TTL <= 0), positive sets it explicitly, and the
+            // result is clamped to [min, max] so the sleep duration is always a
+            // finite, in-range value.
+            guard let interval = ttl.periodicRefreshInterval(
+                minimum: ConfluenceVolume.minPeriodicRefreshInterval,
+                maximum: ConfluenceVolume.maxPeriodicRefreshInterval
+            ) else {
+                self.logger.info("periodic refresh disabled")
+                return
+            }
+            self.logger.info("periodic refresh loop started interval=\(interval, privacy: .public)s")
+            let nanos = UInt64(interval * 1_000_000_000)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: nanos)
+                } catch {
+                    break  // cancelled
+                }
+                if Task.isCancelled { break }
+                let count = await self.dataSource.refreshBrowsedListings()
+                self.logger.info("periodic refresh tick: \(count, privacy: .public) listing(s)")
+            }
+            self.logger.info("periodic refresh loop ended")
+        }
+    }
+
 
     func unmount(replyHandler reply: @escaping () -> Void) {
         logger.info("unmount \(self.instanceName, privacy: .public)")
@@ -87,6 +168,9 @@ extension ConfluenceVolume: FSVolume.Operations {
     }
 
     func activate(options: FSTaskOptions, replyHandler reply: @escaping (FSItem?, Error?) -> Void) {
+        // fskitd drives the volume through activate() (not always mount()), so
+        // the one-time mount setup is triggered here to guarantee it runs.
+        performMountSetupIfNeeded()
         reply(item(for: .root), nil)
     }
 
@@ -130,8 +214,10 @@ extension ConfluenceVolume: FSVolume.Operations {
         let n = SendableBox(name)
         makeTask {
             do {
-                if let kind = try await self.resolveChild(parent: parent.kind, name: lookupName) {
-                    r.value(self.item(for: kind), n.value, nil)
+                if let resolved = try await self.resolveChild(parent: parent.kind, name: lookupName) {
+                    // Use the name- and salt-aware item so the fileID matches what
+                    // enumerateDirectory packed for the same (kind, name, salt).
+                    r.value(self.item(for: resolved.kind, displayName: lookupName, salt: resolved.salt), n.value, nil)
                 } else {
                     r.value(nil, nil, FSKitError.notFound)
                 }
@@ -164,9 +250,13 @@ extension ConfluenceVolume: FSVolume.Operations {
             do {
                 let entries = try await self.children(of: parent.kind)
                 let start = min(Int(clamping: cookie.rawValue), entries.count)
-                for (offset, (name, kind)) in entries[start...].enumerated() {
+                for (offset, entry) in entries[start...].enumerated() {
+                    let (name, kind, salt) = entry
                     let index = UInt64(start + offset + 1)
-                    let child = self.item(for: kind)
+                    // Pass the entry name (so renamed pages get a new fileID) and
+                    // the salt (page version on {Title}.html, so edited pages do
+                    // too); see ConfluenceFSItem.init(kind:displayName:salt:).
+                    let child = self.item(for: kind, displayName: name, salt: salt)
                     let itemType: FSItem.ItemType = kind.isDirectory ? .directory : .file
                     let nextCookie = FSDirectoryCookie(rawValue: index)
                     let cont = p.value.packEntry(name: FSFileName(string: name), itemType: itemType, itemID: child.identifier, nextCookie: nextCookie, attributes: self.makeAttributes(for: child))
@@ -208,37 +298,49 @@ extension ConfluenceVolume: FSVolume.Operations {
 
     // MARK: - Hierarchy resolution
 
-    private func resolveChild(parent: ConfluenceNodeKind, name: String) async throws -> ConfluenceNodeKind? {
+    private func resolveChild(parent: ConfluenceNodeKind, name: String) async throws -> (kind: ConfluenceNodeKind, salt: String?)? {
         if let kind = ConfluencePathResolver.staticChild(name: name, of: parent) {
-            return kind
+            return (kind, nil)
         }
         let kids = try await children(of: parent)
-        return kids.first(where: { $0.0 == name })?.1
+        return kids.first(where: { $0.name == name }).map { ($0.kind, $0.salt) }
     }
 
-    private func children(of kind: ConfluenceNodeKind) async throws -> [(String, ConfluenceNodeKind)] {
+    /// Directory entry: display name, node kind, and an optional fileID `salt`.
+    /// The salt distinguishes the same (kind, name) across edits — used for the
+    /// page version on `{Title}.html` so Finder regenerates its HTML preview.
+    private typealias ChildEntry = (name: String, kind: ConfluenceNodeKind, salt: String?)
+
+    private func children(of kind: ConfluenceNodeKind) async throws -> [ChildEntry] {
+        // Record page-listing directories as browsed so the periodic refresh
+        // loop keeps them fresh (no-op for non-listing kinds).
+        await dataSource.markBrowsed(kind)
+        // Entries with no meaningful salt (everything except page listings).
+        func plain(_ arr: [(String, ConfluenceNodeKind)]) -> [ChildEntry] {
+            arr.map { ($0.0, $0.1, nil) }
+        }
         switch kind {
         case .root, .configDir:
-            return ConfluencePathResolver.childKinds(of: kind)
+            return plain(ConfluencePathResolver.childKinds(of: kind))
         case .spacesDir:
             let spaces = try await dataSource.spaces()
-            return spaces.map { ($0.key, ConfluenceNodeKind.space(key: $0.key)) }
-        case .space(let key):
-            return ConfluencePathResolver.childKinds(of: kind)
+            return spaces.map { ($0.key, ConfluenceNodeKind.space(key: $0.key), nil) }
+        case .space:
+            return plain(ConfluencePathResolver.childKinds(of: kind))
         case .pagesDir(let spaceKey):
             guard let space = try await dataSource.space(key: spaceKey) else { return [] }
             let entries = try await dataSource.rootPageEntries(space: space)
             var result = pageEntries(entries, spaceKey: spaceKey)
             if await dataSource.includeArchived {
-                result.append((".archived", .archivedRootPagesDir(spaceKey: spaceKey)))
+                result.append((".archived", .archivedRootPagesDir(spaceKey: spaceKey), nil))
             }
             return result
         case .pageDir(let spaceKey, let pageId):
-            var kids = ConfluencePathResolver.childKinds(of: kind)
+            var kids = plain(ConfluencePathResolver.childKinds(of: kind))
             let entries = try await dataSource.childPageEntries(pageId: pageId, spaceKey: spaceKey)
             kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
             if await dataSource.includeArchived {
-                kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId)))
+                kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId), nil))
             }
             // Background: pre-cache grandchildren so the next level of ls is fast.
             // Tracked via makeTask so cancelAllTasks() (called on unmount) stops it.
@@ -257,7 +359,7 @@ extension ConfluenceVolume: FSVolume.Operations {
             return comments.enumerated().map { (i, c) in
                 let raw = PageFileBuilder.commentFileName(index: i + 1, comment: c)
                 let name = FileNameSanitizer.deduplicate(raw, taken: &taken)
-                return (name, ConfluenceNodeKind.comment(spaceKey: spaceKey, pageId: pageId, index: i + 1))
+                return (name, ConfluenceNodeKind.comment(spaceKey: spaceKey, pageId: pageId, index: i + 1), nil)
             }
         case .attachmentsDir(let spaceKey, let pageId):
             let atts = try await dataSource.attachments(pageId: pageId)
@@ -265,7 +367,7 @@ extension ConfluenceVolume: FSVolume.Operations {
             return atts.map { a in
                 let cleaned = FileNameSanitizer.sanitize(a.title)
                 let name = FileNameSanitizer.deduplicate(cleaned, taken: &taken)
-                return (name, ConfluenceNodeKind.attachment(spaceKey: spaceKey, pageId: pageId, attachmentId: a.id))
+                return (name, ConfluenceNodeKind.attachment(spaceKey: spaceKey, pageId: pageId, attachmentId: a.id), nil)
             }
         case .archivedRootPagesDir(let spaceKey):
             guard let space = try await dataSource.space(key: spaceKey) else { return [] }
@@ -281,16 +383,18 @@ extension ConfluenceVolume: FSVolume.Operations {
 
     /// Emits the directory entries for a set of page entries: a `{Title}/`
     /// folder plus an optional sibling `{Title}.html` file sharing the stem.
-    private func pageEntries(_ entries: [ConfluencePageEntry], spaceKey: String)
-        -> [(String, ConfluenceNodeKind)]
-    {
-        var out: [(String, ConfluenceNodeKind)] = []
+    /// The HTML sibling carries the page version as its fileID salt so editing a
+    /// page (new version, same title) gives it a new fileID and Finder
+    /// regenerates the rendered preview.
+    private func pageEntries(_ entries: [ConfluencePageEntry], spaceKey: String) -> [ChildEntry] {
+        var out: [ChildEntry] = []
         for entry in entries {
             let pageId = entry.page.id
+            let versionSalt = entry.page.version.map { "v\($0)" }
             if htmlEnabled {
-                out.append(("\(entry.folderName).html", .pageHtml(spaceKey: spaceKey, pageId: pageId)))
+                out.append(("\(entry.folderName).html", .pageHtml(spaceKey: spaceKey, pageId: pageId), versionSalt))
             }
-            out.append((entry.folderName, .pageDir(spaceKey: spaceKey, pageId: pageId)))
+            out.append((entry.folderName, .pageDir(spaceKey: spaceKey, pageId: pageId), nil))
         }
         return out
     }

@@ -51,6 +51,45 @@ public actor PageDataSource {
     /// when the background pre-caching fills child-page entries in parallel.
     private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
 
+    /// Directory node kinds whose page listing has been enumerated at least once
+    /// (i.e. directories the user has actually browsed). The periodic poll only
+    /// refreshes these, so spaces/pages that were never opened don't generate
+    /// API traffic. Only page-listing directory kinds are inserted
+    /// (`pagesDir` / `pageDir` / `archivedRootPagesDir` / `archivedChildPagesDir`).
+    private var browsedListings: Set<ConfluenceNodeKind> = []
+
+    /// Called on the actor's executor after every successful background refresh
+    /// of a page-listing directory. The parameter is the directory node kind.
+    /// `ConfluenceVolume` uses this to bump the directory's `cachedMTime` so
+    /// Finder's kqueue watcher fires and the listing auto-refreshes.
+    ///
+    /// Stored behind a lock (rather than as actor-isolated state) so the volume
+    /// can install it *synchronously* at construction time — before FSKit can
+    /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
+    /// background refresh could complete before an async setter ran, refreshing
+    /// the cache without bumping the directory mtime, and Finder would keep
+    /// serving a stale listing.
+    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (ConfluenceNodeKind) -> Void)?>(initialState: nil)
+
+    /// Installs the handler invoked after every successful background refresh of a
+    /// page-listing directory. `nonisolated` + synchronous so it can run during
+    /// volume construction, guaranteeing the handler is in place before any
+    /// refresh can fire (see `refreshedHandler`).
+    public nonisolated func setListingRefreshedHandler(_ handler: @escaping @Sendable (ConfluenceNodeKind) -> Void) {
+        refreshedHandler.withLock { $0 = handler }
+    }
+
+    /// Records that a page-listing directory has been browsed so the periodic
+    /// poll keeps it fresh. Non-page-listing kinds are ignored.
+    public func markBrowsed(_ kind: ConfluenceNodeKind) {
+        switch kind {
+        case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir:
+            browsedListings.insert(kind)
+        default:
+            break
+        }
+    }
+
     public init(
         client: any ConfluenceClient,
         cache: CacheManager = CacheManager(),
@@ -83,6 +122,69 @@ public actor PageDataSource {
 
     public func synchronize() async {
         await cache.synchronize()
+    }
+
+    /// Force a background refresh of every page-listing directory the user has
+    /// browsed at least once.
+    ///
+    /// `ConfluenceVolume` calls this on a timer (interval ≈ `ttl.pages`) so that
+    /// pages created in Confluence after the directory was last enumerated
+    /// appear without the user having to re-trigger enumeration. Each refresh
+    /// fires `onListingRefreshed`, which bumps the directory `cachedMTime` so
+    /// Finder's kqueue watcher re-enumerates and surfaces the new entries.
+    ///
+    /// A `refreshing` guard prevents a poll that overlaps an in-flight refresh
+    /// for the same directory from issuing a duplicate fetch.
+    ///
+    /// - Returns: the number of browsed listings a refresh was scheduled for.
+    @discardableResult
+    public func refreshBrowsedListings() async -> Int {
+        var scheduled = 0
+        for kind in browsedListings {
+            let refreshKey = "listing-refresh/\(kind)"
+            guard !refreshing.contains(refreshKey) else { continue }
+            refreshing.insert(refreshKey)
+            scheduled += 1
+            Task {
+                defer { Task { await self.clearRefreshing(refreshKey) } }
+                await self.forceRefreshListing(kind)
+            }
+        }
+        return scheduled
+    }
+
+    /// Performs a fresh network fetch for one page-listing directory, overwrites
+    /// the cache, and fires `onListingRefreshed`. Mirrors JIRA's
+    /// `bgRefreshIssueKeys`: it always hits the network (rather than honouring
+    /// the SWR short-circuit) so the listing is actually brought up to date.
+    private func forceRefreshListing(_ kind: ConfluenceNodeKind) async {
+        do {
+            switch kind {
+            case .pagesDir(let spaceKey):
+                guard let space = try await space(key: spaceKey) else { return }
+                let entries = try await fetchRootPageEntries(space: space)
+                await cache.set("rootpages/\(space.key)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+            case .archivedRootPagesDir(let spaceKey):
+                guard includeArchived, let space = try await space(key: spaceKey) else { return }
+                let entries = try await fetchArchivedRootPageEntries(space: space)
+                await cache.set("archivedRootPages/\(space.key)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+            case .pageDir(let spaceKey, let pageId):
+                let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+                let entries = try await fetchChildPageEntries(pageId: pageId, normalizedSpace: normalized)
+                await cache.set("childpages/\(normalized)/\(pageId)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+            case .archivedChildPagesDir(let spaceKey, let pageId):
+                guard includeArchived else { return }
+                let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+                let entries = try await fetchArchivedChildPageEntries(pageId: pageId, normalizedSpace: normalized)
+                await cache.set("archivedChildPages/\(normalized)/\(pageId)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+            default:
+                return
+            }
+            let handler = refreshedHandler.withLock { $0 }
+            handler?(kind)
+        } catch {
+            logger.debug("forceRefreshListing failed kind=\(String(describing: kind), privacy: .public): \(error, privacy: .public)")
+        }
     }
 
     // MARK: - Spaces
@@ -119,45 +221,57 @@ public actor PageDataSource {
     /// Sanitized, deduplicated root-page entries for a space, sorted by title.
     public func rootPageEntries(space: ConfluenceSpace) async throws -> [ConfluencePageEntry] {
         try await cached("rootpages/\(space.key)/\(pageListVariant)", ttl: ttl.pages) {
-            let pages = try await self.fetchAll { cursor in
-                try await self.client.listRootPages(space: space, cursor: cursor, limit: self.limit)
-            }
-            let filtered = try await self.filterRestricted(
-                pages,
-                restrictedIDsKey: "restrictedIDs/root/\(space.key)/current"
-            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "current", limiter: self.limiter) }
-            return self.makeEntries(filtered)
+            try await self.fetchRootPageEntries(space: space)
         }
+    }
+
+    private func fetchRootPageEntries(space: ConfluenceSpace) async throws -> [ConfluencePageEntry] {
+        let pages = try await self.fetchAll { cursor in
+            try await self.client.listRootPages(space: space, cursor: cursor, limit: self.limit)
+        }
+        let filtered = try await self.filterRestricted(
+            pages,
+            restrictedIDsKey: "restrictedIDs/root/\(space.key)/current"
+        ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "current", limiter: self.limiter) }
+        return self.makeEntries(filtered)
     }
 
     /// Sanitized, deduplicated archived root-page entries. Only fetched when `includeArchived` is true.
     public func archivedRootPageEntries(space: ConfluenceSpace) async throws -> [ConfluencePageEntry] {
         guard includeArchived else { return [] }
         return try await cached("archivedRootPages/\(space.key)/\(pageListVariant)", ttl: ttl.pages) {
-            let pages = try await self.fetchAll { cursor in
-                try await self.client.listArchivedRootPages(space: space, cursor: cursor, limit: self.limit)
-            }
-            let filtered = try await self.filterRestricted(
-                pages,
-                restrictedIDsKey: "restrictedIDs/root/\(space.key)/archived"
-            ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "archived", limiter: self.limiter) }
-            return self.makeEntries(filtered)
+            try await self.fetchArchivedRootPageEntries(space: space)
         }
+    }
+
+    private func fetchArchivedRootPageEntries(space: ConfluenceSpace) async throws -> [ConfluencePageEntry] {
+        let pages = try await self.fetchAll { cursor in
+            try await self.client.listArchivedRootPages(space: space, cursor: cursor, limit: self.limit)
+        }
+        let filtered = try await self.filterRestricted(
+            pages,
+            restrictedIDsKey: "restrictedIDs/root/\(space.key)/archived"
+        ) { try await self.client.restrictedRootPageIDs(spaceKey: space.key, status: "archived", limiter: self.limiter) }
+        return self.makeEntries(filtered)
     }
 
     /// Sanitized, deduplicated child-page entries for a page, sorted by title.
     public func childPageEntries(pageId: String, spaceKey: String) async throws -> [ConfluencePageEntry] {
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
         return try await cached("childpages/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
-            let pages = try await self.fetchAll { cursor in
-                try await self.client.listChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
-            }
-            let filtered = try await self.filterRestricted(
-                pages,
-                restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/current"
-            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "current", limiter: self.limiter) }
-            return self.makeEntries(filtered)
+            try await self.fetchChildPageEntries(pageId: pageId, normalizedSpace: space)
         }
+    }
+
+    private func fetchChildPageEntries(pageId: String, normalizedSpace space: String) async throws -> [ConfluencePageEntry] {
+        let pages = try await self.fetchAll { cursor in
+            try await self.client.listChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
+        }
+        let filtered = try await self.filterRestricted(
+            pages,
+            restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/current"
+        ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "current", limiter: self.limiter) }
+        return self.makeEntries(filtered)
     }
 
     /// Sanitized, deduplicated archived child-page entries. Only fetched when `includeArchived` is true.
@@ -165,15 +279,19 @@ public actor PageDataSource {
         guard includeArchived else { return [] }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
         return try await cached("archivedChildPages/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
-            let pages = try await self.fetchAll { cursor in
-                try await self.client.listArchivedChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
-            }
-            let filtered = try await self.filterRestricted(
-                pages,
-                restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/archived"
-            ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "archived", limiter: self.limiter) }
-            return self.makeEntries(filtered)
+            try await self.fetchArchivedChildPageEntries(pageId: pageId, normalizedSpace: space)
         }
+    }
+
+    private func fetchArchivedChildPageEntries(pageId: String, normalizedSpace space: String) async throws -> [ConfluencePageEntry] {
+        let pages = try await self.fetchAll { cursor in
+            try await self.client.listArchivedChildPages(pageId: pageId, cursor: cursor, limit: self.limit)
+        }
+        let filtered = try await self.filterRestricted(
+            pages,
+            restrictedIDsKey: "restrictedIDs/children/\(space)/\(pageId)/archived"
+        ) { try await self.client.restrictedChildPageIDs(pageId: pageId, status: "archived", limiter: self.limiter) }
+        return self.makeEntries(filtered)
     }
 
     /// Full page including the storage-format body.

@@ -116,14 +116,50 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public var pageDetail: TimeInterval
         public var attachments: TimeInterval
         public var attachmentBinary: TimeInterval
+        /// Interval (seconds) for the background poll that auto-refreshes browsed
+        /// page listings so newly created pages appear without re-enumeration.
+        /// Negative disables polling entirely; `0` (default) means "derive from
+        /// `pages`" for backward compatibility (and, when `pages` is `0` — i.e.
+        /// caching disabled — polling is disabled too); a positive value sets the
+        /// poll interval independently of the cache TTL. The volume enforces a
+        /// lower bound to avoid hammering the API.
+        public var refreshInterval: TimeInterval
 
         public init(spaces: TimeInterval, pages: TimeInterval, pageDetail: TimeInterval,
-                    attachments: TimeInterval, attachmentBinary: TimeInterval) {
+                    attachments: TimeInterval, attachmentBinary: TimeInterval,
+                    refreshInterval: TimeInterval = 0) {
             self.spaces = spaces
             self.pages = pages
             self.pageDetail = pageDetail
             self.attachments = attachments
             self.attachmentBinary = attachmentBinary
+            self.refreshInterval = refreshInterval
+        }
+
+        /// Resolves the effective periodic background-refresh interval (seconds),
+        /// or `nil` when polling should be disabled. `refreshInterval` semantics:
+        /// `< 0` → disabled; `> 0` → explicit; `0` → derive from the `pages` TTL
+        /// (disabled when that TTL is `<= 0`, i.e. caching disabled). Non-finite
+        /// (NaN/Inf) or negative inputs are treated as disabled, and the result is
+        /// clamped to `[minimum, maximum]`, so an invalid hand-edited config can
+        /// never produce a non-finite or out-of-range sleep duration.
+        public func periodicRefreshInterval(minimum: TimeInterval, maximum: TimeInterval) -> TimeInterval? {
+            guard refreshInterval.isFinite, refreshInterval >= 0 else { return nil }
+            let derived = refreshInterval > 0 ? refreshInterval : pages
+            guard derived.isFinite, derived > 0 else { return nil }
+            return Swift.min(Swift.max(derived, minimum), maximum)
+        }
+
+        // Custom decoder so config files written before `refreshInterval` existed
+        // (or hand-edited ones omitting it) decode with a 0 default.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            spaces           = try c.decode(TimeInterval.self, forKey: .spaces)
+            pages            = try c.decode(TimeInterval.self, forKey: .pages)
+            pageDetail       = try c.decode(TimeInterval.self, forKey: .pageDetail)
+            attachments      = try c.decode(TimeInterval.self, forKey: .attachments)
+            attachmentBinary = try c.decode(TimeInterval.self, forKey: .attachmentBinary)
+            refreshInterval  = try c.decodeIfPresent(TimeInterval.self, forKey: .refreshInterval) ?? 0
         }
 
         public static let `default` = CacheTTLConfig(
