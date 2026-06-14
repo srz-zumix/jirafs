@@ -82,6 +82,10 @@ extension JiraVolume: FSVolume.Operations {
         // BEFORE calling reply(), so FSKit doesn't destroy the volume while Tasks
         // are still holding references to packer/reply handlers.
         cancelAllTasks()
+        // Also cancel the data source's stale-while-revalidate / periodic refresh
+        // tasks, which run on untracked Tasks that `cancelAllTasks()` does not
+        // reach and would otherwise keep issuing network requests after unmount.
+        Task { [dataSource] in await dataSource.cancelBackgroundRefreshes() }
         reply()
     }
 

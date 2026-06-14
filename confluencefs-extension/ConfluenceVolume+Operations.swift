@@ -147,6 +147,10 @@ extension ConfluenceVolume: FSVolume.Operations {
     func unmount(replyHandler reply: @escaping () -> Void) {
         logger.info("unmount \(self.instanceName, privacy: .public)")
         cancelAllTasks()
+        // Also cancel the data source's stale-while-revalidate / periodic refresh
+        // tasks, which run on untracked Tasks that `cancelAllTasks()` does not
+        // reach and would otherwise keep issuing network requests after unmount.
+        Task { [dataSource] in await dataSource.cancelBackgroundRefreshes() }
         reply()
     }
 

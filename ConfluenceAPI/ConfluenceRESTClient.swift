@@ -168,7 +168,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        try await auth.authorize(&request)
+        try await authorize(&request)
         if let range {
             request.setValue("bytes=\(range.lowerBound)-\(range.upperBound - 1)", forHTTPHeaderField: "Range")
         }
@@ -185,7 +185,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
-        try await auth.authorize(&request)
+        try await authorize(&request)
         let (_, http) = try await transport.data(for: request)
         guard (200..<300).contains(http.statusCode) else {
             throw mapError(status: http.statusCode, http: http)
@@ -345,8 +345,18 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        try await auth.authorize(&request)
+        try await authorize(&request)
         return request
+    }
+
+    /// Attaches the instance credentials, but only over HTTPS. Centralizing the
+    /// scheme check here guarantees credentials are never sent in cleartext,
+    /// even if `config.baseURL` was hand-edited to `http://` in `config.json`.
+    private func authorize(_ request: inout URLRequest) async throws {
+        guard let url = request.url, InstanceURLValidator.isSecure(url) else {
+            throw AtlassianError.invalidURL
+        }
+        try await auth.authorize(&request)
     }
 
     private func buildURL(basePath: String, query: [URLQueryItem]) throws -> URL {
