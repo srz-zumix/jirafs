@@ -35,6 +35,16 @@ public enum InstanceURLValidator {
         return url
     }
 
+    /// Whether a request to `url` will travel over a secure (HTTPS) transport.
+    ///
+    /// Instance credentials (Basic `email:token` / Bearer PAT) must never be
+    /// attached to a plaintext request, so callers gate `auth.authorize` on this
+    /// check. It defends against a hand-edited `config.json` whose base URL was
+    /// downgraded to `http://` even though the editor UI requires HTTPS.
+    public static func isSecure(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https"
+    }
+
     private static func sameOrigin(_ a: URL, _ b: URL) -> Bool {
         guard let aScheme = a.scheme?.lowercased(),
               let bScheme = b.scheme?.lowercased(),

@@ -45,6 +45,11 @@ public actor PageDataSource {
     public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
     private var refreshing: Set<String> = []
+    /// In-flight background refresh tasks, keyed by refresh key. Tracked so they
+    /// can be cancelled on unmount; an untracked `Task` would otherwise keep
+    /// issuing network requests (and retaining this actor, its HTTP client, and
+    /// the cache) after the volume is torn down.
+    private var refreshTasks: [String: Task<Void, Never>] = [:]
     /// Single-flight guard for Cloud restricted-page-ID fetches. Prevents N
     /// concurrent tasks from each initiating the same directory-scoped
     /// restricted-ID fetch (root pages of a space, or one parent's children)
@@ -145,7 +150,7 @@ public actor PageDataSource {
             guard !refreshing.contains(refreshKey) else { continue }
             refreshing.insert(refreshKey)
             scheduled += 1
-            Task {
+            refreshTasks[refreshKey] = Task {
                 defer { Task { await self.clearRefreshing(refreshKey) } }
                 await self.forceRefreshListing(kind)
             }
@@ -467,7 +472,7 @@ public actor PageDataSource {
     ) {
         guard !refreshing.contains(key) else { return }
         refreshing.insert(key)
-        Task {
+        refreshTasks[key] = Task {
             defer { Task { await self.clearRefreshing(key) } }
             if let value = try? await fetch() {
                 await self.cache.set(key, value: value, ttl: ttl)
@@ -477,6 +482,21 @@ public actor PageDataSource {
 
     private func clearRefreshing(_ key: String) {
         refreshing.remove(key)
+        refreshTasks[key] = nil
+    }
+
+    /// Cancels every in-flight background refresh (and any single-flight
+    /// restricted-ID fetch). Called from `ConfluenceVolume`'s `unmount` so
+    /// stale-while-revalidate / periodic refreshes cannot keep issuing network
+    /// requests — or retain this actor and its dependencies — after the volume
+    /// is gone. URLSession's async API is cancellation-aware, so cancelling
+    /// propagates to any request currently on the wire.
+    public func cancelBackgroundRefreshes() {
+        for task in refreshTasks.values { task.cancel() }
+        refreshTasks.removeAll()
+        refreshing.removeAll()
+        for task in pendingRestrictedIDsFetch.values { task.cancel() }
+        pendingRestrictedIDsFetch.removeAll()
     }
 
     /// Follows the pagination cursor until exhausted (bounded for safety).

@@ -38,6 +38,12 @@ public actor IssueDataSource {
     /// Cache keys for which a background refresh is already in flight.
     private var refreshing: Set<String> = []
 
+    /// In-flight background refresh tasks, keyed by cache key. Tracked so they
+    /// can be cancelled on unmount; an untracked `Task` would otherwise keep
+    /// issuing network requests (and retaining this actor, its HTTP client, and
+    /// the cache) after the volume is torn down.
+    private var refreshTasks: [String: Task<Void, Never>] = [:]
+
     /// In-flight deduplication for the projects fetch.
     /// When warmUp and a Finder `enumerateDirectory` both call `projects()` on
     /// a cold cache simultaneously (which is the common case on first mount),
@@ -332,11 +338,32 @@ public actor IssueDataSource {
     private func scheduleRefresh(_ key: String, task: @escaping @Sendable () async -> Void) -> Bool {
         guard !refreshing.contains(key) else { return false }
         refreshing.insert(key)
-        Task { await task() }
+        refreshTasks[key] = Task { await task() }
         return true
     }
 
-    private func finishRefresh(_ key: String) { refreshing.remove(key) }
+    private func finishRefresh(_ key: String) {
+        refreshing.remove(key)
+        refreshTasks[key] = nil
+    }
+
+    /// Cancels every in-flight background refresh. Called from `JiraVolume`'s
+    /// `unmount` so stale-while-revalidate / periodic refreshes cannot keep
+    /// issuing network requests — or retain this actor and its dependencies —
+    /// after the volume is gone. URLSession's async API is cancellation-aware,
+    /// so cancelling propagates to any request currently on the wire.
+    public func cancelBackgroundRefreshes() {
+        for task in refreshTasks.values { task.cancel() }
+        refreshTasks.removeAll()
+        refreshing.removeAll()
+        // Also cancel the unstructured single-flight fetch Tasks. Cancelling a
+        // caller awaiting `task.value` does not propagate into these stored
+        // Tasks, so without this they keep issuing network requests after unmount.
+        pendingProjectsFetch?.cancel()
+        pendingProjectsFetch = nil
+        for task in pendingIssueKeysFetch.values { task.cancel() }
+        pendingIssueKeysFetch.removeAll()
+    }
 
     // MARK: - Background refresh tasks
 

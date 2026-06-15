@@ -440,5 +440,25 @@ final class ConfluenceRESTClientTests: XCTestCase {
         }
         XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent", file: file, line: line)
     }
+
+    // MARK: - HTTPS-only credential enforcement (config.baseURL hand-edited to http://)
+
+    func testHTTPBaseURLRejectedBeforeSendingCredentials() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/wiki/api/v2/spaces"] = (200, Data(#"{"results":[],"_links":{}}"#.utf8))
+        let cfg = ConfluenceInstanceConfig(
+            name: "insecure",
+            baseURL: URL(string: "http://example.atlassian.net")!,
+            edition: .cloud
+        )
+        let client = ConfluenceRESTClient(config: cfg, auth: APITokenAuth(email: "x", token: "y"), transport: stub)
+        do {
+            _ = try await client.listSpaces(cursor: nil, limit: 25)
+            XCTFail("expected invalidURL for http:// base URL")
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .invalidURL)
+        }
+        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent over http://")
+    }
 }
 

@@ -16,9 +16,6 @@ jobs:
       # write permission is required for autolabeler
       # otherwise, read permission is required at least
       pull-requests: write
-      # for release workflow
-      id-token: write
-      attestations: write
     outputs:
       tag_name: ${{ steps.release-drafter.outputs.tag_name }}
     steps:
