@@ -62,7 +62,11 @@ public enum PageFileBuilder {
     public static func commentFileName(index: Int, comment: ConfluenceComment) -> String {
         let n = String(format: "%03d", index)
         let author = FileNameSanitizer.sanitize(comment.authorLabel ?? "unknown")
-        let date = (comment.createdAt ?? "").prefix(10) // YYYY-MM-DD
+        // Sanitize the date too: it is server-supplied and a malicious instance
+        // could return a value containing path separators, so it must not be
+        // trusted as a raw filename component.
+        let rawDate = String((comment.createdAt ?? "").prefix(10))
+        let date = rawDate.isEmpty ? "" : FileNameSanitizer.sanitize(rawDate)
         let stem = date.isEmpty ? "\(n)_\(author)" : "\(n)_\(author)_\(date)"
         return "\(stem).md"
     }

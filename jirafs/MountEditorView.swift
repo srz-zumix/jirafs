@@ -1,5 +1,8 @@
 import SwiftUI
+import os
 import AtlassianCore
+
+private let mountEditorLogger = Logger(subsystem: "com.zumix.jirafs", category: "mount-editor")
 
 /// Editor for a `Mount`: binds a server + product to a mount point with content
 /// filtering and per-mount options. The credential comes from the chosen
@@ -252,7 +255,7 @@ struct MountEditorView: View {
             do {
                 _ = try KeychainManager().loadOrCreateCacheKey(instanceName: mountID, product: product.fsType)
             } catch {
-                print("Cache key provisioning failed: \(error)")
+                mountEditorLogger.error("Cache key provisioning failed: \(error.localizedDescription, privacy: .public)")
                 saveError = "Disk cache could not be enabled because its encryption key could not be created in the Keychain. Turn off Disk Cache to save, or try again. (\(error.localizedDescription))"
                 return
             }

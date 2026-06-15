@@ -334,8 +334,11 @@ public enum IssueFileBuilder {
         let n = String(format: "%03d", index)
         let author = FileNameSanitizer.sanitize(comment.author?.displayName ?? "unknown")
             .replacingOccurrences(of: " ", with: "_")
-        let date = String((comment.created ?? "").prefix(10))
-        let datePart = date.isEmpty ? "0000-00-00" : date
+        // Sanitize the date too: it is server-supplied and a malicious instance
+        // could return a value containing path separators, so it must not be
+        // trusted as a raw filename component.
+        let rawDate = String((comment.created ?? "").prefix(10))
+        let datePart = rawDate.isEmpty ? "0000-00-00" : FileNameSanitizer.sanitize(rawDate)
         return "\(n)_\(author)_\(datePart).md"
     }
 }

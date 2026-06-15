@@ -443,6 +443,9 @@ public actor PageDataSource {
             pendingRestrictedIDsFetch[cacheKey] = nil
             return ids
         } catch {
+            // Cancel the underlying task so a cancelled caller does not leave the
+            // network fetch running after the pending entry is removed.
+            task.cancel()
             pendingRestrictedIDsFetch[cacheKey] = nil
             throw error
         }

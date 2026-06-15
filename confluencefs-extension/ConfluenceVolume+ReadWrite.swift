@@ -31,7 +31,10 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
                 guard offset >= 0 else { r.value(0, nil); return }
                 let start = Int(offset)
                 guard start < data.count else { r.value(0, nil); return }
-                let end = min(data.count, start + length)
+                // Guard the addition: a near-Int.max `length` would overflow and
+                // make `min(...)` yield a negative end, crashing `subdata`.
+                let (rawEnd, overflow) = start.addingReportingOverflow(length)
+                let end = overflow ? data.count : min(data.count, rawEnd)
                 let slice = data.subdata(in: start..<end)
                 let copied = slice.withUnsafeBytes { src -> Int in
                     guard let baseAddress = src.baseAddress else { return 0 }

@@ -86,6 +86,10 @@ public actor CacheManager {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                         attributes: [.posixPermissions: 0o700])
+                // `createDirectory(attributes:)` only applies to directories it
+                // actually creates, so re-assert 0700 in case an older build left
+                // the directory world-readable.
+                try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
                 let probe = dir.appendingPathComponent(".probe-\(UUID().uuidString)")
                 try Data().write(to: probe, options: .atomic)
                 try? FileManager.default.removeItem(at: probe)
@@ -342,7 +346,10 @@ public actor CacheManager {
         guard let sealed = try? AES.GCM.seal(payload, using: encKey) else { return }
         guard let combined = sealed.combined else { return }
         let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
-        try? combined.write(to: fileURL, options: .atomic)
+        guard (try? combined.write(to: fileURL, options: .atomic)) != nil else { return }
+        // Restrict to owner-only as defense in depth; the parent directory is
+        // already 0700, but `write` honours the process umask (typically 0644).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
     private func diskGet<T: Codable>(key: String) -> (value: T, expiresAt: Date)? {

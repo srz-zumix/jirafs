@@ -1,5 +1,8 @@
 import SwiftUI
+import os
 import AtlassianCore
+
+private let appStoreLogger = Logger(subsystem: "com.zumix.jirafs", category: "app-store")
 
 /// Shared, observable wrapper around the `AppStore` source of truth. A single
 /// instance is created by the app and injected into both the main window and
@@ -21,7 +24,7 @@ final class AppStoreModel: ObservableObject {
 
     private func persist() {
         do { try AppConfig.saveAppStore(store) }
-        catch { print("Failed to save app store: \(error)") }
+        catch { appStoreLogger.error("Failed to save app store: \(error.localizedDescription, privacy: .public)") }
     }
 
     // MARK: - Servers
