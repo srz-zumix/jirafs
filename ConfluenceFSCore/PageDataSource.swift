@@ -425,30 +425,26 @@ public actor PageDataSource {
             scheduleRefresh(cacheKey, ttl: ttl.pages, fetch: fetch)
             return stale
         }
-        // Join an existing in-flight fetch if there is one.
+        // Join an existing in-flight fetch if there is one. Joiners share the
+        // leader's result and must never cancel it: it is a single-flight task
+        // that other callers depend on, and the leader owns caching + cleanup.
         if let pending = pendingRestrictedIDsFetch[cacheKey] {
             return try await pending.value
         }
         // Start a new fetch and register it so other concurrent callers can join.
         let task = Task<Set<String>, Error>(operation: fetch)
         pendingRestrictedIDsFetch[cacheKey] = task
-        do {
-            let ids = try await task.value
-            // Write the cache *before* clearing the pending entry. Because
-            // `cache.set` is an `await` suspension point, the actor can be
-            // re-entered during it; keeping the task registered until the cache
-            // is populated ensures a concurrent caller joins this fetch instead
-            // of starting a duplicate one (single-flight guarantee).
-            await cache.set(cacheKey, value: ids, ttl: ttl.pages)
-            pendingRestrictedIDsFetch[cacheKey] = nil
-            return ids
-        } catch {
-            // Cancel the underlying task so a cancelled caller does not leave the
-            // network fetch running after the pending entry is removed.
-            task.cancel()
-            pendingRestrictedIDsFetch[cacheKey] = nil
-            throw error
-        }
+        // Clear the pending entry on every exit path. `defer` runs after the
+        // `return ids` value (and therefore after `cache.set`) is evaluated, so
+        // the entry stays registered until the cache is populated — a concurrent
+        // caller arriving during `cache.set` still joins this fetch instead of
+        // starting a duplicate one (single-flight guarantee). The shared task is
+        // never cancelled here; unmount cancellation is handled separately by
+        // `cancelBackgroundRefreshes()`.
+        defer { pendingRestrictedIDsFetch[cacheKey] = nil }
+        let ids = try await task.value
+        await cache.set(cacheKey, value: ids, ttl: ttl.pages)
+        return ids
     }
 
     // MARK: - Generic cache + pagination
