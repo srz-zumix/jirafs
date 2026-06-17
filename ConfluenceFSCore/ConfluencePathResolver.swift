@@ -43,6 +43,40 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     }
 }
 
+extension ConfluenceNodeKind: CustomStringConvertible {
+    /// Human-readable description used by logging and `String(describing:)`.
+    /// A custom implementation avoids Mirror-based reflection, which can overflow
+    /// the stack when many async continuations are stacked on the cooperative thread.
+    public var description: String {
+        switch self {
+        case .root:                                   return "root"
+        case .agentsGuide:                            return "agentsGuide"
+        case .metadataNeverIndex:                     return "metadataNeverIndex"
+        case .configDir:                              return "configDir"
+        case .configFile:                             return "configFile"
+        case .spacesDir:                              return "spacesDir"
+        case .space(let key):                         return "space(\(key))"
+        case .spaceMeta(let key):                     return "spaceMeta(\(key))"
+        case .pagesDir(let spaceKey):                 return "pagesDir(\(spaceKey))"
+        case .pageDir(let spaceKey, let pageId):      return "pageDir(\(spaceKey),\(pageId))"
+        case .pageHtml(let spaceKey, let pageId):     return "pageHtml(\(spaceKey),\(pageId))"
+        case .pageBody(let spaceKey, let pageId):     return "pageBody(\(spaceKey),\(pageId))"
+        case .pageMeta(let spaceKey, let pageId):     return "pageMeta(\(spaceKey),\(pageId))"
+        case .labels(let spaceKey, let pageId):       return "labels(\(spaceKey),\(pageId))"
+        case .commentsDir(let spaceKey, let pageId):  return "commentsDir(\(spaceKey),\(pageId))"
+        case .comment(let spaceKey, let pageId, let index):
+            return "comment(\(spaceKey),\(pageId),\(index))"
+        case .attachmentsDir(let spaceKey, let pageId):
+            return "attachmentsDir(\(spaceKey),\(pageId))"
+        case .attachment(let spaceKey, let pageId, let attachmentId):
+            return "attachment(\(spaceKey),\(pageId),\(attachmentId))"
+        case .archivedRootPagesDir(let spaceKey):     return "archivedRootPagesDir(\(spaceKey))"
+        case .archivedChildPagesDir(let spaceKey, let pageId):
+            return "archivedChildPagesDir(\(spaceKey),\(pageId))"
+        }
+    }
+}
+
 /// Validates and converts between filesystem paths and `ConfluenceNodeKind`s.
 public enum ConfluencePathResolver {
     /// Static files exposed inside a page directory (`{Title}/`).

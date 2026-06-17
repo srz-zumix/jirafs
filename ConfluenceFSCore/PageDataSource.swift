@@ -61,7 +61,13 @@ public actor PageDataSource {
     /// refreshes these, so spaces/pages that were never opened don't generate
     /// API traffic. Only page-listing directory kinds are inserted
     /// (`pagesDir` / `pageDir` / `archivedRootPagesDir` / `archivedChildPagesDir`).
+    ///
+    /// Capped at `maxBrowsedListings` to prevent spawning an unbounded number of
+    /// Tasks in `refreshBrowsedListings()`. Each entry becomes one Task whose
+    /// continuation sits on the cooperative-thread stack; a very large set
+    /// (thousands of entries) exhausts the stack and causes a SIGBUS crash.
     private var browsedListings: Set<ConfluenceNodeKind> = []
+    private static let maxBrowsedListings = 500
 
     /// Called on the actor's executor after every successful background refresh
     /// of a page-listing directory. The parameter is the directory node kind.
@@ -86,9 +92,14 @@ public actor PageDataSource {
 
     /// Records that a page-listing directory has been browsed so the periodic
     /// poll keeps it fresh. Non-page-listing kinds are ignored.
+    ///
+    /// Once `maxBrowsedListings` is reached, new entries are dropped — older
+    /// tracked directories keep their periodic refreshes, and newly-browsed
+    /// directories fall back to the normal stale-while-revalidate path instead.
     public func markBrowsed(_ kind: ConfluenceNodeKind) {
         switch kind {
         case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir:
+            guard browsedListings.count < PageDataSource.maxBrowsedListings else { return }
             browsedListings.insert(kind)
         default:
             break
