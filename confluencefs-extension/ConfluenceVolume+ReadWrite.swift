@@ -28,7 +28,7 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
                 guard let data = node.cachedData else {
                     r.value(0, FSKitError.notFound); return
                 }
-                guard offset >= 0 else { r.value(0, nil); return }
+                guard offset >= 0, length > 0 else { r.value(0, nil); return }
                 let start = Int(offset)
                 guard start < data.count else { r.value(0, nil); return }
                 // Guard the addition: a near-Int.max `length` would overflow and
