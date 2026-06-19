@@ -61,7 +61,13 @@ public actor PageDataSource {
     /// refreshes these, so spaces/pages that were never opened don't generate
     /// API traffic. Only page-listing directory kinds are inserted
     /// (`pagesDir` / `pageDir` / `archivedRootPagesDir` / `archivedChildPagesDir`).
+    ///
+    /// Capped at `maxBrowsedListings` to prevent spawning an unbounded number of
+    /// Tasks in `refreshBrowsedListings()`. Each entry becomes one Task whose
+    /// continuation sits on the cooperative-thread stack; a very large set
+    /// (thousands of entries) exhausts the stack and causes a SIGBUS crash.
     private var browsedListings: Set<ConfluenceNodeKind> = []
+    private static let maxBrowsedListings = 500
 
     /// Called on the actor's executor after every successful background refresh
     /// of a page-listing directory. The parameter is the directory node kind.
@@ -86,9 +92,14 @@ public actor PageDataSource {
 
     /// Records that a page-listing directory has been browsed so the periodic
     /// poll keeps it fresh. Non-page-listing kinds are ignored.
+    ///
+    /// Once `maxBrowsedListings` is reached, new entries are dropped — older
+    /// tracked directories keep their periodic refreshes, and newly-browsed
+    /// directories fall back to the normal stale-while-revalidate path instead.
     public func markBrowsed(_ kind: ConfluenceNodeKind) {
         switch kind {
         case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir:
+            guard browsedListings.count < PageDataSource.maxBrowsedListings else { return }
             browsedListings.insert(kind)
         default:
             break
@@ -425,27 +436,26 @@ public actor PageDataSource {
             scheduleRefresh(cacheKey, ttl: ttl.pages, fetch: fetch)
             return stale
         }
-        // Join an existing in-flight fetch if there is one.
+        // Join an existing in-flight fetch if there is one. Joiners share the
+        // leader's result and must never cancel it: it is a single-flight task
+        // that other callers depend on, and the leader owns caching + cleanup.
         if let pending = pendingRestrictedIDsFetch[cacheKey] {
             return try await pending.value
         }
         // Start a new fetch and register it so other concurrent callers can join.
         let task = Task<Set<String>, Error>(operation: fetch)
         pendingRestrictedIDsFetch[cacheKey] = task
-        do {
-            let ids = try await task.value
-            // Write the cache *before* clearing the pending entry. Because
-            // `cache.set` is an `await` suspension point, the actor can be
-            // re-entered during it; keeping the task registered until the cache
-            // is populated ensures a concurrent caller joins this fetch instead
-            // of starting a duplicate one (single-flight guarantee).
-            await cache.set(cacheKey, value: ids, ttl: ttl.pages)
-            pendingRestrictedIDsFetch[cacheKey] = nil
-            return ids
-        } catch {
-            pendingRestrictedIDsFetch[cacheKey] = nil
-            throw error
-        }
+        // Clear the pending entry on every exit path. `defer` runs after the
+        // `return ids` value (and therefore after `cache.set`) is evaluated, so
+        // the entry stays registered until the cache is populated — a concurrent
+        // caller arriving during `cache.set` still joins this fetch instead of
+        // starting a duplicate one (single-flight guarantee). The shared task is
+        // never cancelled here; unmount cancellation is handled separately by
+        // `cancelBackgroundRefreshes()`.
+        defer { pendingRestrictedIDsFetch[cacheKey] = nil }
+        let ids = try await task.value
+        await cache.set(cacheKey, value: ids, ttl: ttl.pages)
+        return ids
     }
 
     // MARK: - Generic cache + pagination

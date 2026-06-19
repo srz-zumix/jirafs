@@ -10,7 +10,22 @@ public enum JSONValue: Codable, Sendable, Equatable {
     case array([JSONValue])
     case object([String: JSONValue])
 
+    /// Maximum nesting depth accepted while decoding. A malicious or buggy
+    /// instance could otherwise return deeply nested JSON (e.g. in an ADF body)
+    /// and exhaust the stack during recursive decoding. `Decoder.codingPath`
+    /// grows by one element per nesting level, so checking it bounds the
+    /// recursion before it can crash.
+    private static let maxDepth = 100
+
     public init(from decoder: Decoder) throws {
+        guard decoder.codingPath.count <= Self.maxDepth else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "JSON nesting deeper than \(Self.maxDepth) levels"
+                )
+            )
+        }
         let c = try decoder.singleValueContainer()
         if c.decodeNil() {
             self = .null

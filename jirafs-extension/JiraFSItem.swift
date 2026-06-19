@@ -45,12 +45,21 @@ final class JiraFSItem: FSItem, @unchecked Sendable {
             _cachedSize = size
         }
     }
-    // Mutable from both FSKit operation tasks and the IssueDataSource change-notification
-    // callback. `nonisolated(unsafe)` opts out of Swift 6 isolation checks; Date is a
-    // simple struct (Double-backed) whose assignment is effectively atomic on 64-bit
-    // platforms, so a torn read/write is not possible.
-    nonisolated(unsafe) var cachedMTime: Date = Date()
-    nonisolated(unsafe) var cachedBirthTime: Date = Date()
+    // Mutable from both FSKit operation tasks and the IssueDataSource
+    // change-notification callback, so the timestamps share `payloadLock` to
+    // keep access race-free under Swift 6 strict concurrency. Each getter/setter
+    // takes the lock independently; mtime and birth time are never required to
+    // be a consistent pair.
+    private var _cachedMTime: Date = Date()
+    private var _cachedBirthTime: Date = Date()
+    var cachedMTime: Date {
+        get { payloadLock.withLock { _cachedMTime } }
+        set { payloadLock.withLock { _cachedMTime = newValue } }
+    }
+    var cachedBirthTime: Date {
+        get { payloadLock.withLock { _cachedBirthTime } }
+        set { payloadLock.withLock { _cachedBirthTime = newValue } }
+    }
 
     init(kind: FSNodeKind) {
         self.kind = kind
