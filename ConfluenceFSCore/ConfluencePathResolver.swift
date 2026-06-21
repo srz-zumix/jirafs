@@ -30,12 +30,16 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     case archivedRootPagesDir(spaceKey: String)
     /// `.archived/` directory under a `pageDir` — lists archived child pages.
     case archivedChildPagesDir(spaceKey: String, pageId: String)
+    /// A Confluence folder — a named container that holds pages and sub-folders.
+    /// Cloud only; Data Center does not expose folders. Appears inside `pagesDir`
+    /// (root folders) or inside another `folderDir` (nested folders).
+    case folderDir(spaceKey: String, folderId: String)  // .../folders/{Title}/
 
     public var isDirectory: Bool {
         switch self {
         case .root, .configDir, .spacesDir, .space, .pagesDir, .pageDir,
              .commentsDir, .attachmentsDir,
-             .archivedRootPagesDir, .archivedChildPagesDir:
+             .archivedRootPagesDir, .archivedChildPagesDir, .folderDir:
             return true
         default:
             return false
@@ -73,6 +77,7 @@ extension ConfluenceNodeKind: CustomStringConvertible {
         case .archivedRootPagesDir(let spaceKey):     return "archivedRootPagesDir(\(spaceKey))"
         case .archivedChildPagesDir(let spaceKey, let pageId):
             return "archivedChildPagesDir(\(spaceKey),\(pageId))"
+        case .folderDir(let spaceKey, let folderId): return "folderDir(\(spaceKey),\(folderId))"
         }
     }
 }

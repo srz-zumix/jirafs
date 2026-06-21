@@ -394,6 +394,7 @@ UI から Mount / Unmount を操作できる。
 - API クライアントは `protocol` ベースでテスタブルに
 - **接続 URL は `https://` 必須** — ServerEditorView が非 HTTPS URL を拒否する。`http://` を受け入れると Basic / Bearer トークンが平文で送信されるため
 - `RateLimiter` の `maxRetryAfter` (デフォルト 60s) を超える Retry-After は上限値にクランプする
+- **`OSAllocatedUnfairLock` にクロージャを直接入れて `withLock { $0 }` で読み出さない** — 素のクロージャを generic な `withLock` から読み出すと毎回 reabstraction thunk が 1 層ずつ被さって保存値に書き戻され、読み出すたびにクロージャが深くなる。背景リフレッシュのように何千回も読み出すと数千層に達し、次の呼び出し (os_log を含む) がスタックを巻き戻す際にオーバーフローして `SIGBUS` (KERN_PROTECTION_FAILURE in stack guard) でクラッシュする。クロージャは `final class` の box に包んで保存し (`ListingRefreshedHandlerBox` / `IssueKeysRefreshedHandlerBox` 参照)、読み出しは参照ポインタを返すだけにすること。`withLock { $0?(arg) }` のようにロック内で呼ぶのも同様に蓄積するため不可
 
 ## トラブルシューティング
 
@@ -444,3 +445,8 @@ log show --predicate 'subsystem CONTAINS "com.zumix.jirafs" OR process CONTAINS 
 - 認証情報が正しいか Keychain で確認
 - API のレート制限に達していないか確認
 - JIRA インスタンスのバージョンに応じた API バージョンを使用しているか確認（Cloud: v3 / Server: v2）
+
+### 拡張が `SIGBUS` (KERN_PROTECTION_FAILURE in stack guard) でクラッシュする
+
+- クラッシュレポートで同一の reabstraction thunk (`thunk for @escaping ... (Kind) -> ()`) が何千層も再帰し、最深部が os_log のスタックなら、`OSAllocatedUnfairLock` 内のクロージャを `withLock { $0 }` で繰り返し読み出して thunk が蓄積した可能性が高い。コーディング規約の box パターン (`ListingRefreshedHandlerBox` / `IssueKeysRefreshedHandlerBox`) で保存しているか確認する
+- 修正後は **Clean Build (DerivedData 削除) → 署名ビルド → 再インストール** を必ず行う。古い `.appex` が残っていると修正前のバイナリで再現し続ける

@@ -133,6 +133,11 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         case .attachment(let space, let id, let att): return "attachment:\(space):\(id):\(att)"
         case .archivedRootPagesDir(let space):        return "archivedRootPagesDir:\(space)"
         case .archivedChildPagesDir(let space, let id): return "archivedChildPagesDir:\(space):\(id)"
+        // Include the display name so a folder rename (title changes, folderId stays the same)
+        // yields a new fileID, matching the behaviour of pageDir/pageHtml above.
+        case .folderDir(let space, let id):
+            let base = "folderDir:\(space):\(id)"
+            return displayName == nil ? base : "\(base):\(displayName!)"
         }
     }
 }

@@ -227,6 +227,22 @@ public actor ConfluenceRESTClient: ConfluenceClient {
                                                   limiter: limiter)
     }
 
+    public func listPageDirectChildren(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
+        guard config.edition.isCloud else { return ConfluencePageList(items: [], nextCursor: nil) }
+        let page: CloudList<CloudFolderChild> = try await cloudGet(
+            "pages/\(pageId)/direct-children", cursor: cursor, limit: limit
+        )
+        return ConfluencePageList(items: page.results.map { $0.domain }, nextCursor: page.cursor)
+    }
+
+    public func listFolderChildren(folderId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
+        guard config.edition.isCloud else { return ConfluencePageList(items: [], nextCursor: nil) }
+        let page: CloudList<CloudFolderChild> = try await cloudGet(
+            "folders/\(folderId)/direct-children", cursor: cursor, limit: limit
+        )
+        return ConfluencePageList(items: page.results.map { $0.domain }, nextCursor: page.cursor)
+    }
+
     /// Paginates a Cloud v1 API endpoint with `start`/`limit` and collects the
     /// IDs of items where `restrictions.hasAny == true`. Each page request is
     /// routed through `limiter` so 429 / server-error retries and backoff are

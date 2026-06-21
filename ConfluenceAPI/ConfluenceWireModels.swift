@@ -344,3 +344,46 @@ struct DCLabel: Decodable {
         ConfluenceLabel(id: id, name: name, prefix: prefix)
     }
 }
+
+// MARK: - Cloud Folder children (REST v2)
+
+/// Wire model for items returned by the v2 `direct-children` endpoints
+/// (`GET /wiki/api/v2/pages/{id}/direct-children` and
+/// `GET /wiki/api/v2/folders/{id}/direct-children`). Each item is tagged with a
+/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); only `page` and
+/// `folder` are surfaced by the file system. The `direct-children` response omits
+/// `parentId`/`authorId`/`createdAt`/`version`/`_links`, so those fields stay nil.
+struct CloudFolderChild: Decodable {
+    let id: String
+    let title: String
+    let type: String            // "page", "folder", "whiteboard", "database", "embed"
+    let spaceId: String?
+    let parentId: String?
+    let authorId: String?       // page-only
+    let createdAt: String?      // page-only
+    let version: CloudVersion?  // page-only
+    private let links: CloudLinks?
+
+    struct CloudVersion: Decodable { let number: Int? }
+    struct CloudLinks: Decodable { let webui: String? }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, type, spaceId, parentId, authorId, createdAt, version
+        case links = "_links"
+    }
+
+    var domain: ConfluenceFolderChild {
+        let ct: ConfluenceFolderChild.ContentType
+        switch type {
+        case "page": ct = .page
+        case "folder": ct = .folder
+        default: ct = .other
+        }
+        return ConfluenceFolderChild(
+            contentType: ct, id: id, title: title,
+            spaceId: spaceId, parentId: parentId,
+            version: version?.number, authorId: authorId,
+            createdAt: createdAt, webURL: links?.webui
+        )
+    }
+}

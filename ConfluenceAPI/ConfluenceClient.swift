@@ -84,6 +84,15 @@ public protocol ConfluenceClient: Sendable {
     /// streaming the whole file into memory while probing.
     func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int?
 
+    /// Lists the direct children (pages, sub-folders, etc.) of a **page** via
+    /// `GET /wiki/api/v2/pages/{id}/direct-children` (Cloud only; DC always returns empty).
+    /// The result is a mixed list tagged by `contentType`; callers filter as needed.
+    func listPageDirectChildren(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild>
+
+    /// Lists the direct children (pages and sub-folders) of a **folder** via
+    /// `GET /wiki/api/v2/folders/{id}/direct-children` (Cloud only; DC always returns empty).
+    func listFolderChildren(folderId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild>
+
     /// Returns the IDs of **root** pages (depth=root) of a space that have any
     /// user/group restriction (read or update). Cloud uses v1 Space content API
     /// scoped to `depth=root`; Data Center always returns an empty set because

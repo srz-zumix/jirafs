@@ -64,6 +64,23 @@ public actor IssueDataSource {
     /// traffic.
     private var browsedProjects: Set<String> = []
 
+    /// Reference-type wrapper for the issue-keys-refreshed handler closure.
+    ///
+    /// The handler is read out of its lock (`refreshedHandler.withLock { $0 }`)
+    /// after *every* background refresh. Reading a bare closure value back through
+    /// `OSAllocatedUnfairLock`'s generic `withLock` re-abstracts it and writes the
+    /// deeper-abstracted form back into the stored slot, so each read adds one
+    /// reabstraction-thunk layer to the stored closure. After a couple of thousand
+    /// refreshes the stored closure is thousands of thunks deep, and the next
+    /// invocation (whose body logs via `os_log`) unwinds through all of them and
+    /// overflows the thread's small stack → `SIGBUS`. Boxing the closure in a
+    /// class makes the stored value a plain reference: reads return the box
+    /// pointer unchanged, so no thunk layers ever accumulate.
+    private final class IssueKeysRefreshedHandlerBox: Sendable {
+        let fire: @Sendable (String) -> Void
+        init(_ fire: @escaping @Sendable (String) -> Void) { self.fire = fire }
+    }
+
     /// Called on the actor's executor after every successful background refresh of
     /// the issue key list for a project. The parameter is the project key.
     /// `JiraVolume` uses this to update the directory's `cachedMTime` so that
@@ -76,15 +93,24 @@ public actor IssueDataSource {
     /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
     /// stale-while-revalidate refresh could complete before an async setter ran,
     /// refreshing the cache without bumping the directory mtime, and Finder would
-    /// keep serving a stale listing.
-    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (String) -> Void)?>(initialState: nil)
+    /// keep serving a stale listing. Boxed in a class (see
+    /// `IssueKeysRefreshedHandlerBox`) so repeated reads don't accumulate
+    /// reabstraction thunks.
+    private let refreshedHandler = OSAllocatedUnfairLock<IssueKeysRefreshedHandlerBox?>(initialState: nil)
+
+    /// Serial GCD queue used to fire `refreshedHandler` off the Swift cooperative
+    /// thread pool. The handler body logs via `os_log` (which needs substantial
+    /// stack); running it on a dedicated full-size thread stack — and serializing
+    /// invocations when a burst of refresh tasks complete at once — keeps that
+    /// logging off the small cooperative-thread stacks.
+    private let refreshNotifyQueue = DispatchQueue(label: "com.zumix.jirafs.jira.issuekeys-refresh-notify")
 
     /// Installs the handler invoked after every successful background refresh of
     /// the issue key list for any project. `nonisolated` + synchronous so it can
     /// run during volume construction, guaranteeing the handler is in place
     /// before any refresh can fire (see `refreshedHandler`).
     public nonisolated func setIssueKeysRefreshedHandler(_ handler: @escaping @Sendable (String) -> Void) {
-        refreshedHandler.withLock { $0 = handler }
+        refreshedHandler.withLock { $0 = IssueKeysRefreshedHandlerBox(handler) }
     }
 
     public init(
@@ -387,8 +413,13 @@ public actor IssueDataSource {
         // Without this, a partial initial enumeration (large directory) would
         // leave Finder with a stale incomplete listing if no keys were added
         // or removed since the last refresh.
-        let handler = refreshedHandler.withLock { $0 }
-        handler?(project)
+        //
+        // Fire off the cooperative thread (see `refreshNotifyQueue`). The handler
+        // is boxed (see `IssueKeysRefreshedHandlerBox`) so reading it here never
+        // accumulates reabstraction thunks on the stored closure.
+        if let box = refreshedHandler.withLock({ $0 }) {
+            refreshNotifyQueue.async { box.fire(project) }
+        }
     }
 
     private func bgRefreshIssue(key: String) async {
