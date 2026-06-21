@@ -37,5 +37,15 @@ final class ConfluencePathResolverTests: XCTestCase {
         XCTAssertFalse(ConfluenceNodeKind.pageHtml(spaceKey: "D", pageId: "1").isDirectory)
         XCTAssertFalse(ConfluenceNodeKind.pageBody(spaceKey: "D", pageId: "1").isDirectory)
         XCTAssertTrue(ConfluenceNodeKind.commentsDir(spaceKey: "D", pageId: "1").isDirectory)
+        XCTAssertTrue(ConfluenceNodeKind.folderDir(spaceKey: "D", folderId: "f1").isDirectory)
+    }
+
+    func testFolderDirHasNoStaticChildren() {
+        let children = ConfluencePathResolver.childKinds(of: .folderDir(spaceKey: "DOC", folderId: "f1"))
+        XCTAssertTrue(children.isEmpty, "folderDir has no static children — all content is dynamic")
+    }
+
+    func testFolderDirStaticChildResolvesNil() {
+        XCTAssertNil(ConfluencePathResolver.staticChild(name: "SomePage", of: .folderDir(spaceKey: "DOC", folderId: "f1")))
     }
 }

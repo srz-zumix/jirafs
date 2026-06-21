@@ -15,6 +15,29 @@ public struct ConfluencePageEntry: Codable, Sendable, Equatable {
     }
 }
 
+/// A directory entry for a Confluence folder: the sanitized folder name plus the folder object.
+/// Cloud only; always empty on Data Center.
+public struct ConfluenceFolderEntry: Codable, Sendable, Equatable {
+    public let folderName: String
+    public let folder: ConfluenceFolder
+    public init(folderName: String, folder: ConfluenceFolder) {
+        self.folderName = folderName
+        self.folder = folder
+    }
+}
+
+/// Combined result of a folder-children fetch: pages and sub-folders together.
+/// Cached as a unit so one network round-trip fills both listing types.
+public struct ConfluenceFolderChildrenResult: Codable, Sendable, Equatable {
+    public let pages: [ConfluencePageEntry]
+    public let folders: [ConfluenceFolderEntry]
+    public init(pages: [ConfluencePageEntry], folders: [ConfluenceFolderEntry]) {
+        self.pages = pages
+        self.folders = folders
+    }
+    public static let empty = ConfluenceFolderChildrenResult(pages: [], folders: [])
+}
+
 /// High-level, cache-aware read-only data source backing the Confluence volume.
 ///
 /// Mirrors `IssueDataSource`: fresh cache → return; stale cache → return and
@@ -69,6 +92,23 @@ public actor PageDataSource {
     private var browsedListings: Set<ConfluenceNodeKind> = []
     private static let maxBrowsedListings = 500
 
+    /// Reference-type wrapper for the listing-refreshed handler closure.
+    ///
+    /// The handler is read out of its lock (`refreshedHandler.withLock { $0 }`)
+    /// after *every* background refresh. Reading a bare closure value back through
+    /// `OSAllocatedUnfairLock`'s generic `withLock` re-abstracts it and writes the
+    /// deeper-abstracted form back into the stored slot, so each read adds one
+    /// reabstraction-thunk layer to the stored closure. After a couple of thousand
+    /// refreshes the stored closure is thousands of thunks deep, and the next
+    /// invocation (whose body logs via `os_log`) unwinds through all of them and
+    /// overflows the thread's small stack → `SIGBUS`. Boxing the closure in a
+    /// class makes the stored value a plain reference: reads return the box
+    /// pointer unchanged, so no thunk layers ever accumulate.
+    private final class ListingRefreshedHandlerBox: Sendable {
+        let fire: @Sendable (ConfluenceNodeKind) -> Void
+        init(_ fire: @escaping @Sendable (ConfluenceNodeKind) -> Void) { self.fire = fire }
+    }
+
     /// Called on the actor's executor after every successful background refresh
     /// of a page-listing directory. The parameter is the directory node kind.
     /// `ConfluenceVolume` uses this to bump the directory's `cachedMTime` so
@@ -79,15 +119,23 @@ public actor PageDataSource {
     /// issue the first `enumerateDirectory`/`lookupItem`. Otherwise an early
     /// background refresh could complete before an async setter ran, refreshing
     /// the cache without bumping the directory mtime, and Finder would keep
-    /// serving a stale listing.
-    private let refreshedHandler = OSAllocatedUnfairLock<(@Sendable (ConfluenceNodeKind) -> Void)?>(initialState: nil)
+    /// serving a stale listing. Boxed in a class (see `ListingRefreshedHandlerBox`)
+    /// so repeated reads don't accumulate reabstraction thunks.
+    private let refreshedHandler = OSAllocatedUnfairLock<ListingRefreshedHandlerBox?>(initialState: nil)
+
+    /// Serial GCD queue used to fire `refreshedHandler` off the Swift cooperative
+    /// thread pool. The handler body logs via `os_log` (which needs substantial
+    /// stack); running it on a dedicated full-size thread stack — and serializing
+    /// invocations when a burst of refresh tasks complete at once — keeps that
+    /// logging off the small cooperative-thread stacks.
+    private let refreshNotifyQueue = DispatchQueue(label: "com.zumix.jirafs.confluence.listing-refresh-notify")
 
     /// Installs the handler invoked after every successful background refresh of a
     /// page-listing directory. `nonisolated` + synchronous so it can run during
     /// volume construction, guaranteeing the handler is in place before any
     /// refresh can fire (see `refreshedHandler`).
     public nonisolated func setListingRefreshedHandler(_ handler: @escaping @Sendable (ConfluenceNodeKind) -> Void) {
-        refreshedHandler.withLock { $0 = handler }
+        refreshedHandler.withLock { $0 = ListingRefreshedHandlerBox(handler) }
     }
 
     /// Records that a page-listing directory has been browsed so the periodic
@@ -98,7 +146,7 @@ public actor PageDataSource {
     /// directories fall back to the normal stale-while-revalidate path instead.
     public func markBrowsed(_ kind: ConfluenceNodeKind) {
         switch kind {
-        case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir:
+        case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir, .folderDir:
             guard browsedListings.count < PageDataSource.maxBrowsedListings else { return }
             browsedListings.insert(kind)
         default:
@@ -162,7 +210,7 @@ public actor PageDataSource {
             refreshing.insert(refreshKey)
             scheduled += 1
             refreshTasks[refreshKey] = Task {
-                defer { Task { await self.clearRefreshing(refreshKey) } }
+                defer { self.clearRefreshing(refreshKey) }
                 await self.forceRefreshListing(kind)
             }
         }
@@ -188,16 +236,32 @@ public actor PageDataSource {
                 let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
                 let entries = try await fetchChildPageEntries(pageId: pageId, normalizedSpace: normalized)
                 await cache.set("childpages/\(normalized)/\(pageId)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+                // Folder refresh errors are non-fatal — a failure here should not
+                // prevent the child-page listing from being committed to the cache.
+                if client.config.edition.isCloud {
+                    if let folderEntries = try? await fetchPageFolderEntries(pageId: pageId) {
+                        await cache.set("pagefolders/\(normalized)/\(pageId)/\(pageListVariant)", value: folderEntries, ttl: ttl.pages)
+                    }
+                }
             case .archivedChildPagesDir(let spaceKey, let pageId):
                 guard includeArchived else { return }
                 let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
                 let entries = try await fetchArchivedChildPageEntries(pageId: pageId, normalizedSpace: normalized)
                 await cache.set("archivedChildPages/\(normalized)/\(pageId)/\(pageListVariant)", value: entries, ttl: ttl.pages)
+            case .folderDir(let spaceKey, let folderId):
+                let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+                let result = try await fetchFolderChildren(folderId: folderId, normalizedSpace: normalized)
+                await cache.set("folderchildren/\(normalized)/\(folderId)/\(pageListVariant)", value: result, ttl: ttl.pages)
             default:
                 return
             }
-            let handler = refreshedHandler.withLock { $0 }
-            handler?(kind)
+            // Fire the listing-refreshed handler off the cooperative thread (see
+            // `refreshNotifyQueue`). The handler is boxed (see
+            // `ListingRefreshedHandlerBox`) so reading it here never accumulates
+            // reabstraction thunks on the stored closure.
+            if let box = refreshedHandler.withLock({ $0 }) {
+                refreshNotifyQueue.async { box.fire(kind) }
+            }
         } catch {
             logger.debug("forceRefreshListing failed kind=\(String(describing: kind), privacy: .public): \(error, privacy: .public)")
         }
@@ -310,7 +374,62 @@ public actor PageDataSource {
         return self.makeEntries(filtered)
     }
 
-    /// Full page including the storage-format body.
+    // MARK: - Folders (Cloud only)
+
+    /// Sanitized, deduplicated folder entries that are **direct children of a page**
+    /// (Cloud only; DC returns `[]`). Confluence Cloud exposes folders as page
+    /// children via `GET /wiki/api/v2/pages/{id}/direct-children`; this extracts the
+    /// `folder`-typed entries from that mixed list.
+    public func pageFolderEntries(pageId: String, spaceKey: String) async throws -> [ConfluenceFolderEntry] {
+        guard client.config.edition.isCloud else { return [] }
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("pagefolders/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
+            try await self.fetchPageFolderEntries(pageId: pageId)
+        }
+    }
+
+    private func fetchPageFolderEntries(pageId: String) async throws -> [ConfluenceFolderEntry] {
+        let children = try await fetchAll { cursor in
+            try await self.client.listPageDirectChildren(pageId: pageId, cursor: cursor, limit: self.limit)
+        }
+        let folders = children.compactMap { child -> ConfluenceFolder? in
+            guard child.contentType == .folder else { return nil }
+            return ConfluenceFolder(id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId)
+        }
+        return makeFolderEntries(folders)
+    }
+
+    /// Combined children of a folder: pages and sub-folders (Cloud only; DC returns `.empty`).
+    /// Pages and sub-folders are deduplicated within their own type; cross-type deduplication
+    /// (ensuring no page name collides with a folder name in the same listing) is the
+    /// caller's responsibility.
+    public func folderChildren(folderId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
+        guard client.config.edition.isCloud else { return .empty }
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("folderchildren/\(space)/\(folderId)/\(pageListVariant)", ttl: ttl.pages) {
+            try await self.fetchFolderChildren(folderId: folderId, normalizedSpace: space)
+        }
+    }
+
+    private func fetchFolderChildren(folderId: String, normalizedSpace space: String) async throws -> ConfluenceFolderChildrenResult {
+        let allChildren = try await fetchAll { cursor in
+            try await self.client.listFolderChildren(folderId: folderId, cursor: cursor, limit: self.limit)
+        }
+        let rawPages = allChildren.compactMap { child -> ConfluencePage? in
+            guard child.contentType == .page else { return nil }
+            return ConfluencePage(
+                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                version: child.version, authorId: child.authorId,
+                createdAt: child.createdAt, webURL: child.webURL
+            )
+        }
+        let rawFolders = allChildren.compactMap { child -> ConfluenceFolder? in
+            guard child.contentType == .folder else { return nil }
+            return ConfluenceFolder(id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId)
+        }
+        return ConfluenceFolderChildrenResult(pages: makeEntries(rawPages), folders: makeFolderEntries(rawFolders))
+    }
+
     public func page(id: String) async throws -> ConfluencePage {
         try await cached("page/\(id)", ttl: ttl.pageDetail) {
             try await self.client.getPage(id: id, bodyFormat: .storage)
@@ -391,6 +510,18 @@ public actor PageDataSource {
                 let sanitized = FileNameSanitizer.sanitize(page.title)
                 let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
                 return ConfluencePageEntry(folderName: name, page: page)
+            }
+    }
+
+    /// Builds sanitized, deduplicated folder entries sorted by title.
+    private nonisolated func makeFolderEntries(_ folders: [ConfluenceFolder]) -> [ConfluenceFolderEntry] {
+        var taken = Set<String>()
+        return folders
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            .map { folder in
+                let sanitized = FileNameSanitizer.sanitize(folder.title)
+                let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
+                return ConfluenceFolderEntry(folderName: name, folder: folder)
             }
     }
 
@@ -483,7 +614,7 @@ public actor PageDataSource {
         guard !refreshing.contains(key) else { return }
         refreshing.insert(key)
         refreshTasks[key] = Task {
-            defer { Task { await self.clearRefreshing(key) } }
+            defer { self.clearRefreshing(key) }
             if let value = try? await fetch() {
                 await self.cache.set(key, value: value, ttl: ttl)
             }

@@ -460,5 +460,88 @@ final class ConfluenceRESTClientTests: XCTestCase {
         }
         XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent over http://")
     }
-}
 
+    // MARK: - Folders
+
+    func testCloudListPageDirectChildrenMixedPagesAndFolders() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "p2", "title": "Child Page", "type": "page",
+              "spaceId": "100", "parentId": "p1",
+              "version": {"number": 5},
+              "_links": {"webui": "/spaces/ENG/pages/p2"}
+            },
+            {"id": "f1", "title": "Engineering", "type": "folder", "spaceId": "100"},
+            {"id": "w1", "title": "Board",       "type": "whiteboard", "spaceId": "100"}
+          ],
+          "_links": {}
+        }
+        """
+        stub.responses["/wiki/api/v2/pages/p1/direct-children"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let page = try await client.listPageDirectChildren(pageId: "p1", cursor: nil, limit: 25)
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertEqual(page.items[0].contentType, .page)
+        XCTAssertEqual(page.items[0].version, 5)
+        XCTAssertEqual(page.items[1].contentType, .folder)
+        XCTAssertEqual(page.items[1].title, "Engineering")
+        XCTAssertEqual(page.items[2].contentType, .other)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("/wiki/api/v2/pages/p1/direct-children"), "URL was \(url)")
+    }
+
+    func testDCListPageDirectChildrenAlwaysEmpty() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let page = try await client.listPageDirectChildren(pageId: "p1", cursor: nil, limit: 25)
+        XCTAssertTrue(page.items.isEmpty, "DC should always return no children")
+        XCTAssertTrue(stub.requests.isEmpty, "DC should make no API call for folders")
+    }
+
+    func testCloudListFolderChildrenMixedPagesAndFolders() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "p1", "title": "RFC-001", "type": "page",
+              "spaceId": "100", "parentId": "f1",
+              "version": {"number": 3},
+              "_links": {"webui": "/spaces/ENG/pages/p1"}
+            },
+            {
+              "id": "f2", "title": "Archive", "type": "folder",
+              "spaceId": "100", "parentId": "f1"
+            }
+          ],
+          "_links": {}
+        }
+        """
+        stub.responses["/wiki/api/v2/folders/f1/direct-children"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let page = try await client.listFolderChildren(folderId: "f1", cursor: nil, limit: 25)
+        XCTAssertEqual(page.items.count, 2)
+        let pageItem = page.items.first
+        XCTAssertEqual(pageItem?.contentType, .page)
+        XCTAssertEqual(pageItem?.id, "p1")
+        XCTAssertEqual(pageItem?.version, 3)
+        let folderItem = page.items.last
+        XCTAssertEqual(folderItem?.contentType, .folder)
+        XCTAssertEqual(folderItem?.id, "f2")
+        XCTAssertEqual(folderItem?.title, "Archive")
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("/wiki/api/v2/folders/f1/direct-children"), "URL was \(url)")
+    }
+
+    func testDCListFolderChildrenAlwaysEmpty() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let page = try await client.listFolderChildren(folderId: "f1", cursor: nil, limit: 25)
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+}

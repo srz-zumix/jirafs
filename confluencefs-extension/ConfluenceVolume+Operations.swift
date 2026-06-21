@@ -338,6 +338,9 @@ extension ConfluenceVolume: FSVolume.Operations {
         case .pagesDir(let spaceKey):
             guard let space = try await dataSource.space(key: spaceKey) else { return [] }
             let entries = try await dataSource.rootPageEntries(space: space)
+            // Note: the Confluence Cloud v2 API has no endpoint to enumerate
+            // root-level (parentless) folders, so only folders nested under a page
+            // are surfaced (see the pageDir case below).
             var result = pageEntries(entries, spaceKey: spaceKey)
             if await dataSource.includeArchived {
                 result.append((".archived", .archivedRootPagesDir(spaceKey: spaceKey), nil))
@@ -347,6 +350,16 @@ extension ConfluenceVolume: FSVolume.Operations {
             var kids = plain(ConfluencePathResolver.childKinds(of: kind))
             let entries = try await dataSource.childPageEntries(pageId: pageId, spaceKey: spaceKey)
             kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
+            // Folder API errors (e.g. on instances without folder support) must not
+            // prevent the child-page listing from rendering. Folders are exposed as
+            // direct children of a page via the v2 direct-children endpoint.
+            do {
+                let folderEntries = try await dataSource.pageFolderEntries(pageId: pageId, spaceKey: spaceKey)
+                kids.append(contentsOf: folderDirEntries(folderEntries, spaceKey: spaceKey, existingNames: pageNames(entries, htmlEnabled: htmlEnabled)))
+                logger.debug("pageDir folders pageId=\(pageId, privacy: .public) count=\(folderEntries.count, privacy: .public)")
+            } catch {
+                logger.debug("pageDir folders failed pageId=\(pageId, privacy: .public): \(error, privacy: .public)")
+            }
             if await dataSource.includeArchived {
                 kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId), nil))
             }
@@ -361,6 +374,27 @@ extension ConfluenceVolume: FSVolume.Operations {
                 }
             }
             return kids
+        case .folderDir(let spaceKey, let folderId):
+            var result: ConfluenceFolderChildrenResult = .empty
+            do {
+                result = try await dataSource.folderChildren(folderId: folderId, spaceKey: spaceKey)
+                logger.debug("folderDir children folderId=\(folderId, privacy: .public) pages=\(result.pages.count, privacy: .public) folders=\(result.folders.count, privacy: .public)")
+            } catch {
+                logger.error("folderDir children failed folderId=\(folderId, privacy: .public): \(error, privacy: .public)")
+            }
+            var out = pageEntries(result.pages, spaceKey: spaceKey)
+            out.append(contentsOf: folderDirEntries(result.folders, spaceKey: spaceKey, existingNames: pageNames(result.pages, htmlEnabled: htmlEnabled)))
+            // Background: pre-cache grandchildren of child pages.
+            let resultPages = result.pages
+            makeTask {
+                await withTaskGroup(of: Void.self) { group in
+                    for entry in resultPages {
+                        let id = entry.page.id
+                        group.addTask { _ = try? await self.dataSource.childPageEntries(pageId: id, spaceKey: spaceKey) }
+                    }
+                }
+            }
+            return out
         case .commentsDir(let spaceKey, let pageId):
             let comments = try await dataSource.comments(pageId: pageId)
             var taken = Set<String>()
@@ -405,6 +439,33 @@ extension ConfluenceVolume: FSVolume.Operations {
             out.append((entry.folderName, .pageDir(spaceKey: spaceKey, pageId: pageId), nil))
         }
         return out
+    }
+
+    /// Returns the set of names already occupied by page entries (including optional
+    /// `.html` siblings). Used as the starting `taken` set for cross-type deduplication
+    /// when folder entries are added to the same listing.
+    private func pageNames(_ entries: [ConfluencePageEntry], htmlEnabled: Bool) -> Set<String> {
+        var names = Set<String>()
+        for entry in entries {
+            names.insert(entry.folderName)
+            if htmlEnabled { names.insert("\(entry.folderName).html") }
+        }
+        return names
+    }
+
+    /// Emits the directory entries for a set of folder entries, deduplicating their
+    /// names against `existingNames` (the page entries already in the same listing)
+    /// so that a page and a folder with the same sanitized title never collide.
+    private func folderDirEntries(
+        _ entries: [ConfluenceFolderEntry],
+        spaceKey: String,
+        existingNames: Set<String>
+    ) -> [ChildEntry] {
+        var taken = existingNames
+        return entries.map { entry in
+            let name = FileNameSanitizer.deduplicate(entry.folderName, taken: &taken)
+            return (name, ConfluenceNodeKind.folderDir(spaceKey: spaceKey, folderId: entry.folder.id), nil)
+        }
     }
 
     func makeAttributes(for node: ConfluenceFSItem) -> FSItem.Attributes {

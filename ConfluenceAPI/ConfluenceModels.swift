@@ -137,6 +137,64 @@ public struct ConfluenceAttachment: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Folder (Cloud only)
+
+/// A Confluence folder — an organisational container for pages and sub-folders.
+/// Folders are a Cloud-only concept; Data Center does not support them.
+public struct ConfluenceFolder: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let spaceId: String?
+    public let parentId: String?
+
+    public init(id: String, title: String, spaceId: String? = nil, parentId: String? = nil) {
+        self.id = id
+        self.title = title
+        self.spaceId = spaceId
+        self.parentId = parentId
+    }
+}
+
+// MARK: - Folder Child (Cloud only)
+
+/// A single item returned by the folder-children endpoint.
+/// Cloud returns a mixed list of pages and sub-folders tagged with `contentType`.
+public struct ConfluenceFolderChild: Sendable {
+    public enum ContentType: String, Sendable { case page, folder, other }
+
+    public let contentType: ContentType
+    public let id: String
+    public let title: String
+    public let spaceId: String?
+    public let parentId: String?
+    public let version: Int?
+    public let authorId: String?
+    public let createdAt: String?
+    public let webURL: String?
+
+    public init(
+        contentType: ContentType,
+        id: String,
+        title: String,
+        spaceId: String? = nil,
+        parentId: String? = nil,
+        version: Int? = nil,
+        authorId: String? = nil,
+        createdAt: String? = nil,
+        webURL: String? = nil
+    ) {
+        self.contentType = contentType
+        self.id = id
+        self.title = title
+        self.spaceId = spaceId
+        self.parentId = parentId
+        self.version = version
+        self.authorId = authorId
+        self.createdAt = createdAt
+        self.webURL = webURL
+    }
+}
+
 // MARK: - Label
 
 public struct ConfluenceLabel: Codable, Sendable, Equatable, Identifiable {
