@@ -403,7 +403,8 @@ public actor PageDataSource {
     /// Pages and sub-folders are deduplicated within their own type; cross-type deduplication
     /// (ensuring no page name collides with a folder name in the same listing) is the
     /// caller's responsibility.
-    public func folderChildren(folderId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {        guard client.config.edition.isCloud else { return .empty }
+    public func folderChildren(folderId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
+        guard client.config.edition.isCloud else { return .empty }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
         return try await cached("folderchildren/\(space)/\(folderId)/\(pageListVariant)", ttl: ttl.pages) {
             try await self.fetchFolderChildren(folderId: folderId, normalizedSpace: space)
