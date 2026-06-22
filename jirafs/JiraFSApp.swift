@@ -164,9 +164,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                                   attributes: .concurrent)
         for instance in mountPoints {
             group.enter()
-            queue.async { [weak self] in
+            // Capture self strongly: the app delegate lives for the whole app
+            // lifetime (owned by NSApplication) and applicationWillTerminate is
+            // blocked on group.wait below, so there is no retain-cycle risk. A
+            // weak capture could only turn this into a silent no-op that skips
+            // the unmount it is meant to perform.
+            queue.async {
                 defer { group.leave() }
-                self?.unmountVolumeOnQuit(name: instance.name, path: instance.path)
+                self.unmountVolumeOnQuit(name: instance.name, path: instance.path)
             }
         }
         if group.wait(timeout: .now() + AppDelegate.unmountOnQuitTimeout) == .timedOut {

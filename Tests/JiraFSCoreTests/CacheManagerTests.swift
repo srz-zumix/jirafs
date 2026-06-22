@@ -194,6 +194,31 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertEqual(v, "same")
     }
 
+    func testExternalDeletionAllowsRewriteOfSameContent() async {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SymmetricKey(size: .bits256)
+        let cache = CacheManager(diskEnabled: true, cachesDir: dir, encryptionKey: key)
+
+        await cache.set("k", value: "same", ttl: 60)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasSuffix(".cache") }
+        XCTAssertEqual(names.count, 1)
+        guard let name = names.first else { return XCTFail("expected a cache file") }
+        let fileURL = dir.appendingPathComponent(name)
+
+        // Delete the file behind the cache's back (e.g. eviction / external
+        // cleanup) while the in-memory fingerprint still records "same". A later
+        // identical write must self-heal by recreating the file rather than
+        // being skipped as "unchanged".
+        try? FileManager.default.removeItem(at: fileURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        await cache.set("k", value: "same", ttl: 60)
+        XCTAssertNotNil(soleCacheFileBytes(in: dir),
+                        "identical content should recreate a missing cache file")
+    }
+
     func testEvictionPurgesUndecryptableOrphans() async {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

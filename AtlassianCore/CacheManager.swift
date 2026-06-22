@@ -356,14 +356,19 @@ public actor CacheManager {
         // content (only a slightly older expiry, which at worst triggers one
         // stale-while-revalidate refetch after a remount).
         let fingerprint = SHA256.hash(data: plaintext)
-        if diskFingerprints[key] == fingerprint { return }
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
+        // Skip only when the content is unchanged AND the on-disk file still
+        // exists. The fingerprint is in-memory only and can outlive the file
+        // (e.g. evictExpiredDiskEntries or external cleanup removed it), so the
+        // existence check lets the disk cache self-heal after deletions.
+        if diskFingerprints[key] == fingerprint,
+           FileManager.default.fileExists(atPath: fileURL.path) { return }
         let expiry = Date().addingTimeInterval(ttl)
         var expiryBytes = UInt64(expiry.timeIntervalSince1970).bigEndian
         let expiryData = withUnsafeBytes(of: &expiryBytes) { Data($0) }
         let payload = expiryData + plaintext
         guard let sealed = try? AES.GCM.seal(payload, using: encKey) else { return }
         guard let combined = sealed.combined else { return }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         guard (try? combined.write(to: fileURL, options: .atomic)) != nil else { return }
         // Record the fingerprint only after a successful write so a failed write
         // is retried next time rather than being skipped as "unchanged".
