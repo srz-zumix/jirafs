@@ -10,6 +10,8 @@ public struct NoneAuth: AuthProvider {
     public init() {}
 
     public func authorize(_ request: inout URLRequest) async throws {
-        // Intentionally no-op: anonymous requests carry no Authorization header.
+        // Anonymous requests carry no Authorization header. Actively clear any
+        // header a caller may have pre-populated so credentials are never sent.
+        request.setValue(nil, forHTTPHeaderField: "Authorization")
     }
 }

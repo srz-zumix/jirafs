@@ -40,4 +40,12 @@ final class NoneAuthTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/json")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
     }
+
+    func testClearsPrePopulatedAuthorizationHeader() async throws {
+        let auth = NoneAuth()
+        var request = URLRequest(url: URL(string: "https://example.atlassian.net")!)
+        request.setValue("Bearer leaked-token", forHTTPHeaderField: "Authorization")
+        try await auth.authorize(&request)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
 }
