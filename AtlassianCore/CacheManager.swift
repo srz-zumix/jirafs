@@ -43,6 +43,17 @@ public actor CacheManager {
     }
     private var storage: [String: Entry] = [:]
 
+    /// SHA-256 of the most recently *written* plaintext payload per key (the
+    /// JSON value, excluding the expiry prefix). Used to skip rewriting a disk
+    /// entry whose content has not changed since the last write — the periodic
+    /// refresh loop re-fetches every browsed listing on every tick and, when the
+    /// remote content is unchanged, would otherwise re-encrypt and atomically
+    /// rewrite an identical file each time, generating continuous disk-write
+    /// load. Cleared together with the corresponding disk entry. In-memory only,
+    /// so it starts empty on each mount and the first write per key always
+    /// proceeds (repopulating it).
+    private var diskFingerprints: [String: SHA256Digest] = [:]
+
     // MARK: - Disk storage configuration
 
     private let diskEnabled: Bool
@@ -339,14 +350,29 @@ public actor CacheManager {
     private func diskSet<T: Codable>(key: String, value: T, ttl: TimeInterval) {
         guard let dir = cacheDir, let encKey = encryptionKey, let nameKey = filenameKey else { return }
         guard let plaintext = try? JSONEncoder().encode(value) else { return }
+        // Skip the expensive encrypt + atomic write when the content is byte-for-byte
+        // identical to what we last wrote for this key. The in-memory entry already
+        // carries the fresh expiry, and the existing on-disk copy holds the same
+        // content (only a slightly older expiry, which at worst triggers one
+        // stale-while-revalidate refetch after a remount).
+        let fingerprint = SHA256.hash(data: plaintext)
+        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
+        // Skip only when the content is unchanged AND the on-disk file still
+        // exists. The fingerprint is in-memory only and can outlive the file
+        // (e.g. evictExpiredDiskEntries or external cleanup removed it), so the
+        // existence check lets the disk cache self-heal after deletions.
+        if diskFingerprints[key] == fingerprint,
+           FileManager.default.fileExists(atPath: fileURL.path) { return }
         let expiry = Date().addingTimeInterval(ttl)
         var expiryBytes = UInt64(expiry.timeIntervalSince1970).bigEndian
         let expiryData = withUnsafeBytes(of: &expiryBytes) { Data($0) }
         let payload = expiryData + plaintext
         guard let sealed = try? AES.GCM.seal(payload, using: encKey) else { return }
         guard let combined = sealed.combined else { return }
-        let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         guard (try? combined.write(to: fileURL, options: .atomic)) != nil else { return }
+        // Record the fingerprint only after a successful write so a failed write
+        // is retried next time rather than being skipped as "unchanged".
+        diskFingerprints[key] = fingerprint
         // Restrict to owner-only as defense in depth; the parent directory is
         // already 0700, but `write` honours the process umask (typically 0644).
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
@@ -401,12 +427,14 @@ public actor CacheManager {
     }
 
     private func diskRemove(key: String) {
+        diskFingerprints.removeValue(forKey: key)
         guard let dir = cacheDir, let nameKey = filenameKey else { return }
         let fileURL = dir.appendingPathComponent(diskFileName(for: key, using: nameKey)).appendingPathExtension("cache")
         try? FileManager.default.removeItem(at: fileURL)
     }
 
     private func diskClear() {
+        diskFingerprints.removeAll()
         guard let dir = cacheDir else { return }
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil) else { return }
