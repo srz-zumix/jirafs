@@ -34,11 +34,32 @@ Pages are nested: child pages live inside their parent page's directory.
         └── {Child Page Title}/      # Child page directory (recursive)
 ```
 
+## File Descriptions
+
+| Path | Format | Description |
+| ------ | -------- | ------------- |
+| `.space.json` | JSON | Space key, name, description, and related metadata |
+| `page.md` | Markdown | Rendered page body (Confluence storage format/XHTML or ADF → Markdown) |
+| `.metadata.json` | JSON | Page id, title, spaceId, parentId, version, author, createdAt, webURL |
+| `.labels.txt` | Plain text | One label per line (prefix-qualified when present) |
+| `.comments/NNN_author_YYYY-MM-DD.md` | Markdown | Individual comment body; `NNN` is 1-based index for stable ordering |
+| `.attachments/<filename>` | Binary | Attachment downloaded lazily on read (bounded range requests; never fully buffered) |
+| `{Page Title}.html` | HTML | Self-contained view with body and comments (only when HTML mode is enabled) |
+
 ## Notes for Agents
 
-- Everything is **read-only**: writes, renames, and deletes return errors.
-- Page titles are unique within a space; the path uses a sanitized title and is
-  resolved internally to the stable Confluence page id.
-- `page.md` is rendered from the Confluence storage format (XHTML) or ADF.
-  When rendering fails, a raw-fallback marker comment precedes the original body.
-- Data is cached with a TTL; recently changed pages may briefly show stale content.
+- Everything is **read-only**: writes, renames, and deletes return `EROFS`/`ENOTSUP`.
+- **Error semantics**: A missing space, page, or file returns `ENOENT`; authentication or permission failures return `EACCES`; rate-limited requests return `EAGAIN`; transient server, network, or decoding errors return `EIO`.
+- **Sanitized names**: Page titles and attachment filenames are sanitized (slashes, control characters, and leading dots become underscores). Duplicate names within a directory get a ` (N)` suffix. Page titles are unique within a space; the sanitized path is resolved internally to the stable Confluence page id.
+- **Restricted/archived filtering**: By default, view-restricted pages are hidden (`includeRestricted` defaults to off) and archived pages are excluded (`includeArchived` defaults to off). Both are controlled per mount in the host app. A page that exists in Confluence but is absent here may be intentionally filtered out, not missing.
+- **File timestamps**:
+  - `page.md`, `.metadata.json`, `{Title}.html` → birthtime = page `created`; mtime is derived from the page `version` (advances one second per version past creation), so it moves forward on each edit. It is **not** a true wall-clock "last edited" time — use the `version` field in `.metadata.json` for exact change tracking.
+  - `.comments/*.md` → mtime = birthtime = comment `created`.
+  - `.attachments/<filename>` → timestamps are not derived from Confluence; do not rely on them.
+- **Rendering**: `page.md` is rendered from the Confluence storage format (XHTML) or ADF. When rendering fails, a raw-fallback marker comment precedes the original body.
+- **Cache TTL**: Data is cached with a TTL configured in the host app's Cache Settings (changes take effect after remount). Recently changed pages may briefly show stale content; re-reading after the background refresh completes returns fresh data.
+
+## Efficiency Notes
+
+- **Pages are recursively nested**: child pages live inside their parent's directory, so a full `find .` traverses the entire page tree and can be slow on large spaces. Prefer navigating to known page paths over enumerating everything.
+- **Slow first access is expected when cache is cold**: the first `open()` of an uncached file triggers a Confluence API call. Subsequent reads within the TTL window are served from cache and are fast. If a read seems slow, **do not abort** — wait for the first read to complete.
