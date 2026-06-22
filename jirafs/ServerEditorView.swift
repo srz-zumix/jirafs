@@ -399,8 +399,8 @@ struct ServerEditorView: View {
     private func errorMessage(for error: Error) -> String {
         if let e = error as? JiraAPIError {
             switch e {
-            case .unauthorized: return "Authentication failed — check credentials"
-            case .forbidden: return "Access denied — check permissions"
+            case .unauthorized: return unauthorizedMessage
+            case .forbidden: return forbiddenMessage
             case .missingCredentials: return "No token available — enter the token first"
             case .serverError(let status): return "Server error (HTTP \(status))"
             case .invalidURL: return "Invalid URL"
@@ -412,8 +412,8 @@ struct ServerEditorView: View {
         }
         if let e = error as? AtlassianError {
             switch e {
-            case .unauthorized: return "Authentication failed — check credentials"
-            case .forbidden: return "Access denied — check permissions"
+            case .unauthorized: return unauthorizedMessage
+            case .forbidden: return forbiddenMessage
             case .notFound: return "Endpoint not found — check the URL"
             case .missingCredentials: return "No token available — enter the token first"
             case .serverError(let status): return "Server error (HTTP \(status))"
@@ -426,6 +426,22 @@ struct ServerEditorView: View {
         }
         let msg = error.localizedDescription
         return msg.isEmpty ? "Connection failed" : msg
+    }
+
+    /// Message for HTTP 401. In anonymous mode there are no credentials to
+    /// check, so guide the user toward authenticated access instead.
+    private var unauthorizedMessage: String {
+        method == .anonymous
+            ? "This site requires sign-in — switch to API Token or PAT"
+            : "Authentication failed — check credentials"
+    }
+
+    /// Message for HTTP 403. In anonymous mode the content isn't publicly
+    /// accessible, so suggest authenticating rather than "check permissions".
+    private var forbiddenMessage: String {
+        method == .anonymous
+            ? "Not publicly accessible — switch to API Token or PAT"
+            : "Access denied — check permissions"
     }
 
     // MARK: - Save
