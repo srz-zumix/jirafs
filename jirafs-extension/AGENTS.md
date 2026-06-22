@@ -45,13 +45,14 @@ This mount exposes Jira data as a **read-only** filesystem via macOS FSKit.
 ## Notes for Agents
 
 - **Read-only**: All write operations (create, rename, remove) return ENOTSUP.
+- **Error semantics**: A missing project, issue, or file returns `ENOENT`; authentication or permission failures return `EACCES`; rate-limited requests return `EAGAIN`; transient server, network, or decoding errors return `EIO`. The `comments/` and `attachments/` directories are always present on an issue even when empty — an empty listing means "no comments/attachments", not an error.
 - **Sanitized filenames**: Slashes, control characters, and leading dots in attachment names are replaced with underscores. Duplicate names get ` (N)` suffixes.
 - **File timestamps**: Each file's modification time (mtime) and creation time (birthtime) reflect the corresponding Jira timestamps:
   - `summary.txt`, `description.md`, `metadata.json`, `issue.html` → mtime = ticket `updated`, birthtime = ticket `created`
   - `comments/*.md` → mtime = comment `updated`, birthtime = comment `created`
   - `attachments/<filename>` → mtime = birthtime = attachment `created`
   - Directory entries (issue dirs, etc.) do not follow this rule; their mtime is managed internally.
-- **Stale-while-revalidate cache**: Directory listings and file contents may be slightly stale on first access while a background refresh runs in the background. Re-reading a file after the refresh completes gives fresh data; refresh is triggered automatically and requires no action from the agent.
+- **Stale-while-revalidate cache**: Directory listings and file contents may be slightly stale on first access while a refresh runs in the background. Re-reading a file after the refresh completes gives fresh data; refresh is triggered automatically and requires no action from the agent.
 - **Cache TTL**: Controlled via the host app's Cache Settings (changes take effect after remount).
 - **Per-file reading order**: To inspect an issue, read `summary.txt` first (cheap), then `metadata.json`, then `description.md` as needed. Avoid opening `attachments/` unless necessary. Check for the presence of `issue.html` before reading it; its absence means HTML mode is disabled for this mount.
 - **Project filter**: Only projects configured in the host app are visible under `projects/`.
