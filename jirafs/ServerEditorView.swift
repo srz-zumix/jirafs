@@ -134,6 +134,7 @@ struct ServerEditorView: View {
                             Picker("", selection: $method) {
                                 Text("API Token").tag(ServerAuthMethod.apiToken)
                                 Text("PAT").tag(ServerAuthMethod.pat)
+                                Text("Anonymous").tag(ServerAuthMethod.anonymous)
                             }
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -141,13 +142,15 @@ struct ServerEditorView: View {
                         if method == .apiToken {
                             fieldRow("Email") { TextField("user@example.com", text: $email) }
                         }
-                        fieldRow("Token") {
-                            SecureField(
-                                token.isEmpty && !isNew && !keychainKeyChanged
-                                    ? "leave blank to keep current"
-                                    : "required",
-                                text: $token
-                            )
+                        if method != .anonymous {
+                            fieldRow("Token") {
+                                SecureField(
+                                    token.isEmpty && !isNew && !keychainKeyChanged
+                                        ? "leave blank to keep current"
+                                        : "required",
+                                    text: $token
+                                )
+                            }
                         }
                     }
                 }
@@ -329,7 +332,9 @@ struct ServerEditorView: View {
     }
 
     private var tokenAvailable: Bool {
-        !token.isEmpty || (!isNew && !keychainKeyChanged)
+        // Anonymous access needs no credential.
+        if method == .anonymous { return true }
+        return !token.isEmpty || (!isNew && !keychainKeyChanged)
     }
 
     private var isValid: Bool {
@@ -348,18 +353,23 @@ struct ServerEditorView: View {
     private func verify() async {
         verifyState = .running
         do {
-            let resolvedToken: String
-            if !token.isEmpty {
-                resolvedToken = token
-            } else if !isNew {
-                resolvedToken = try KeychainManager().serverPassword(serverID: serverID, account: account)
+            let auth: AuthProvider
+            if method == .anonymous {
+                auth = NoneAuth()
             } else {
-                throw AtlassianError.missingCredentials
-            }
+                let resolvedToken: String
+                if !token.isEmpty {
+                    resolvedToken = token
+                } else if !isNew {
+                    resolvedToken = try KeychainManager().serverPassword(serverID: serverID, account: account)
+                } else {
+                    throw AtlassianError.missingCredentials
+                }
 
-            let auth: AuthProvider = method == .apiToken
-                ? APITokenAuth(email: email, token: resolvedToken)
-                : PATAuth(token: resolvedToken)
+                auth = method == .apiToken
+                    ? APITokenAuth(email: email, token: resolvedToken)
+                    : PATAuth(token: resolvedToken)
+            }
 
             var summaries: [String] = []
 
@@ -424,7 +434,18 @@ struct ServerEditorView: View {
         saveError = nil
         guard urlsValid else { saveError = "One or more URLs are invalid."; return }
 
-        if !token.isEmpty {
+        if method == .anonymous {
+            // Anonymous access stores no credential. If the server previously
+            // used a token-based method, remove the now-orphaned Keychain entry.
+            if let origMethod = originalMethod, origMethod != .anonymous {
+                let origAccount = origMethod.keychainAccount(email: originalEmail)
+                do {
+                    try KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
+                } catch {
+                    serverEditorLogger.error("Failed to delete orphaned Keychain entry (serverID=\(serverID, privacy: .public), account=\(origAccount, privacy: .private)): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        } else if !token.isEmpty {
             do {
                 try KeychainManager().setServerPassword(token, serverID: serverID, account: account)
             } catch {

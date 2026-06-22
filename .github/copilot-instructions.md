@@ -30,6 +30,7 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装（
 - エラーは POSIXError に変換して返却
 - ログは os.Logger で出力 (subsystem: `com.zumix.jirafs`)。HTTP エラーのレスポンスボディは `privacy: .private`、URL / ステータスコードのみ `.public`
 - 認証情報は Keychain に保存、平文保存禁止。クレデンシャルは Server 単位で共有 (JIRA / Confluence 共通)
+- **認証方式** (`ServerAuthMethod`): `apiToken` (Cloud, email+token) / `pat` (Server/DC, Bearer) / `anonymous` (公開サイト, 認証なし)。`anonymous` は `NoneAuth` (no-op AuthProvider) を使い Keychain を使用しない。derive 時 `ConfluenceConfiguration.AuthEntry.Method` / `Configuration.AuthEntry.Method` の `.none` にマップ
 - **接続 URL は `https://` 必須**。ServerEditorView が非 HTTPS URL を拒否する (Save / Verify を無効化)
 - ファイル名はサニタイズ必須 (パストラバーサル防止)
 - API レスポンスは Codable モデルにデコード

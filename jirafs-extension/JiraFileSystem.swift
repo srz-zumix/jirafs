@@ -170,6 +170,8 @@ final class JiraFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unc
         case .pat:
             let token = try keychain.serverPassword(serverID: entry.serverID, account: "pat")
             auth = PATAuth(token: token)
+        case .none:
+            auth = NoneAuth()
         }
         return (entry.name, entry.mountID, cfg, auth, entry.allowedProjectKeys,
                 config.cache, config.pagination, entry.diskCache, entry.htmlView)
