@@ -23,10 +23,23 @@ enum MountProduct: String, Codable, Sendable, Equatable, CaseIterable, Identifia
 enum ServerAuthMethod: String, Codable, Sendable, Equatable {
     case apiToken = "api_token"
     case pat
-    var displayName: String { self == .apiToken ? "API Token" : "PAT" }
+    /// Anonymous access — no credentials. Used for public Atlassian sites
+    /// (e.g. a public Confluence space).
+    case anonymous
+    var displayName: String {
+        switch self {
+        case .apiToken: return "API Token"
+        case .pat: return "PAT"
+        case .anonymous: return "Anonymous"
+        }
+    }
+
+    /// Whether this method requires a credential stored in the Keychain.
+    var usesKeychain: Bool { self != .anonymous }
 
     /// Keychain account name used for this method.
-    /// API Token uses the email (or "api_token" when blank); PAT uses "pat".
+    /// API Token uses the email (or "api_token" when blank); PAT uses "pat";
+    /// anonymous stores nothing (returns "anonymous" only as a stable label).
     func keychainAccount(email: String?) -> String {
         switch self {
         case .apiToken:
@@ -34,6 +47,8 @@ enum ServerAuthMethod: String, Codable, Sendable, Equatable {
             return e.isEmpty ? "api_token" : e
         case .pat:
             return "pat"
+        case .anonymous:
+            return "anonymous"
         }
     }
 }

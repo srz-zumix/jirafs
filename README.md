@@ -15,6 +15,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Browse data with standard UNIX tools (`ls`, `cat`, `grep`, `find`, …)
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
+- **Anonymous access** — mount public JIRA/Confluence sites without credentials
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
 - Background auto-refresh — newly created issues/pages appear while a folder stays open (configurable interval, can be turned off)
 - Optional `issue.html` / `{Title}.html` formatted view

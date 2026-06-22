@@ -143,6 +143,8 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         case .pat:
             let token = try keychain.serverPassword(serverID: entry.serverID, account: "pat")
             auth = PATAuth(token: token)
+        case .none:
+            auth = NoneAuth()
         }
         return (entry.name, entry.mountID, cfg, auth, entry.allowedSpaceKeys,
                 config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived, entry.includeRestricted)

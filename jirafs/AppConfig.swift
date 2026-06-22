@@ -117,11 +117,19 @@ enum AppConfig {
     }
 
     private static func jiraMethod(_ m: ServerAuthMethod) -> Configuration.AuthEntry.Method {
-        m == .apiToken ? .apiToken : .pat
+        switch m {
+        case .apiToken: return .apiToken
+        case .pat: return .pat
+        case .anonymous: return .none
+        }
     }
 
     private static func confluenceMethod(_ m: ServerAuthMethod) -> ConfluenceConfiguration.AuthEntry.Method {
-        m == .apiToken ? .apiToken : .pat
+        switch m {
+        case .apiToken: return .apiToken
+        case .pat: return .pat
+        case .anonymous: return .none
+        }
     }
 
     // MARK: - Derived config files (written into extension containers)

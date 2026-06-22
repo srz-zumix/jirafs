@@ -23,3 +23,29 @@ final class PATAuthTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer tok")
     }
 }
+
+final class NoneAuthTests: XCTestCase {
+    func testDoesNotSetAuthorizationHeader() async throws {
+        let auth = NoneAuth()
+        var request = URLRequest(url: URL(string: "https://example.atlassian.net")!)
+        try await auth.authorize(&request)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testPreservesExistingHeaders() async throws {
+        let auth = NoneAuth()
+        var request = URLRequest(url: URL(string: "https://example.atlassian.net")!)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        try await auth.authorize(&request)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/json")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testClearsPrePopulatedAuthorizationHeader() async throws {
+        let auth = NoneAuth()
+        var request = URLRequest(url: URL(string: "https://example.atlassian.net")!)
+        request.setValue("Bearer leaked-token", forHTTPHeaderField: "Authorization")
+        try await auth.authorize(&request)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+}

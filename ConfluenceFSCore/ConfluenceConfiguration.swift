@@ -100,7 +100,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
     }
 
     public struct AuthEntry: Codable, Sendable, Equatable {
-        public enum Method: String, Codable, Sendable { case apiToken = "api_token", pat }
+        public enum Method: String, Codable, Sendable { case apiToken = "api_token", pat, none }
         public var method: Method
         public var email: String?
 
