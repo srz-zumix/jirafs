@@ -137,6 +137,63 @@ final class CacheManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
     }
 
+    /// Reads the single `.cache` file in `dir`, failing the test if there is not
+    /// exactly one. Used to detect whether a write actually re-touched disk.
+    private func soleCacheFileBytes(in dir: URL,
+                                    file: StaticString = #filePath,
+                                    line: UInt = #line) -> Data? {
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasSuffix(".cache") }
+        XCTAssertEqual(names.count, 1, "expected exactly one .cache file", file: file, line: line)
+        guard let name = names.first else { return nil }
+        return try? Data(contentsOf: dir.appendingPathComponent(name))
+    }
+
+    func testUnchangedContentSkipsDiskRewrite() async {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SymmetricKey(size: .bits256)
+        let cache = CacheManager(diskEnabled: true, cachesDir: dir, encryptionKey: key)
+
+        await cache.set("k", value: "same", ttl: 60)
+        let firstBytes = soleCacheFileBytes(in: dir)
+        XCTAssertNotNil(firstBytes)
+
+        // Re-writing identical content must be a no-op on disk. AES-GCM uses a
+        // fresh random nonce per seal, so an actual rewrite would change the
+        // file bytes; identical bytes prove the write was skipped.
+        await cache.set("k", value: "same", ttl: 60)
+        XCTAssertEqual(soleCacheFileBytes(in: dir), firstBytes,
+                       "identical content should not rewrite the cache file")
+
+        // Changed content must rewrite, and the value must still round-trip.
+        await cache.set("k", value: "different", ttl: 60)
+        XCTAssertNotEqual(soleCacheFileBytes(in: dir), firstBytes,
+                          "changed content should rewrite the cache file")
+        let v: String? = await cache.get("k", as: String.self)
+        XCTAssertEqual(v, "different")
+    }
+
+    func testRemoveAllowsRewriteOfSameContent() async {
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = SymmetricKey(size: .bits256)
+        let cache = CacheManager(diskEnabled: true, cachesDir: dir, encryptionKey: key)
+
+        await cache.set("k", value: "same", ttl: 60)
+        // Removing the entry must drop the fingerprint so an identical later
+        // write recreates the file rather than being skipped as "unchanged".
+        await cache.remove("k")
+        let afterRemove = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasSuffix(".cache") }
+        XCTAssertTrue(afterRemove.isEmpty, "remove should delete the cache file")
+
+        await cache.set("k", value: "same", ttl: 60)
+        XCTAssertNotNil(soleCacheFileBytes(in: dir), "identical content after remove should be re-written")
+        let v: String? = await cache.get("k", as: String.self)
+        XCTAssertEqual(v, "same")
+    }
+
     func testEvictionPurgesUndecryptableOrphans() async {
         let dir = makeTempDir()
         defer { try? FileManager.default.removeItem(at: dir) }

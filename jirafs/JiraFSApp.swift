@@ -128,6 +128,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         }
     }
 
+    /// Upper bound on how long quit will wait for *all* volumes to unmount
+    /// before terminating anyway. `NSWorkspace.unmountAndEjectDevice` (and the
+    /// `diskutil` fallback) are synchronous with no timeout, so a volume that is
+    /// slow to eject — e.g. its extension's cache actor is saturated flushing
+    /// the encrypted disk cache — would otherwise block the main thread forever
+    /// and the app could never quit (observed as a 384 s hang in
+    /// `applicationWillTerminate`). Any volume not unmounted within this budget
+    /// is left for fskitd / the next launch to reconcile.
+    private static let unmountOnQuitTimeout: DispatchTimeInterval = .seconds(8)
+
     func applicationWillTerminate(_ notification: Notification) {
         let store = AppConfig.loadAppStore()
         let fm = FileManager.default
@@ -136,31 +146,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             .map { $0.standardized }
 
         let mountPoints: [(name: String, path: String)] =
-            store.mounts.map { ($0.name, $0.effectiveMountPath) }
+            store.mounts
+                .map { ($0.name, $0.effectiveMountPath) }
+                .filter { mountedURLs.contains(URL(fileURLWithPath: $0.1, isDirectory: true).standardized) }
 
+        guard !mountPoints.isEmpty else { return }
+
+        // Unmount every volume off the main thread, concurrently, and wait only a
+        // bounded amount of time. The eject calls block with no timeout of their
+        // own, so doing them inline on the main thread freezes termination when a
+        // volume is busy. Dispatching them and waiting with a deadline lets the
+        // common (idle volume) case still unmount cleanly while guaranteeing the
+        // app can always terminate. Threads still blocked at the deadline are
+        // torn down when the process exits.
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "com.zumix.jirafs.terminate-unmount",
+                                  attributes: .concurrent)
         for instance in mountPoints {
-            let targetURL = URL(fileURLWithPath: instance.path,
-                                isDirectory: true).standardized
-            guard mountedURLs.contains(targetURL) else { continue }
-            // Try non-privileged NSWorkspace unmount first.
-            do {
-                try NSWorkspace.shared.unmountAndEjectDevice(at: targetURL)
-                logger.info("Unmounted \(instance.name, privacy: .public) via NSWorkspace")
-            } catch {
-                // Fallback: synchronous diskutil without sudo.
-                // FSKit volumes are user-owned (fskitd runs as the user), so this
-                // should succeed without requiring root privileges.
-                logger.warning("NSWorkspace unmount failed for \(instance.name, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying via diskutil")
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-                proc.arguments = ["unmount", "force", instance.path]
-                try? proc.run()
-                proc.waitUntilExit()
-                if proc.terminationStatus == 0 {
-                    logger.info("Unmounted \(instance.name, privacy: .public) via diskutil")
-                } else {
-                    logger.error("diskutil unmount failed for \(instance.name, privacy: .public) (exit \(proc.terminationStatus))")
-                }
+            group.enter()
+            queue.async { [weak self] in
+                defer { group.leave() }
+                self?.unmountVolumeOnQuit(name: instance.name, path: instance.path)
+            }
+        }
+        if group.wait(timeout: .now() + AppDelegate.unmountOnQuitTimeout) == .timedOut {
+            logger.warning("Unmount on quit timed out after \(String(describing: AppDelegate.unmountOnQuitTimeout), privacy: .public); terminating without confirming all unmounts")
+        }
+    }
+
+    /// Unmounts a single volume, trying the non-privileged `NSWorkspace` path
+    /// first and falling back to `diskutil unmount force`. Both calls are
+    /// synchronous; callers must run this off the main thread under a bounded
+    /// wait (see `applicationWillTerminate`).
+    private func unmountVolumeOnQuit(name: String, path: String) {
+        let targetURL = URL(fileURLWithPath: path, isDirectory: true).standardized
+        do {
+            try NSWorkspace.shared.unmountAndEjectDevice(at: targetURL)
+            logger.info("Unmounted \(name, privacy: .public) via NSWorkspace")
+        } catch {
+            // Fallback: synchronous diskutil without sudo.
+            // FSKit volumes are user-owned (fskitd runs as the user), so this
+            // should succeed without requiring root privileges.
+            logger.warning("NSWorkspace unmount failed for \(name, privacy: .public): \(error.localizedDescription, privacy: .public) — retrying via diskutil")
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
+            proc.arguments = ["unmount", "force", path]
+            try? proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 {
+                logger.info("Unmounted \(name, privacy: .public) via diskutil")
+            } else {
+                logger.error("diskutil unmount failed for \(name, privacy: .public) (exit \(proc.terminationStatus))")
             }
         }
     }
