@@ -4,6 +4,7 @@ import Foundation
 public enum FSNodeKind: Hashable, Sendable {
     case root
     case agentsGuide               // /AGENTS.md
+    case projectAgentsGuide(project: String) // /projects/{KEY}/AGENTS.md
     case issuesAgentsGuide(project: String) // /projects/{KEY}/issues/AGENTS.md
     case metadataNeverIndex          // /.metadata_never_index (prevents Spotlight indexing)
     case configDir                   // /.jirafs
@@ -61,6 +62,7 @@ public enum PathResolver {
         case .project(let key):
             return [
                 (".project.json", .projectMeta(key: key)),
+                ("AGENTS.md", .projectAgentsGuide(project: key)),
                 ("issues", .issuesDir(project: key)),
             ]
         case .issuesDir(let project):

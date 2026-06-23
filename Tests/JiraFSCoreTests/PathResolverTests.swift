@@ -13,6 +13,13 @@ final class PathResolverTests: XCTestCase {
         XCTAssertEqual(kids.first?.kind, .issuesAgentsGuide(project: "ABC"))
     }
 
+    func testProjectHasAgentsGuide() {
+        let kids = PathResolver.childKinds(of: .project(key: "ABC"))
+        XCTAssertEqual(kids.map(\.name), [".project.json", "AGENTS.md", "issues"])
+        XCTAssertEqual(PathResolver.staticChild(name: "AGENTS.md", of: .project(key: "ABC")),
+                       .projectAgentsGuide(project: "ABC"))
+    }
+
     func testIssueChildren() {
         let kids = PathResolver.childKinds(of: .issue(key: "ABC-1"))
         XCTAssertEqual(kids.map(\.name), [

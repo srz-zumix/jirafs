@@ -105,6 +105,8 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         switch kind {
         case .root:                                   return "root"
         case .agentsGuide:                            return "agentsGuide"
+        case .spaceAgentsGuide(let key):              return "spaceAgentsGuide:\(key)"
+        case .pagesAgentsGuide(let key):              return "pagesAgentsGuide:\(key)"
         case .metadataNeverIndex:                     return "metadataNeverIndex"
         case .configDir:                              return "configDir"
         case .configFile:                             return "configFile"
