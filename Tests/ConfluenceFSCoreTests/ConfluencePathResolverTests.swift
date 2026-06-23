@@ -16,7 +16,16 @@ final class ConfluencePathResolverTests: XCTestCase {
 
     func testSpaceChildren() {
         let children = ConfluencePathResolver.childKinds(of: .space(key: "DOC"))
-        XCTAssertEqual(children.map(\.name), [".space.json", "pages"])
+        XCTAssertEqual(children.map(\.name), [".space.json", "AGENTS.md", "pages"])
+        XCTAssertEqual(ConfluencePathResolver.staticChild(name: "AGENTS.md", of: .space(key: "DOC")),
+                       .spaceAgentsGuide(spaceKey: "DOC"))
+    }
+
+    func testPagesDirHasAgentsGuide() {
+        let children = ConfluencePathResolver.childKinds(of: .pagesDir(spaceKey: "DOC"))
+        XCTAssertEqual(children.map(\.name), ["AGENTS.md"])
+        XCTAssertEqual(ConfluencePathResolver.staticChild(name: "AGENTS.md", of: .pagesDir(spaceKey: "DOC")),
+                       .pagesAgentsGuide(spaceKey: "DOC"))
     }
 
     func testPageDirStaticChildren() {

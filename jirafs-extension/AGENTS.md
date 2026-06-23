@@ -18,6 +18,7 @@ This mount exposes Jira data as a **read-only** filesystem via macOS FSKit.
 ```
 /projects/{PROJECT_KEY}/
 ├── .project.json          # Structured metadata for the project (JSON)
+├── AGENTS.md              # Copy of this guide (per-project)
 └── issues/
     └── {ISSUE_KEY}/       # One directory per issue (e.g. PROJ-123)
         ├── summary.txt    # One-line issue summary (plain text)

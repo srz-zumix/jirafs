@@ -10,6 +10,8 @@ import Foundation
 public enum ConfluenceNodeKind: Hashable, Sendable {
     case root
     case agentsGuide                              // /AGENTS.md
+    case spaceAgentsGuide(spaceKey: String)       // /spaces/{KEY}/AGENTS.md
+    case pagesAgentsGuide(spaceKey: String)       // /spaces/{KEY}/pages/AGENTS.md
     case metadataNeverIndex                       // /.metadata_never_index
     case configDir                                // /.confluencefs
     case configFile                               // /.confluencefs/config.json
@@ -55,6 +57,8 @@ extension ConfluenceNodeKind: CustomStringConvertible {
         switch self {
         case .root:                                   return "root"
         case .agentsGuide:                            return "agentsGuide"
+        case .spaceAgentsGuide(let key):              return "spaceAgentsGuide(\(key))"
+        case .pagesAgentsGuide(let key):              return "pagesAgentsGuide(\(key))"
         case .metadataNeverIndex:                     return "metadataNeverIndex"
         case .configDir:                              return "configDir"
         case .configFile:                             return "configFile"
@@ -127,7 +131,12 @@ public enum ConfluencePathResolver {
         case .space(let key):
             return [
                 (".space.json", .spaceMeta(key: key)),
+                ("AGENTS.md", .spaceAgentsGuide(spaceKey: key)),
                 ("pages", .pagesDir(spaceKey: key)),
+            ]
+        case .pagesDir(let spaceKey):
+            return [
+                ("AGENTS.md", .pagesAgentsGuide(spaceKey: spaceKey)),
             ]
         case .pageDir(let spaceKey, let pageId):
             return pageDirStaticChildren(spaceKey: spaceKey, pageId: pageId)

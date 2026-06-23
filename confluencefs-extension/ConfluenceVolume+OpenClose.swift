@@ -45,7 +45,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
         if node.cachedData != nil { return }
         let data: Data
         switch node.kind {
-        case .agentsGuide:
+        case .agentsGuide, .spaceAgentsGuide, .pagesAgentsGuide:
             guard let url = Bundle.main.url(forResource: "AGENTS", withExtension: "md"),
                   let fileData = try? Data(contentsOf: url)
             else {

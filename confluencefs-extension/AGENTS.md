@@ -20,7 +20,9 @@ Pages are nested: child pages live inside their parent page's directory.
 ```
 /spaces/{SPACE_KEY}/
 ├── .space.json            # Structured metadata for the space (JSON)
+├── AGENTS.md              # Copy of this guide (per-space)
 └── pages/
+    ├── AGENTS.md           # Copy of this guide (in pages/ directory)
     ├── {Page Title}.html  # Self-contained HTML view (only when HTML mode is enabled)
     └── {Page Title}/      # One directory per page (sibling of the .html file)
         ├── page.md          # Markdown-rendered page body

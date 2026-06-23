@@ -54,7 +54,7 @@ extension JiraVolume: FSVolume.OpenCloseOperations {
         logger.info("loadPayload: fetching kind=\(String(describing: node.kind), privacy: .public)")
         let data: Data
         switch node.kind {
-        case .agentsGuide, .issuesAgentsGuide:
+        case .agentsGuide, .projectAgentsGuide, .issuesAgentsGuide:
             guard let url = Bundle.main.url(forResource: "AGENTS", withExtension: "md"),
                   let fileData = try? Data(contentsOf: url)
             else {

@@ -336,12 +336,14 @@ extension ConfluenceVolume: FSVolume.Operations {
         case .space:
             return plain(ConfluencePathResolver.childKinds(of: kind))
         case .pagesDir(let spaceKey):
-            guard let space = try await dataSource.space(key: spaceKey) else { return [] }
+            let staticKids = plain(ConfluencePathResolver.childKinds(of: kind))
+            guard let space = try await dataSource.space(key: spaceKey) else { return staticKids }
             let entries = try await dataSource.rootPageEntries(space: space)
             // Note: the Confluence Cloud v2 API has no endpoint to enumerate
             // root-level (parentless) folders, so only folders nested under a page
             // are surfaced (see the pageDir case below).
-            var result = pageEntries(entries, spaceKey: spaceKey)
+            var result = staticKids
+            result.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
             if await dataSource.includeArchived {
                 result.append((".archived", .archivedRootPagesDir(spaceKey: spaceKey), nil))
             }
