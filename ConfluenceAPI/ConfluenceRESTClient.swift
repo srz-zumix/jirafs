@@ -122,8 +122,10 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let page: CloudPage = try await sendDecoding(url: try cloudURL("pages/\(id)", query: query))
             return page.domain(format: bodyFormat)
         } else {
-            // DC only supports storage; ADF is Cloud-only.
-            let expand = "body.storage,version,space,ancestors,history"
+            // DC: ADF is Cloud-only. `view` yields server-rendered HTML (macros
+            // evaluated); otherwise fetch raw storage XHTML.
+            let bodyExpand = bodyFormat == .view ? "body.view" : "body.storage"
+            let expand = "\(bodyExpand),version,space,ancestors,history"
             let query = [URLQueryItem(name: "expand", value: expand)]
             let page: DCPage = try await sendDecoding(url: try dcURL("content/\(id)", query: query))
             return page.domain

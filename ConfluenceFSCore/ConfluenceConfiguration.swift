@@ -50,6 +50,10 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// When `false` (default), pages with any user/group restriction (read or
         /// update) are excluded from directory listings.
         public var includeRestricted: Bool
+        /// When `true`, page bodies are fetched in the server-rendered `view`
+        /// representation so dynamic macros (e.g. Table of Contents) are evaluated.
+        /// Defaults to `true`.
+        public var renderMacros: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
         /// Defaults to `false`.
         public var autoMount: Bool
@@ -65,7 +69,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
                     url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
-                    includeRestricted: Bool = false, autoMount: Bool = false) {
+                    includeRestricted: Bool = false, renderMacros: Bool = true, autoMount: Bool = false) {
             self.mountID = mountID
             self.serverID = serverID
             self.name = name
@@ -78,6 +82,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             self.htmlView = htmlView
             self.includeArchived = includeArchived
             self.includeRestricted = includeRestricted
+            self.renderMacros = renderMacros
             self.autoMount = autoMount
         }
 
@@ -95,6 +100,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             htmlView        = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
             includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
             includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
+            renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
             autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }

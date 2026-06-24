@@ -122,13 +122,16 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     /// Confluence-only: include pages with user/group restrictions. Ignored for JIRA.
     /// Defaults to `false` (restricted pages are excluded).
     var includeRestricted: Bool
+    /// Confluence-only: fetch the server-rendered `view` body so dynamic macros
+    /// (e.g. Table of Contents) are evaluated. Ignored for JIRA. Defaults to `true`.
+    var renderMacros: Bool
     var autoMount: Bool
 
     init(id: String = UUID().uuidString, serverID: String, product: MountProduct,
          name: String, mountPath: String? = nil, allowedKeys: [String]? = nil,
          diskCache: Bool = true, htmlView: Bool = false,
          includeArchived: Bool = false, includeRestricted: Bool = false,
-         autoMount: Bool = false) {
+         renderMacros: Bool = true, autoMount: Bool = false) {
         self.id = id
         self.serverID = serverID
         self.product = product
@@ -139,6 +142,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         self.htmlView = htmlView
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
+        self.renderMacros = renderMacros
         self.autoMount = autoMount
     }
 
@@ -154,6 +158,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         htmlView        = try c.decodeIfPresent(Bool.self, forKey: .htmlView) ?? false
         includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
         includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
+        renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
         autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
     }
 

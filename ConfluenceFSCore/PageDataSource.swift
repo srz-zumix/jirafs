@@ -55,6 +55,10 @@ public actor PageDataSource {
     /// When `false` (default), pages with any user/group restriction (read or update)
     /// are excluded from listings. Set to `true` to show restricted pages.
     public let includeRestricted: Bool
+    /// When `true`, page bodies are fetched in the server-rendered `view`
+    /// representation so dynamic macros (e.g. Table of Contents) arrive already
+    /// expanded. Defaults to `true` (raw storage format when disabled).
+    public let renderMacros: Bool
     /// Upper bound (bytes) for fully downloading + caching an attachment in
     /// memory. At/under this size an attachment is fetched once and cached;
     /// larger (or unknown-size) attachments are streamed via bounded HTTP Range
@@ -162,6 +166,7 @@ public actor PageDataSource {
         allowedSpaceKeys: [String]? = nil,
         includeArchived: Bool = false,
         includeRestricted: Bool = false,
+        renderMacros: Bool = true,
         maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
@@ -171,6 +176,7 @@ public actor PageDataSource {
         self.limit = limit
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
+        self.renderMacros = renderMacros
         self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         if let raw = allowedSpaceKeys {
             var seen = Set<String>()
@@ -431,8 +437,11 @@ public actor PageDataSource {
     }
 
     public func page(id: String) async throws -> ConfluencePage {
-        try await cached("page/\(id)", ttl: ttl.pageDetail) {
-            try await self.client.getPage(id: id, bodyFormat: .storage)
+        // Embed the body format in the cache key so toggling `renderMacros`
+        // (storage <-> view) refetches instead of serving a stale representation.
+        let format: ConfluenceBodyFormat = renderMacros ? .view : .storage
+        return try await cached("page/\(id)/\(format.rawValue)", ttl: ttl.pageDetail) {
+            try await self.client.getPage(id: id, bodyFormat: format)
         }
     }
 

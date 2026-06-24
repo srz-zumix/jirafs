@@ -108,6 +108,7 @@ enum AppConfig {
                 htmlView: mount.htmlView,
                 includeArchived: mount.includeArchived,
                 includeRestricted: mount.includeRestricted,
+                renderMacros: mount.renderMacros,
                 autoMount: mount.autoMount
             )
         }

@@ -45,21 +45,26 @@ struct CloudBodyValue: Decodable {
 struct CloudBody: Decodable {
     let storage: CloudBodyValue?
     let atlasDocFormat: CloudBodyValue?
+    let view: CloudBodyValue?
 
     enum CodingKeys: String, CodingKey {
         case storage
         case atlasDocFormat = "atlas_doc_format"
+        case view
     }
 
     func body(preferred: ConfluenceBodyFormat?) -> ConfluenceBody? {
         switch preferred {
         case .atlasDocFormat:
             if let v = atlasDocFormat?.value { return ConfluenceBody(format: .atlasDocFormat, value: v) }
+        case .view:
+            if let v = view?.value { return ConfluenceBody(format: .view, value: v) }
         case .storage, nil:
             if let v = storage?.value { return ConfluenceBody(format: .storage, value: v) }
         }
         if let v = storage?.value { return ConfluenceBody(format: .storage, value: v) }
         if let v = atlasDocFormat?.value { return ConfluenceBody(format: .atlasDocFormat, value: v) }
+        if let v = view?.value { return ConfluenceBody(format: .view, value: v) }
         return nil
     }
 }
@@ -180,11 +185,15 @@ struct DCSpace: Decodable {
 
 struct DCBody: Decodable {
     let storage: Value?
+    let view: Value?
     struct Value: Decodable { let value: String?; let representation: String? }
 
     var confluenceBody: ConfluenceBody? {
-        guard let v = storage?.value else { return nil }
-        return ConfluenceBody(format: .storage, value: v)
+        // `view` is only present when explicitly expanded (`expand=body.view`),
+        // so preferring it here is safe: storage-only fetches still map to storage.
+        if let v = view?.value { return ConfluenceBody(format: .view, value: v) }
+        if let v = storage?.value { return ConfluenceBody(format: .storage, value: v) }
+        return nil
     }
 }
 

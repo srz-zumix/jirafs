@@ -90,7 +90,7 @@ public enum PageFileBuilder {
     public static func html(_ page: ConfluencePage) -> Data {
         let title = escapeHTML(page.title)
         let content: String
-        if let body = page.body, body.format == .storage {
+        if let body = page.body, body.format == .storage || body.format == .view {
             content = body.value
         } else {
             let md = ConfluenceContentRenderer.renderBody(page.body)
