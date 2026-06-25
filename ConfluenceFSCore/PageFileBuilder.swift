@@ -84,9 +84,9 @@ public enum PageFileBuilder {
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
     }
 
-    /// `{Title}.html` — a minimal HTML document. For storage- and view-format
-    /// bodies the raw (server-rendered) XHTML is embedded directly; otherwise the
-    /// rendered Markdown is shown inside a `<pre>` block.
+    /// `{Title}.html` — a minimal HTML document. For storage-format XHTML and
+    /// server-rendered `view` HTML bodies the raw markup is embedded directly;
+    /// otherwise the rendered Markdown is shown inside a `<pre>` block.
     public static func html(_ page: ConfluencePage) -> Data {
         let title = escapeHTML(page.title)
         let content: String

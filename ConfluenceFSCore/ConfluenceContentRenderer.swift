@@ -3,7 +3,7 @@ import AtlassianCore
 import ConfluenceAPI
 
 /// Renders a Confluence page/comment body to Markdown, dispatching on the body
-/// format: storage / server-rendered `view` XHTML via `StorageFormatRenderer`,
+/// format: storage XHTML / server-rendered `view` HTML via `StorageFormatRenderer`,
 /// Cloud ADF JSON via the shared `ADFRenderer`.
 public enum ConfluenceContentRenderer {
     public static let rawFallbackMarker = "<!-- confluencefs: raw fallback -->"
