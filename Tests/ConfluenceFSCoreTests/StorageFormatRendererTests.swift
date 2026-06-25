@@ -37,6 +37,16 @@ final class StorageFormatRendererTests: XCTestCase {
         XCTAssertTrue(md.contains("Hi"))
     }
 
+    func testRenderBodyDispatchesView() {
+        // `.view` must route through StorageFormatRenderer (HTML), not the ADF path.
+        let body = ConfluenceBody(format: .view, value: "<h1>Title</h1><p>Body</p>")
+        let md = ConfluenceContentRenderer.renderBody(body)
+        XCTAssertTrue(md.contains("# Title"), "expected heading markdown, got: \(md)")
+        XCTAssertTrue(md.contains("Body"))
+        XCTAssertFalse(md.contains(ConfluenceContentRenderer.rawFallbackMarker),
+                       "view body should not hit the ADF raw fallback")
+    }
+
     func testRenderBodyNilIsEmpty() {
         XCTAssertEqual(ConfluenceContentRenderer.renderBody(nil), "")
     }

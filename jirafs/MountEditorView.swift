@@ -57,7 +57,10 @@ struct MountEditorView: View {
         _htmlView = State(initialValue: initial?.htmlView ?? false)
         _includeArchived = State(initialValue: initial?.includeArchived ?? false)
         _includeRestricted = State(initialValue: initial?.includeRestricted ?? false)
-        _renderMacros = State(initialValue: initial?.renderMacros ?? true)
+        // Normalize legacy non-Confluence mounts (which may have persisted
+        // `renderMacros == false`) back to the documented default so switching
+        // a mount to Confluence in-editor doesn't unexpectedly default macros off.
+        _renderMacros = State(initialValue: initial?.product == .confluence ? (initial?.renderMacros ?? true) : true)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -286,7 +289,7 @@ struct MountEditorView: View {
             htmlView: htmlView,
             includeArchived: product == .confluence ? includeArchived : false,
             includeRestricted: product == .confluence ? includeRestricted : false,
-            renderMacros: product == .confluence ? renderMacros : false,
+            renderMacros: renderMacros,
             autoMount: autoMount
         )
         onSave(mount)
