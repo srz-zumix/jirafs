@@ -179,6 +179,51 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(page.body?.value, "<h1>Title</h1>")
     }
 
+    func testCloudGetPageViewBody() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "id": "555",
+          "title": "Hello",
+          "spaceId": "100",
+          "parentId": "1",
+          "version": {"number": 3},
+          "body": {"view": {"value": "<h2>Rendered</h2>", "representation": "view"}},
+          "_links": {"webui": "/spaces/DOC/pages/555"}
+        }
+        """
+        stub.responses["/wiki/api/v2/pages/555"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let page = try await client.getPage(id: "555", bodyFormat: .view)
+        let items = URLComponents(url: try XCTUnwrap(stub.requests.first?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(items.first { $0.name == "body-format" }?.value, "view")
+        XCTAssertEqual(page.body?.format, .view)
+        XCTAssertEqual(page.body?.value, "<h2>Rendered</h2>")
+    }
+
+    func testDCGetPageViewBody() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "id": "777",
+          "title": "Page",
+          "space": {"id": 1, "key": "TEAM"},
+          "ancestors": [{"id": "1"}],
+          "version": {"number": 4, "by": {"displayName": "Alice"}, "when": "2024-01-01T00:00:00Z"},
+          "body": {"view": {"value": "<h1>Rendered</h1>", "representation": "view"}}
+        }
+        """
+        stub.responses["/rest/api/content/777"] = (200, Data(json.utf8))
+        let client = dcClient(stub)
+        let page = try await client.getPage(id: "777", bodyFormat: .view)
+        let items = URLComponents(url: try XCTUnwrap(stub.requests.first?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let expand = try XCTUnwrap(items.first { $0.name == "expand" }?.value)
+        XCTAssertTrue(expand.contains("body.view"), "expand was \(expand)")
+        XCTAssertFalse(expand.contains("body.storage"), "expand was \(expand)")
+        XCTAssertEqual(page.body?.format, .view)
+        XCTAssertEqual(page.body?.value, "<h1>Rendered</h1>")
+    }
+
     func testNotFoundMaps() async throws {
         let stub = ConfluenceStubTransport()
         let client = cloudClient(stub)

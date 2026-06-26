@@ -21,6 +21,7 @@ struct MountEditorView: View {
     @State private var htmlView: Bool
     @State private var includeArchived: Bool
     @State private var includeRestricted: Bool
+    @State private var renderMacros: Bool
     @State private var autoMount: Bool
     @State private var saveError: String?
 
@@ -56,6 +57,9 @@ struct MountEditorView: View {
         _htmlView = State(initialValue: initial?.htmlView ?? false)
         _includeArchived = State(initialValue: initial?.includeArchived ?? false)
         _includeRestricted = State(initialValue: initial?.includeRestricted ?? false)
+        // Default-on for new/legacy configs (missing field decodes to `true`);
+        // otherwise preserve the stored value to honor explicit user intent.
+        _renderMacros = State(initialValue: initial?.renderMacros ?? true)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -136,6 +140,12 @@ struct MountEditorView: View {
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .help("Include pages with user/group restrictions. Off by default.")
+                            }
+                            fieldRow("Render Macros") {
+                                Toggle("", isOn: $renderMacros)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .help("Fetch the server-rendered view so dynamic macros (e.g. Table of Contents) are expanded. On by default.")
                             }
                         }
                         fieldRow("Auto-mount") {
@@ -278,6 +288,7 @@ struct MountEditorView: View {
             htmlView: htmlView,
             includeArchived: product == .confluence ? includeArchived : false,
             includeRestricted: product == .confluence ? includeRestricted : false,
+            renderMacros: renderMacros,
             autoMount: autoMount
         )
         onSave(mount)

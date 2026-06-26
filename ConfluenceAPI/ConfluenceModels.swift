@@ -27,7 +27,8 @@ public struct ConfluenceSpace: Codable, Sendable, Equatable, Identifiable {
 /// A rendered body in a particular representation.
 public struct ConfluenceBody: Codable, Sendable, Equatable {
     public let format: ConfluenceBodyFormat
-    /// Raw body value: XHTML for `.storage`, JSON text for `.atlasDocFormat`.
+    /// Raw body value: XHTML for `.storage`, server-rendered HTML for `.view`,
+    /// JSON text for `.atlasDocFormat`.
     public let value: String
 
     public init(format: ConfluenceBodyFormat, value: String) {

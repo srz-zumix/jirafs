@@ -18,6 +18,10 @@ public enum ConfluenceBodyFormat: String, Codable, Sendable {
     case storage
     /// Atlassian Document Format (JSON). Cloud only.
     case atlasDocFormat = "atlas_doc_format"
+    /// Server-rendered HTML view. Dynamic macros (e.g. Table of Contents) are
+    /// evaluated server-side. Available on both Cloud (`body-format=view`) and
+    /// DC (`expand=body.view`).
+    case view
 }
 
 /// Configuration for a single Confluence instance.
