@@ -65,18 +65,31 @@ final class JiraRESTClientTests: XCTestCase {
         let stub = StubTransport()
         stub.responses["/secure/attachment/1/f.txt"] = (200, Data([1, 2, 3, 4]))
         let client = cloudClient(stub)
-        let data = try await client.downloadAttachment(
+        let result = try await client.downloadAttachment(
             attachment(content: "https://example.atlassian.net/secure/attachment/1/f.txt"), range: nil)
-        XCTAssertEqual(Array(data), [1, 2, 3, 4])
+        XCTAssertEqual(Array(result.data), [1, 2, 3, 4])
+        XCTAssertFalse(result.isPartial, "A 200 response is a full body, not a partial range")
     }
 
     func testDownloadAttachmentAcceptsExplicitDefaultPort() async throws {
         let stub = StubTransport()
         stub.responses["/secure/att443"] = (200, Data([9]))
         let client = cloudClient(stub)
-        let data = try await client.downloadAttachment(
+        let result = try await client.downloadAttachment(
             attachment(content: "https://example.atlassian.net:443/secure/att443"), range: nil)
-        XCTAssertEqual(Array(data), [9])
+        XCTAssertEqual(Array(result.data), [9])
+    }
+
+    func testDownloadAttachmentToFileWritesBodyToDisk() async throws {
+        let stub = StubTransport()
+        let body = Data([5, 4, 3, 2, 1])
+        stub.responses["/secure/attachment/1/f.txt"] = (200, body)
+        let client = cloudClient(stub)
+        let url = try await client.downloadAttachmentToFile(
+            attachment(content: "https://example.atlassian.net/secure/attachment/1/f.txt"))
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(try Data(contentsOf: url), body)
+        XCTAssertNil(stub.requests.last?.value(forHTTPHeaderField: "Range"))
     }
 
     func testDownloadAttachmentRejectsCrossHost() async throws {

@@ -164,7 +164,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         }
     }
 
-    public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data {
+    public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> RangedDownload {
         guard let link = attachment.downloadLink, let url = resolveURL(link) else {
             throw AtlassianError.invalidURL
         }
@@ -176,9 +176,26 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         }
         let (data, http) = try await transport.data(for: request)
         guard (200..<300).contains(http.statusCode) else {
+            logger.error("downloadAttachment failed: status=\(http.statusCode, privacy: .public) url=\(url.absoluteString, privacy: .public)")
             throw mapError(status: http.statusCode, http: http)
         }
-        return data
+        return RangedDownload(data: data, isPartial: http.statusCode == 206)
+    }
+
+    public func downloadAttachmentToFile(_ attachment: ConfluenceAttachment) async throws -> URL {
+        guard let link = attachment.downloadLink, let url = resolveURL(link) else {
+            throw AtlassianError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        try await authorize(&request)
+        let (fileURL, http) = try await transport.download(for: request)
+        guard (200..<300).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            logger.error("downloadAttachmentToFile failed: status=\(http.statusCode, privacy: .public) url=\(url.absoluteString, privacy: .public)")
+            throw mapError(status: http.statusCode, http: http)
+        }
+        return fileURL
     }
 
     public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
@@ -401,8 +418,23 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     /// `config.baseURL` and are then still origin-checked: path-relative links
     /// inherit the instance origin, but network-path references like
     /// `//host/path` can resolve elsewhere and are rejected.
+    ///
+    /// **Cloud `/wiki` context path:** on Cloud, `config.baseURL` is the bare
+    /// site origin (e.g. `https://site.atlassian.net`) and every REST path is
+    /// built with an explicit `/wiki/...` prefix. Attachment `downloadLink`s,
+    /// however, are root-relative paths (e.g. `/rest/api/content/.../download`
+    /// or `/download/attachments/...`) that are relative to the `/wiki` context.
+    /// Resolving them against the bare origin drops `/wiki` and yields a 404, so
+    /// a root-relative Cloud link that does not already carry `/wiki` is given
+    /// the `/wiki` prefix before resolution. DC links resolve as-is.
     private func resolveURL(_ link: String) -> URL? {
-        InstanceURLValidator.sameOriginURL(link, base: config.baseURL)
+        var link = link
+        if config.edition.isCloud,
+           link.hasPrefix("/"), !link.hasPrefix("//"),
+           link != "/wiki", !link.hasPrefix("/wiki/") {
+            link = "/wiki" + link
+        }
+        return InstanceURLValidator.sameOriginURL(link, base: config.baseURL)
     }
 
     private func validate(http: HTTPURLResponse, data: Data) throws {

@@ -135,7 +135,7 @@ public actor JiraRESTClient: JiraClient {
         return decoded.fields.attachment ?? []
     }
 
-    public func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data {
+    public func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload {
         guard let contentURLString = attachment.content else {
             throw JiraAPIError.invalidURL
         }
@@ -158,7 +158,25 @@ public actor JiraRESTClient: JiraClient {
         guard (200..<300).contains(http.statusCode) else {
             throw mapError(status: http.statusCode, http: http)
         }
-        return data
+        return RangedDownload(data: data, isPartial: http.statusCode == 206)
+    }
+
+    public func downloadAttachmentToFile(_ attachment: JiraAttachment) async throws -> URL {
+        guard let contentURLString = attachment.content else {
+            throw JiraAPIError.invalidURL
+        }
+        guard let url = InstanceURLValidator.sameOriginURL(contentURLString, base: config.baseURL) else {
+            throw JiraAPIError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        try await authorize(&request)
+        let (fileURL, http) = try await transport.download(for: request)
+        guard (200..<300).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw mapError(status: http.statusCode, http: http)
+        }
+        return fileURL
     }
 
     // MARK: - Internal

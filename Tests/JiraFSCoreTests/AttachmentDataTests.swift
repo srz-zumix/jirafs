@@ -1,11 +1,12 @@
 import XCTest
+@testable import AtlassianCore
 @testable import JiraAPI
 @testable import JiraFSCore
 
 /// Stub `JiraClient` that serves a fixed attachment blob and records every
-/// `downloadAttachment` call (including the requested range) so tests can assert
-/// the OOM-guard behaviour: small attachments are downloaded once and cached;
-/// large attachments are streamed via bounded Range requests and never cached.
+/// `downloadAttachment` (ranged) and `downloadAttachmentToFile` (whole-body)
+/// call, so tests can assert how `IssueDataSource` delegates to the shared
+/// `AttachmentByteCache`.
 private final actor StubAttachmentClient: JiraClient {
     let config = JiraInstanceConfig(
         name: "stub",
@@ -13,11 +14,19 @@ private final actor StubAttachmentClient: JiraClient {
         edition: .cloud
     )
     private let blob: Data
-    private(set) var calls: [Range<Int>?] = []
+    /// When `false`, the stub models a server that ignores `Range` and returns
+    /// the whole body with `isPartial == false` (HTTP 200) for ranged requests.
+    private let honorsRange: Bool
+    private(set) var rangedCalls: [Range<Int>?] = []
+    private(set) var fileCalls: Int = 0
 
-    init(blob: Data) { self.blob = blob }
+    init(blob: Data, honorsRange: Bool = true) {
+        self.blob = blob
+        self.honorsRange = honorsRange
+    }
 
-    var callSnapshot: [Range<Int>?] { get async { calls } }
+    var rangedSnapshot: [Range<Int>?] { get async { rangedCalls } }
+    var fileSnapshot: Int { get async { fileCalls } }
 
     func serverInfo() async throws {}
     func listProjects() async throws -> [JiraProject] { [] }
@@ -30,12 +39,22 @@ private final actor StubAttachmentClient: JiraClient {
     func listAttachments(issueKey: String) async throws -> [JiraAttachment] { [] }
     func listFields() async throws -> [JiraField] { [] }
 
-    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data {
-        calls.append(range)
-        guard let range else { return blob }
+    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload {
+        rangedCalls.append(range)
+        guard honorsRange, let range else {
+            // Server ignored Range (or no range requested): full body, 200.
+            return RangedDownload(data: blob, isPartial: false)
+        }
         let lo = min(max(range.lowerBound, 0), blob.count)
         let hi = min(max(range.upperBound, lo), blob.count)
-        return blob.subdata(in: lo..<hi)
+        return RangedDownload(data: blob.subdata(in: lo..<hi), isPartial: true)
+    }
+
+    func downloadAttachmentToFile(_ attachment: JiraAttachment) async throws -> URL {
+        fileCalls += 1
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try blob.write(to: url, options: .atomic)
+        return url
     }
 }
 
@@ -43,12 +62,14 @@ private func attachment(id: String, size: Int) -> JiraAttachment {
     JiraAttachment(id: id, filename: "f.bin", size: size, mimeType: nil, content: nil, created: nil, author: nil)
 }
 
-private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int) -> IssueDataSource {
+private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int,
+                            mode: AttachmentByteCache.Mode = .range) -> IssueDataSource {
     IssueDataSource(
         client: client,
         cache: CacheManager(),
         ttl: .default,
         maxInlineAttachmentBytes: maxInline,
+        attachmentMode: mode,
         limiter: RateLimiter(maxRetries: 0)
     )
 }
@@ -56,68 +77,95 @@ private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int) -> I
 final class AttachmentDataTests: XCTestCase {
     private let blob = Data((0..<10).map { UInt8($0) }) // bytes 0..9
 
-    /// Small (size <= maxInline): one full download, cached, sliced locally;
-    /// the second read issues no further network call.
-    func testSmallAttachmentCachesAndSlices() async throws {
+    /// Small (size <= maxInline) in range mode: downloaded once to a temp file
+    /// and sliced locally; the second read issues no further network call.
+    func testSmallAttachmentCachesToFileAndSlices() async throws {
         let client = StubAttachmentClient(blob: blob)
         let ds = makeDataSource(client, maxInline: 1024)
         let att = attachment(id: "a1", size: blob.count)
 
         let first = try await ds.attachmentData(att, range: 0..<4)
         XCTAssertEqual(Array(first), [0, 1, 2, 3])
-
         let second = try await ds.attachmentData(att, range: 4..<8)
         XCTAssertEqual(Array(second), [4, 5, 6, 7])
 
-        let calls = await client.callSnapshot
-        XCTAssertEqual(calls.count, 1, "Small attachment must download once and then serve slices from cache")
-        XCTAssertNil(calls.first ?? nil, "The single download must fetch the whole file (range == nil)")
+        let fileCalls = await client.fileSnapshot
+        let rangedCalls = await client.rangedSnapshot
+        XCTAssertEqual(fileCalls, 1, "Small attachment must download once to disk then slice locally")
+        XCTAssertTrue(rangedCalls.isEmpty, "Small attachment must not issue ranged requests")
     }
 
-    /// Large (size > maxInline): every read is a bounded Range request and the
-    /// bytes are never cached, so the extension never buffers the whole file.
-    func testLargeAttachmentStreamsAndNeverCaches() async throws {
-        let client = StubAttachmentClient(blob: blob)
+    /// Large (size > maxInline) against a Range-honoring server: every read is a
+    /// bounded Range request streamed directly, nothing is written to disk.
+    func testLargeAttachmentStreamsViaRange() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
         let att = attachment(id: "a2", size: blob.count)
 
         let first = try await ds.attachmentData(att, range: 0..<4)
         XCTAssertEqual(Array(first), [0, 1, 2, 3])
-
         let second = try await ds.attachmentData(att, range: 4..<8)
         XCTAssertEqual(Array(second), [4, 5, 6, 7])
 
-        let calls = await client.callSnapshot
-        XCTAssertEqual(calls.count, 2, "Each read of a large attachment must hit the network (no caching)")
-        XCTAssertEqual(calls[0], 0..<4)
-        XCTAssertEqual(calls[1], 4..<8)
-        XCTAssertFalse(calls.contains(where: { $0 == nil }), "Large attachment must never trigger a full download")
+        let ranged = await client.rangedSnapshot
+        let fileCalls = await client.fileSnapshot
+        XCTAssertEqual(ranged, [0..<4, 4..<8], "Each read must issue a bounded Range request")
+        XCTAssertEqual(fileCalls, 0, "A Range-honoring server must not trigger a disk fallback")
     }
 
-    /// An empty (size 0) attachment is inlineable and returns empty cleanly.
+    /// Large attachment against a server that ignores Range (returns 200 full
+    /// body): the body is persisted to disk once and subsequent reads are served
+    /// from the file without re-downloading — the second window is NOT the body
+    /// prefix, so no corruption.
+    func testLargeAttachmentFallsBackToDiskWhenRangeIgnored() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: false)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a3", size: blob.count)
+
+        let first = try await ds.attachmentData(att, range: 0..<4)
+        XCTAssertEqual(Array(first), [0, 1, 2, 3], "First window sliced from the full 200 body")
+        let second = try await ds.attachmentData(att, range: 4..<8)
+        XCTAssertEqual(Array(second), [4, 5, 6, 7], "Second window from the persisted file, not the body prefix")
+
+        let ranged = await client.rangedSnapshot
+        XCTAssertEqual(ranged.count, 1, "Only the first read hits the network; the rest are served from disk")
+    }
+
+    /// `download` mode always materializes to a temp file regardless of size.
+    func testDownloadModeAlwaysUsesFile() async throws {
+        let client = StubAttachmentClient(blob: blob)
+        let ds = makeDataSource(client, maxInline: 0, mode: .download)
+        let att = attachment(id: "a4", size: blob.count)
+
+        let first = try await ds.attachmentData(att, range: 0..<4)
+        XCTAssertEqual(Array(first), [0, 1, 2, 3])
+        let second = try await ds.attachmentData(att, range: 4..<8)
+        XCTAssertEqual(Array(second), [4, 5, 6, 7])
+
+        let fileCalls = await client.fileSnapshot
+        let ranged = await client.rangedSnapshot
+        XCTAssertEqual(fileCalls, 1, "download mode downloads the whole body once")
+        XCTAssertTrue(ranged.isEmpty, "download mode never issues ranged requests")
+    }
+
+    /// An empty (size 0) attachment returns empty cleanly.
     func testEmptyAttachmentReturnsEmpty() async throws {
         let client = StubAttachmentClient(blob: Data())
         let ds = makeDataSource(client, maxInline: 1024)
-        let att = attachment(id: "a3", size: 0)
+        let att = attachment(id: "a5", size: 0)
 
         let data = try await ds.attachmentData(att, range: nil)
         XCTAssertTrue(data.isEmpty)
     }
 
-    /// A large attachment with no range must be rejected rather than fully
-    /// downloaded — this is the OOM/DoS guard.
-    func testLargeAttachmentWithNilRangeThrows() async throws {
-        let client = StubAttachmentClient(blob: blob)
+    /// A large attachment with a nil range returns the whole body (no throw):
+    /// the shared cache streams/materializes the full body safely.
+    func testLargeAttachmentWithNilRangeReturnsWholeBody() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
-        let att = attachment(id: "a4", size: blob.count)
+        let att = attachment(id: "a6", size: blob.count)
 
-        do {
-            _ = try await ds.attachmentData(att, range: nil)
-            XCTFail("Expected attachmentData to throw for a large attachment with nil range")
-        } catch let error as JiraAPIError {
-            XCTAssertEqual(error, .unsupported)
-        }
-        let calls = await client.callSnapshot
-        XCTAssertTrue(calls.isEmpty, "No download must be issued when the guard rejects the request")
+        let data = try await ds.attachmentData(att, range: nil)
+        XCTAssertEqual(Array(data), Array(blob))
     }
 }

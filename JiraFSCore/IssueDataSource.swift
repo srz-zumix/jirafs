@@ -32,6 +32,11 @@ public actor IssueDataSource {
     public let maxInlineAttachmentBytes: Int
     private let limiter: RateLimiter
 
+    /// Shared attachment byte cache: serves bounded windows of attachment bodies
+    /// (streaming via Range or caching to a local temp file, selectable via the
+    /// configured `Mode`). Cleared on `synchronize()` and unmount.
+    private let attachmentBytes: AttachmentByteCache
+
     /// Default inline-attachment cap: 16 MiB.
     public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
@@ -120,6 +125,7 @@ public actor IssueDataSource {
         maxResults: Int = 100,
         allowedProjectKeys: [String]? = nil,
         maxInlineAttachmentBytes: Int = IssueDataSource.defaultMaxInlineAttachmentBytes,
+        attachmentMode: AttachmentByteCache.Mode = AttachmentByteCache.defaultMode,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
@@ -127,6 +133,8 @@ public actor IssueDataSource {
         self.ttl = ttl
         self.maxResults = maxResults
         self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
+        self.attachmentBytes = AttachmentByteCache(mode: attachmentMode,
+                                                   maxInlineBytes: max(0, maxInlineAttachmentBytes))
         // Normalize: trim whitespace, uppercase, de-duplicate, then nil-ify if empty.
         // This ensures keys from manual config.json edits (or any external source)
         // match JIRA's canonical uppercase project keys regardless of how they were stored.
@@ -222,45 +230,29 @@ public actor IssueDataSource {
         return try await fetchAndCacheAttachments(issueKey: issueKey)
     }
 
-    /// Returns attachment bytes.
+    /// Returns attachment bytes for the requested window.
     ///
-    /// - Small, known-size attachments (`size <= maxInlineAttachmentBytes`) are
-    ///   downloaded once, cached, and sliced locally — repeated reads issue no
-    ///   network traffic.
-    /// - Large or unknown-size attachments are streamed via a bounded HTTP
-    ///   Range request and are **not** cached, so the extension never buffers a
-    ///   multi-GB file in memory (OOM/DoS guard). Callers reading such files
-    ///   must pass an explicit `range`.
+    /// Delegates to the shared ``AttachmentByteCache``, which either streams the
+    /// requested window via HTTP `Range` or serves it from a local temp-file copy
+    /// (falling back to disk if the server ignores `Range`), per the configured
+    /// mode. A `nil` range returns the whole file.
     public func attachmentData(_ attachment: JiraAttachment, range: Range<Int>? = nil) async throws -> Data {
-        let size = attachment.size
-        let inlineable = size >= 0 && size <= maxInlineAttachmentBytes
-        if inlineable {
-            let cacheKey = "attachment-bin/\(attachment.id)"
-            let full: Data
-            if let cached = await cache.get(cacheKey, as: Data.self) {
-                full = cached
-            } else {
-                full = try await limiter.run { [client] in
-                    try await client.downloadAttachment(attachment, range: nil)
-                }
-                await cache.set(cacheKey, value: full, ttl: ttl.attachmentBinary)
+        try await attachmentBytes.bytes(
+            id: attachment.id,
+            size: attachment.size >= 0 ? attachment.size : nil,
+            range: range,
+            rangeFetch: { [client, limiter] range in
+                try await limiter.run { try await client.downloadAttachment(attachment, range: range) }
+            },
+            fileFetch: { [client, limiter] in
+                try await limiter.run { try await client.downloadAttachmentToFile(attachment) }
             }
-            guard let range else { return full }
-            let lo = min(max(range.lowerBound, 0), full.count)
-            let hi = min(max(range.upperBound, lo), full.count)
-            return full.subdata(in: lo..<hi)
-        }
-        // Large or unknown size: stream only the requested window. Never cache.
-        // An explicit range is required — a `nil` range would request the whole
-        // file and defeat the OOM/DoS guard, so reject it instead.
-        guard let range else { throw JiraAPIError.unsupported }
-        return try await limiter.run { [client] in
-            try await client.downloadAttachment(attachment, range: range)
-        }
+        )
     }
 
     public func synchronize() async {
         await cache.synchronize()
+        await attachmentBytes.clear()
     }
 
     /// Returns a mapping of custom field id → display name (e.g. "customfield_10016" → "Story Points").
@@ -389,6 +381,8 @@ public actor IssueDataSource {
         pendingProjectsFetch = nil
         for task in pendingIssueKeysFetch.values { task.cancel() }
         pendingIssueKeysFetch.removeAll()
+        let attachmentBytes = self.attachmentBytes
+        Task { await attachmentBytes.clear() }
     }
 
     // MARK: - Background refresh tasks

@@ -78,7 +78,16 @@ public protocol ConfluenceClient: Sendable {
     func listAttachments(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceAttachment>
     func listLabels(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceLabel>
 
-    func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data
+    /// Downloads an attachment body, optionally a bounded byte window via an HTTP
+    /// `Range` request. The returned ``RangedDownload`` reports whether the server
+    /// honored the range (`206`) or returned the whole body (`200`).
+    func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> RangedDownload
+
+    /// Streams an attachment body to a temporary file on disk and returns its
+    /// URL. The caller owns the file and is responsible for deleting it. Used so
+    /// the extension never buffers a multi-GB attachment fully in memory and does
+    /// not depend on the server honoring HTTP `Range` requests.
+    func downloadAttachmentToFile(_ attachment: ConfluenceAttachment) async throws -> URL
 
     /// Probes the total byte size of an attachment without downloading its body,
     /// for attachments whose listing metadata omits `fileSize` (unknown size).

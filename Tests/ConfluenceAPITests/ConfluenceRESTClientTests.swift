@@ -428,9 +428,38 @@ final class ConfluenceRESTClientTests: XCTestCase {
         let client = cloudClient(stub)
         let att = ConfluenceAttachment(id: "att3", title: "f.bin", fileSize: 1_000_000, downloadLink: "/download/att3")
 
-        let data = try await client.downloadAttachment(att, range: 10..<14)
-        XCTAssertEqual(Array(data), [1, 2, 3, 4])
+        let result = try await client.downloadAttachment(att, range: 10..<14)
+        XCTAssertEqual(Array(result.data), [1, 2, 3, 4])
+        XCTAssertTrue(result.isPartial, "A 206 response is a partial range")
         XCTAssertEqual(stub.requests.last?.value(forHTTPHeaderField: "Range"), "bytes=10-13")
+    }
+
+    func testDownloadAttachmentToFileWritesBodyToDisk() async throws {
+        let stub = ConfluenceStubTransport()
+        let body = Data([9, 8, 7, 6, 5])
+        stub.responses["/download/att4"] = (200, body)
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "att4", title: "f.bin", fileSize: 5, downloadLink: "/download/att4")
+
+        let url = try await client.downloadAttachmentToFile(att)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(try Data(contentsOf: url), body)
+        // No Range header — the whole body is fetched and served from disk.
+        XCTAssertNil(stub.requests.last?.value(forHTTPHeaderField: "Range"))
+    }
+
+    func testDownloadAttachmentToFileRejectsCrossHost() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "x", title: "f.bin", fileSize: nil,
+                                       downloadLink: "https://evil.example.com/download/x")
+        do {
+            _ = try await client.downloadAttachmentToFile(att)
+            XCTFail("expected invalidURL")
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .invalidURL)
+        }
+        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent")
     }
 
     // MARK: - resolveURL / downloadAttachment URL validation (credential-leak prevention)
@@ -440,10 +469,44 @@ final class ConfluenceRESTClientTests: XCTestCase {
         stub.responses["/download/rel"] = (200, Data([7, 7]))
         let client = cloudClient(stub)
         let att = ConfluenceAttachment(id: "r", title: "f.bin", fileSize: nil, downloadLink: "/download/rel")
-        let data = try await client.downloadAttachment(att, range: nil)
-        XCTAssertEqual(Array(data), [7, 7])
-        // Relative link must resolve against the instance origin.
-        XCTAssertTrue(stub.requests.last?.url?.absoluteString.hasPrefix("https://example.atlassian.net/") ?? false)
+        let result = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(Array(result.data), [7, 7])
+        // Cloud root-relative links must resolve under the `/wiki` context path.
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://example.atlassian.net/wiki/download/rel")
+    }
+
+    func testCloudDownloadLinkGetsWikiContextPrefix() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/wiki/rest/api/content/1/child/attachment/att2/download"] = (200, Data([1]))
+        let client = cloudClient(stub)
+        // The form Confluence Cloud actually returns for some attachments.
+        let att = ConfluenceAttachment(id: "att2", title: "f.bin", fileSize: 1,
+                                       downloadLink: "/rest/api/content/1/child/attachment/att2/download")
+        _ = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://example.atlassian.net/wiki/rest/api/content/1/child/attachment/att2/download")
+    }
+
+    func testCloudDownloadLinkAlreadyWikiIsNotDoublePrefixed() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/wiki/download/already"] = (200, Data([2]))
+        let client = cloudClient(stub)
+        let att = ConfluenceAttachment(id: "w", title: "f.bin", fileSize: 1, downloadLink: "/wiki/download/already")
+        _ = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://example.atlassian.net/wiki/download/already")
+    }
+
+    func testDCDownloadLinkResolvesWithoutWikiPrefix() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/download/dc"] = (200, Data([3]))
+        let client = dcClient(stub)
+        let att = ConfluenceAttachment(id: "d", title: "f.bin", fileSize: 1, downloadLink: "/download/dc")
+        _ = try await client.downloadAttachment(att, range: nil)
+        // DC has no `/wiki` context: the link resolves against the base as-is.
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://wiki.example.com/download/dc")
     }
 
     func testDownloadAttachmentAcceptsSameOriginAbsolute() async throws {
@@ -452,8 +515,8 @@ final class ConfluenceRESTClientTests: XCTestCase {
         let client = cloudClient(stub)
         let att = ConfluenceAttachment(id: "a", title: "f.bin", fileSize: nil,
                                        downloadLink: "https://example.atlassian.net:443/download/abs")
-        let data = try await client.downloadAttachment(att, range: nil)
-        XCTAssertEqual(Array(data), [8])
+        let result = try await client.downloadAttachment(att, range: nil)
+        XCTAssertEqual(Array(result.data), [8])
     }
 
     func testDownloadAttachmentRejectsCrossHost() async throws {

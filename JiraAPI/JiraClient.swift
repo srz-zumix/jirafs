@@ -42,7 +42,13 @@ public protocol JiraClient: Sendable {
     func getIssue(key: String) async throws -> JiraIssue
     func listComments(issueKey: String) async throws -> [JiraComment]
     func listAttachments(issueKey: String) async throws -> [JiraAttachment]
-    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data
+    /// Downloads an attachment body, optionally a bounded byte window via an HTTP
+    /// `Range` request. The returned ``RangedDownload`` reports whether the server
+    /// honored the range (`206`) or returned the whole body (`200`).
+    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload
+    /// Streams an attachment body to a temporary file on disk and returns its URL.
+    /// The caller owns the file and is responsible for deleting it.
+    func downloadAttachmentToFile(_ attachment: JiraAttachment) async throws -> URL
     /// Returns all fields defined on the instance (id → name).
     func listFields() async throws -> [JiraField]
 }
