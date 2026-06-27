@@ -163,8 +163,9 @@ final class AttachmentDataTests: XCTestCase {
         XCTAssertTrue(data.isEmpty)
     }
 
-    /// A large attachment with a nil range returns the whole body (no throw):
-    /// the shared cache streams/materializes the full body safely.
+    /// A large attachment with a nil range returns the whole body. In `.range`
+    /// mode a whole-body read streams to disk via `fileFetch` (not the in-memory
+    /// `rangeFetch(nil)` path), then is sliced from the persisted file.
     func testLargeAttachmentWithNilRangeReturnsWholeBody() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
@@ -172,6 +173,25 @@ final class AttachmentDataTests: XCTestCase {
 
         let data = try await ds.attachmentData(att, range: nil)
         XCTAssertEqual(Array(data), Array(blob))
+        let fileCalls = await client.fileSnapshot
+        let ranged = await client.rangedSnapshot
+        XCTAssertEqual(fileCalls, 1, "A whole-body read must stream to disk, not buffer in memory")
+        XCTAssertTrue(ranged.isEmpty, "A whole-body read must not issue a ranged request")
+    }
+
+    /// An unknown-size (nil) attachment read with a nil range also streams to
+    /// disk via `fileFetch` in `.range` mode rather than buffering in memory.
+    func testUnknownSizeNilRangeStreamsToFile() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: true)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a10", size: -1) // size < 0 → unknown (nil)
+
+        let data = try await ds.attachmentData(att, range: nil)
+        XCTAssertEqual(Array(data), Array(blob))
+        let fileCalls = await client.fileSnapshot
+        let ranged = await client.rangedSnapshot
+        XCTAssertEqual(fileCalls, 1, "Unknown-size whole-body read must stream to disk")
+        XCTAssertTrue(ranged.isEmpty, "Unknown-size whole-body read must not issue a ranged request")
     }
 
     /// A window extending past the known size is clamped to `[start, size)`

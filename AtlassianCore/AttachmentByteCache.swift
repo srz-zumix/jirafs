@@ -37,8 +37,14 @@ public struct RangedDownload: Sendable {
 /// - ``Mode/download``: always download the whole body once to a local temp
 ///   file and serve slices from it. Independent of server `Range` support.
 ///
-/// Both modes keep steady-state memory bounded to a single slice and never
-/// fully buffer a multi-GB attachment in memory.
+/// Memory behavior: a bounded (non-`nil`) range read is held to the requested
+/// slice on `Range`-honoring servers. Whole-body (`nil` range) requests and
+/// `.download` mode stream the transfer to disk first, but a whole-body `Data`
+/// return still materializes the full file in memory at the call boundary — so
+/// callers should avoid `nil`-range reads for multi-GB attachments. One residual
+/// case buffers a full body in memory regardless: a server that ignores `Range`
+/// and returns a `200` full body for a ranged request (buffered once via
+/// `data(for:)`, then persisted to disk so later reads are served from it).
 public actor AttachmentByteCache {
     public enum Mode: Sendable {
         /// Stream via HTTP `Range`, falling back to a disk copy on a `200` body.
@@ -100,9 +106,11 @@ public actor AttachmentByteCache {
             let url = try await ensureFile(id: id, fileFetch: fileFetch)
             return try Self.readSlice(at: url, range: range)
         case .range:
-            // Small, known-size files: download once to disk so repeated reads
-            // do not each issue a ranged request.
-            if let size, size >= 0, size <= maxInlineBytes {
+            // Stream to disk (and slice locally) for whole-body requests and for
+            // small known-size files, so the in-memory `rangeFetch` path is only
+            // used for bounded windows. A `nil` range fetched via `rangeFetch`
+            // would otherwise buffer the entire body in memory.
+            if range == nil || (size.map { $0 >= 0 && $0 <= maxInlineBytes } ?? false) {
                 let url = try await ensureFile(id: id, fileFetch: fileFetch)
                 return try Self.readSlice(at: url, range: range)
             }

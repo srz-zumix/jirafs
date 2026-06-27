@@ -57,7 +57,9 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
     /// file. The shared `AttachmentByteCache` streams the requested window via an
     /// HTTP `Range` request (falling back to a one-time disk copy if the server
     /// ignores `Range`, or caching small/`download`-mode files to disk), per the
-    /// configured mode — so a multi-GB attachment is never fully held in memory.
+    /// configured mode — so on `Range`-honoring servers a multi-GB attachment is
+    /// not fully buffered in memory. (A server that ignores `Range` returns the
+    /// whole `200` body, which is buffered once before being persisted to disk.)
     private func readAttachment(
         pageId: String, attachmentId: String, node: ConfluenceFSItem,
         offset: off_t, length: Int,

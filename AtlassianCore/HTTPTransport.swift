@@ -7,8 +7,10 @@ public protocol HTTPTransport: Sendable {
 
     /// Streams the response body to a temporary file on disk and returns its URL
     /// plus the response. The caller takes ownership of the returned file and is
-    /// responsible for deleting it. Used for attachment bodies so a multi-GB file
-    /// is never buffered fully in memory.
+    /// responsible for deleting it. Production transports (`URLSessionTransport`)
+    /// stream the body straight to disk so a multi-GB file is not buffered in
+    /// memory; the default protocol-extension implementation below buffers via
+    /// `data(for:)` and is intended only for simple conformers/test stubs.
     func download(for request: URLRequest) async throws -> (URL, HTTPURLResponse)
 }
 
@@ -66,7 +68,16 @@ public struct URLSessionTransport: HTTPTransport {
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         try? FileManager.default.removeItem(at: dest)
-        try FileManager.default.moveItem(at: tempURL, to: dest)
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: dest)
+        } catch {
+            // `session.download` hands us ownership of `tempURL`; if the move
+            // fails (e.g. transient FS error) it would otherwise leak the
+            // (potentially multi-GB) temp file. Clean up before rethrowing.
+            try? FileManager.default.removeItem(at: tempURL)
+            try? FileManager.default.removeItem(at: dest)
+            throw error
+        }
         return (dest, http)
     }
 }
