@@ -53,10 +53,11 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
         }
     }
 
-    /// Serves a bounded byte window of an attachment. The data source downloads
-    /// the body once to a local temp file and serves slices from it, so only the
-    /// requested window is held in memory and serving does not depend on the
-    /// server honoring HTTP `Range` requests.
+    /// Serves a bounded byte window of an attachment without buffering the whole
+    /// file. The shared `AttachmentByteCache` streams the requested window via an
+    /// HTTP `Range` request (falling back to a one-time disk copy if the server
+    /// ignores `Range`, or caching small/`download`-mode files to disk), per the
+    /// configured mode — so a multi-GB attachment is never fully held in memory.
     private func readAttachment(
         pageId: String, attachmentId: String, node: ConfluenceFSItem,
         offset: off_t, length: Int,
@@ -67,11 +68,24 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
         guard let attachment = atts.first(where: { $0.id == attachmentId }) else {
             r.value(0, FSKitError.notFound); return
         }
-        // Request exactly the asked window. The data source clamps to the file's
-        // real size (reads past EOF return the available bytes), so no separate
-        // total-size bookkeeping is needed here.
-        let (sum, overflow) = start.addingReportingOverflow(length)
-        let end = overflow ? Int.max : sum
+        // Clamp the requested window to the attachment's real size. Prefer the
+        // listing's `fileSize`; when it was omitted, fall back to the size
+        // discovered at open time (`node.cachedSize`, from a HEAD probe). This
+        // keeps the issued `Range` in bounds (avoiding `416` near EOF) and makes
+        // reads past EOF return 0 bytes. When the size is genuinely unknown,
+        // guard the addition so a near-`Int.max` length can't overflow into an
+        // absurd `Range`.
+        let total = attachment.fileSize.map { max(0, $0) }
+            ?? Int(exactly: node.cachedSize).flatMap { $0 > 0 ? $0 : nil }
+        let end: Int
+        if let total {
+            if start >= total { r.value(0, nil); return }
+            end = start + min(length, total - start) // start + want <= total, no overflow
+        } else {
+            let (sum, overflow) = start.addingReportingOverflow(length)
+            guard !overflow else { r.value(0, nil); return }
+            end = sum
+        }
         let chunk = try await dataSource.downloadAttachment(attachment, range: start..<end)
         let copied = chunk.withUnsafeBytes { src -> Int in
             guard let baseAddress = src.baseAddress else { return 0 }

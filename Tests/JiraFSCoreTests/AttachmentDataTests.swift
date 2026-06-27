@@ -62,20 +62,25 @@ private func attachment(id: String, size: Int) -> JiraAttachment {
     JiraAttachment(id: id, filename: "f.bin", size: size, mimeType: nil, content: nil, created: nil, author: nil)
 }
 
-private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int,
-                            mode: AttachmentByteCache.Mode = .range) -> IssueDataSource {
-    IssueDataSource(
-        client: client,
-        cache: CacheManager(),
-        ttl: .default,
-        maxInlineAttachmentBytes: maxInline,
-        attachmentMode: mode,
-        limiter: RateLimiter(maxRetries: 0)
-    )
-}
-
 final class AttachmentDataTests: XCTestCase {
     private let blob = Data((0..<10).map { UInt8($0) }) // bytes 0..9
+
+    /// Builds an `IssueDataSource` and registers a teardown that clears the
+    /// shared `AttachmentByteCache`, so any temp file materialized during the
+    /// test is deleted even if the test throws before its final assertion.
+    private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int,
+                                mode: AttachmentByteCache.Mode = .range) -> IssueDataSource {
+        let ds = IssueDataSource(
+            client: client,
+            cache: CacheManager(),
+            ttl: .default,
+            maxInlineAttachmentBytes: maxInline,
+            attachmentMode: mode,
+            limiter: RateLimiter(maxRetries: 0)
+        )
+        addTeardownBlock { await ds.synchronize() }
+        return ds
+    }
 
     /// Small (size <= maxInline) in range mode: downloaded once to a temp file
     /// and sliced locally; the second read issues no further network call.
@@ -167,5 +172,45 @@ final class AttachmentDataTests: XCTestCase {
 
         let data = try await ds.attachmentData(att, range: nil)
         XCTAssertEqual(Array(data), Array(blob))
+    }
+
+    /// A window extending past the known size is clamped to `[start, size)`
+    /// before the Range request is issued, so a strict server never sees an
+    /// out-of-bounds Range (which would yield `416`).
+    func testRangeClampedToKnownSizeBeforeRequest() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: true)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a7", size: blob.count) // size 10
+
+        let data = try await ds.attachmentData(att, range: 8..<20)
+        XCTAssertEqual(Array(data), [8, 9])
+        let ranged = await client.rangedSnapshot
+        XCTAssertEqual(ranged, [8..<10], "Range must be clamped to the known size before the request")
+    }
+
+    /// A read starting at/after EOF returns empty without issuing any network
+    /// request or materializing a temp file.
+    func testReadAtEofReturnsEmptyWithoutRequest() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: true)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a8", size: blob.count) // size 10
+
+        let data = try await ds.attachmentData(att, range: 10..<20)
+        XCTAssertTrue(data.isEmpty)
+        let ranged = await client.rangedSnapshot
+        let fileCalls = await client.fileSnapshot
+        XCTAssertTrue(ranged.isEmpty, "A read at EOF must not hit the network")
+        XCTAssertEqual(fileCalls, 0, "A read at EOF must not materialize a temp file")
+    }
+
+    /// When the server ignores Range (200 full body), an over-long window is
+    /// still sliced from the persisted file using the clamped bounds.
+    func testRangeClampedWhenServerReturnsFullBody() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: false)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a9", size: blob.count) // size 10
+
+        let data = try await ds.attachmentData(att, range: 8..<20)
+        XCTAssertEqual(Array(data), [8, 9], "200 fallback must slice with the clamped range")
     }
 }

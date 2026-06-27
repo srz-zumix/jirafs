@@ -83,6 +83,14 @@ public actor AttachmentByteCache {
     ///   - fileFetch: Streams the whole body to a temp file.
     public func bytes(id: String, size: Int?, range: Range<Int>?,
                       rangeFetch: RangeFetch, fileFetch: @escaping FileFetch) async throws -> Data {
+        // Clamp the requested window to the known size before doing any work, so
+        // the issued HTTP `Range` never reaches past EOF (which stricter servers
+        // reject with `416`) and disk slices stay in bounds. A `nil` size leaves
+        // the range untouched (size unknown — rely on the server/disk to bound).
+        let range = Self.clampedRange(range, size: size)
+        // Start at/after EOF (or an empty/inverted window): nothing to serve, and
+        // no network request needed.
+        if let range, range.isEmpty { return Data() }
         // Already materialized to disk (download mode, or a prior 200 fallback).
         if let url = files[id], FileManager.default.fileExists(atPath: url.path) {
             return try Self.readSlice(at: url, range: range)
@@ -148,6 +156,18 @@ public actor AttachmentByteCache {
         try data.write(to: url, options: .atomic)
         files[id] = url
         return url
+    }
+
+    /// Clamps a requested window to `[0, size)`. Returns `nil` unchanged (whole
+    /// body). When `size` is `nil` the upper bound is left as requested. An
+    /// at/after-EOF or inverted window collapses to an empty range (`lower..<lower`).
+    private static func clampedRange(_ range: Range<Int>?, size: Int?) -> Range<Int>? {
+        guard let range else { return nil }
+        let lower = max(0, range.lowerBound)
+        let cap = size.map { max(0, $0) } ?? range.upperBound
+        let upper = min(range.upperBound, cap)
+        guard lower < upper else { return lower..<lower }
+        return lower..<upper
     }
 
     /// Reads a bounded slice from a local file via `FileHandle`, so only the
