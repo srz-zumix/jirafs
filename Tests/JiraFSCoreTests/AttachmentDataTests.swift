@@ -4,9 +4,8 @@ import XCTest
 @testable import JiraFSCore
 
 /// Stub `JiraClient` that serves a fixed attachment blob and records every
-/// `downloadAttachment` (ranged) and `downloadAttachmentToFile` (whole-body)
-/// call, so tests can assert how `IssueDataSource` delegates to the shared
-/// `AttachmentByteCache`.
+/// `downloadAttachment` (ranged) call, so tests can assert how `IssueDataSource`
+/// delegates to the shared in-memory `AttachmentByteCache`.
 private final actor StubAttachmentClient: JiraClient {
     let config = JiraInstanceConfig(
         name: "stub",
@@ -18,7 +17,6 @@ private final actor StubAttachmentClient: JiraClient {
     /// the whole body with `isPartial == false` (HTTP 200) for ranged requests.
     private let honorsRange: Bool
     private(set) var rangedCalls: [Range<Int>?] = []
-    private(set) var fileCalls: Int = 0
 
     init(blob: Data, honorsRange: Bool = true) {
         self.blob = blob
@@ -26,7 +24,6 @@ private final actor StubAttachmentClient: JiraClient {
     }
 
     var rangedSnapshot: [Range<Int>?] { get async { rangedCalls } }
-    var fileSnapshot: Int { get async { fileCalls } }
 
     func serverInfo() async throws {}
     func listProjects() async throws -> [JiraProject] { [] }
@@ -49,13 +46,6 @@ private final actor StubAttachmentClient: JiraClient {
         let hi = min(max(range.upperBound, lo), blob.count)
         return RangedDownload(data: blob.subdata(in: lo..<hi), isPartial: true)
     }
-
-    func downloadAttachmentToFile(_ attachment: JiraAttachment) async throws -> URL {
-        fileCalls += 1
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try blob.write(to: url, options: .atomic)
-        return url
-    }
 }
 
 private func attachment(id: String, size: Int) -> JiraAttachment {
@@ -66,25 +56,23 @@ final class AttachmentDataTests: XCTestCase {
     private let blob = Data((0..<10).map { UInt8($0) }) // bytes 0..9
 
     /// Builds an `IssueDataSource` and registers a teardown that clears the
-    /// shared `AttachmentByteCache`, so any temp file materialized during the
-    /// test is deleted even if the test throws before its final assertion.
-    private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int,
-                                mode: AttachmentByteCache.Mode = .range) -> IssueDataSource {
+    /// shared `AttachmentByteCache`, so cached bodies don't survive between tests.
+    private func makeDataSource(_ client: StubAttachmentClient, maxInline: Int) -> IssueDataSource {
         let ds = IssueDataSource(
             client: client,
             cache: CacheManager(),
             ttl: .default,
             maxInlineAttachmentBytes: maxInline,
-            attachmentMode: mode,
             limiter: RateLimiter(maxRetries: 0)
         )
         addTeardownBlock { await ds.synchronize() }
         return ds
     }
 
-    /// Small (size <= maxInline) in range mode: downloaded once to a temp file
-    /// and sliced locally; the second read issues no further network call.
-    func testSmallAttachmentCachesToFileAndSlices() async throws {
+    /// Small (size <= maxInline): the whole body is fetched once via a single
+    /// `rangeFetch(nil)`, cached in memory, and subsequent reads are sliced
+    /// locally without any further network call.
+    func testSmallAttachmentCachesInMemoryAndSlices() async throws {
         let client = StubAttachmentClient(blob: blob)
         let ds = makeDataSource(client, maxInline: 1024)
         let att = attachment(id: "a1", size: blob.count)
@@ -94,14 +82,12 @@ final class AttachmentDataTests: XCTestCase {
         let second = try await ds.attachmentData(att, range: 4..<8)
         XCTAssertEqual(Array(second), [4, 5, 6, 7])
 
-        let fileCalls = await client.fileSnapshot
         let rangedCalls = await client.rangedSnapshot
-        XCTAssertEqual(fileCalls, 1, "Small attachment must download once to disk then slice locally")
-        XCTAssertTrue(rangedCalls.isEmpty, "Small attachment must not issue ranged requests")
+        XCTAssertEqual(rangedCalls, [nil], "Small attachment must fetch the whole body once, then slice from memory")
     }
 
     /// Large (size > maxInline) against a Range-honoring server: every read is a
-    /// bounded Range request streamed directly, nothing is written to disk.
+    /// bounded Range request streamed directly, nothing is cached.
     func testLargeAttachmentStreamsViaRange() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
@@ -113,44 +99,41 @@ final class AttachmentDataTests: XCTestCase {
         XCTAssertEqual(Array(second), [4, 5, 6, 7])
 
         let ranged = await client.rangedSnapshot
-        let fileCalls = await client.fileSnapshot
         XCTAssertEqual(ranged, [0..<4, 4..<8], "Each read must issue a bounded Range request")
-        XCTAssertEqual(fileCalls, 0, "A Range-honoring server must not trigger a disk fallback")
     }
 
-    /// Large attachment against a server that ignores Range (returns 200 full
-    /// body): the body is persisted to disk once and subsequent reads are served
-    /// from the file without re-downloading — the second window is NOT the body
-    /// prefix, so no corruption.
-    func testLargeAttachmentFallsBackToDiskWhenRangeIgnored() async throws {
+    /// Unknown-size attachment against a server that ignores Range (200 full
+    /// body): the body fits the inline cap, so it is cached in memory after the
+    /// first read and subsequent reads are served without re-downloading.
+    func testRangeIgnoringServerWithSmallBodyCachesInMemory() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: false)
-        let ds = makeDataSource(client, maxInline: 4)
-        let att = attachment(id: "a3", size: blob.count)
+        let ds = makeDataSource(client, maxInline: 1024)
+        let att = attachment(id: "a3", size: -1) // unknown size
 
         let first = try await ds.attachmentData(att, range: 0..<4)
         XCTAssertEqual(Array(first), [0, 1, 2, 3], "First window sliced from the full 200 body")
         let second = try await ds.attachmentData(att, range: 4..<8)
-        XCTAssertEqual(Array(second), [4, 5, 6, 7], "Second window from the persisted file, not the body prefix")
+        XCTAssertEqual(Array(second), [4, 5, 6, 7], "Second window from the in-memory copy, not the body prefix")
 
         let ranged = await client.rangedSnapshot
-        XCTAssertEqual(ranged.count, 1, "Only the first read hits the network; the rest are served from disk")
+        XCTAssertEqual(ranged.count, 1, "Only the first read hits the network; the rest are served from memory")
     }
 
-    /// `download` mode always materializes to a temp file regardless of size.
-    func testDownloadModeAlwaysUsesFile() async throws {
-        let client = StubAttachmentClient(blob: blob)
-        let ds = makeDataSource(client, maxInline: 0, mode: .download)
-        let att = attachment(id: "a4", size: blob.count)
+    /// Large (size > maxInline) against a Range-ignoring server: the 200 body
+    /// exceeds the inline cap, so it is NOT cached. Each read re-fetches but the
+    /// returned slices are still correct (degraded, but bounded-memory, behavior).
+    func testRangeIgnoringServerWithLargeKnownSizeNotCached() async throws {
+        let client = StubAttachmentClient(blob: blob, honorsRange: false)
+        let ds = makeDataSource(client, maxInline: 4)
+        let att = attachment(id: "a3b", size: blob.count) // size 10 > maxInline 4
 
         let first = try await ds.attachmentData(att, range: 0..<4)
         XCTAssertEqual(Array(first), [0, 1, 2, 3])
         let second = try await ds.attachmentData(att, range: 4..<8)
-        XCTAssertEqual(Array(second), [4, 5, 6, 7])
+        XCTAssertEqual(Array(second), [4, 5, 6, 7], "Second window must be correct even without caching")
 
-        let fileCalls = await client.fileSnapshot
         let ranged = await client.rangedSnapshot
-        XCTAssertEqual(fileCalls, 1, "download mode downloads the whole body once")
-        XCTAssertTrue(ranged.isEmpty, "download mode never issues ranged requests")
+        XCTAssertEqual(ranged.count, 2, "A too-large 200 body is not cached, so each read re-fetches")
     }
 
     /// An empty (size 0) attachment returns empty cleanly.
@@ -163,9 +146,9 @@ final class AttachmentDataTests: XCTestCase {
         XCTAssertTrue(data.isEmpty)
     }
 
-    /// A large attachment with a nil range returns the whole body. In `.range`
-    /// mode a whole-body read streams to disk via `fileFetch` (not the in-memory
-    /// `rangeFetch(nil)` path), then is sliced from the persisted file.
+    /// A large attachment with a nil range returns the whole body via a single
+    /// `rangeFetch(nil)` (the in-memory buffering happens only at the call
+    /// boundary; it is not cached because it exceeds the inline cap).
     func testLargeAttachmentWithNilRangeReturnsWholeBody() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
@@ -173,25 +156,21 @@ final class AttachmentDataTests: XCTestCase {
 
         let data = try await ds.attachmentData(att, range: nil)
         XCTAssertEqual(Array(data), Array(blob))
-        let fileCalls = await client.fileSnapshot
         let ranged = await client.rangedSnapshot
-        XCTAssertEqual(fileCalls, 1, "A whole-body read must stream to disk, not buffer in memory")
-        XCTAssertTrue(ranged.isEmpty, "A whole-body read must not issue a ranged request")
+        XCTAssertEqual(ranged, [nil], "A whole-body read must fetch the whole body once")
     }
 
-    /// An unknown-size (nil) attachment read with a nil range also streams to
-    /// disk via `fileFetch` in `.range` mode rather than buffering in memory.
-    func testUnknownSizeNilRangeStreamsToFile() async throws {
+    /// An unknown-size (nil) attachment read with a nil range also fetches the
+    /// whole body once via `rangeFetch(nil)`.
+    func testUnknownSizeNilRangeReturnsWholeBody() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
         let att = attachment(id: "a10", size: -1) // size < 0 → unknown (nil)
 
         let data = try await ds.attachmentData(att, range: nil)
         XCTAssertEqual(Array(data), Array(blob))
-        let fileCalls = await client.fileSnapshot
         let ranged = await client.rangedSnapshot
-        XCTAssertEqual(fileCalls, 1, "Unknown-size whole-body read must stream to disk")
-        XCTAssertTrue(ranged.isEmpty, "Unknown-size whole-body read must not issue a ranged request")
+        XCTAssertEqual(ranged, [nil], "Unknown-size whole-body read must fetch the whole body once")
     }
 
     /// A window extending past the known size is clamped to `[start, size)`
@@ -209,7 +188,7 @@ final class AttachmentDataTests: XCTestCase {
     }
 
     /// A read starting at/after EOF returns empty without issuing any network
-    /// request or materializing a temp file.
+    /// request.
     func testReadAtEofReturnsEmptyWithoutRequest() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: true)
         let ds = makeDataSource(client, maxInline: 4)
@@ -218,13 +197,11 @@ final class AttachmentDataTests: XCTestCase {
         let data = try await ds.attachmentData(att, range: 10..<20)
         XCTAssertTrue(data.isEmpty)
         let ranged = await client.rangedSnapshot
-        let fileCalls = await client.fileSnapshot
         XCTAssertTrue(ranged.isEmpty, "A read at EOF must not hit the network")
-        XCTAssertEqual(fileCalls, 0, "A read at EOF must not materialize a temp file")
     }
 
     /// When the server ignores Range (200 full body), an over-long window is
-    /// still sliced from the persisted file using the clamped bounds.
+    /// still sliced from the in-memory body using the clamped bounds.
     func testRangeClampedWhenServerReturnsFullBody() async throws {
         let client = StubAttachmentClient(blob: blob, honorsRange: false)
         let ds = makeDataSource(client, maxInline: 4)
@@ -234,87 +211,62 @@ final class AttachmentDataTests: XCTestCase {
         XCTAssertEqual(Array(data), [8, 9], "200 fallback must slice with the clamped range")
     }
 
-    /// A `clear()` that races an in-flight whole-body download must not leak the
-    /// temp file the download produces afterwards. The owning fetch deletes its
-    /// own result (it belongs to a cleared generation) and surfaces cancellation
-    /// instead of re-populating the emptied cache.
-    func testClearDuringDownloadDeletesLateTempFile() async throws {
-        let cache = AttachmentByteCache(mode: .download, maxInlineBytes: 1024)
-        let gate = Gate()
-        let recorder = URLRecorder()
+    // MARK: - AttachmentByteCache (direct) — LRU / memory budget
 
-        // A fileFetch that ignores cancellation: it signals start, waits to be
-        // released, then writes a real temp file and returns it regardless.
-        let fileFetch: @Sendable () async throws -> URL = {
-            await gate.signalStarted()
-            await gate.waitForRelease()
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            try Data([1, 2, 3]).write(to: url, options: .atomic)
-            await recorder.set(url)
-            return url
-        }
-        let rangeFetch: @Sendable (Range<Int>?) async throws -> RangedDownload = { _ in
-            RangedDownload(data: Data(), isPartial: false)
+    /// The in-memory cache evicts least-recently-used entries to honor the total
+    /// budget: with a budget of one max-size entry, caching `b` evicts `a`, so a
+    /// later read of `a` re-downloads.
+    func testLruEvictionHonorsTotalBudget() async throws {
+        let cache = AttachmentByteCache(maxInlineBytes: 10, maxTotalBytes: 10)
+        let counter = CallCounter()
+
+        func fetch(_ id: String, byte: UInt8) -> AttachmentByteCache.RangeFetch {
+            { _ in
+                await counter.bump(id)
+                return RangedDownload(data: Data(repeating: byte, count: 10), isPartial: false)
+            }
         }
 
-        let readTask = Task<Data, Error> {
-            try await cache.bytes(id: "x", size: 3, range: nil,
-                                  rangeFetch: rangeFetch, fileFetch: fileFetch)
+        _ = try await cache.bytes(id: "a", size: 10, range: 0..<10, rangeFetch: fetch("a", byte: 1))
+        _ = try await cache.bytes(id: "a", size: 10, range: 0..<10, rangeFetch: fetch("a", byte: 1))
+        let aFirst = await counter.count("a")
+        XCTAssertEqual(aFirst, 1, "Second read of a must be served from memory")
+
+        // Caching b (10 bytes) exceeds the 10-byte budget, evicting a.
+        _ = try await cache.bytes(id: "b", size: 10, range: 0..<10, rangeFetch: fetch("b", byte: 2))
+        // a was evicted, so this re-downloads.
+        _ = try await cache.bytes(id: "a", size: 10, range: 0..<10, rangeFetch: fetch("a", byte: 1))
+        let aSecond = await counter.count("a")
+        XCTAssertEqual(aSecond, 2, "a must re-download after being LRU-evicted by b")
+    }
+
+    /// `clear()` drops cached bodies, so a subsequent read re-downloads.
+    func testClearDropsCachedBodies() async throws {
+        let cache = AttachmentByteCache(maxInlineBytes: 1024, maxTotalBytes: 1024)
+        let counter = CallCounter()
+
+        func fetch() -> AttachmentByteCache.RangeFetch {
+            { _ in
+                await counter.bump("x")
+                return RangedDownload(data: Data(repeating: 7, count: 8), isPartial: false)
+            }
         }
 
-        await gate.waitForStart()
+        _ = try await cache.bytes(id: "x", size: 8, range: 0..<8, rangeFetch: fetch())
+        _ = try await cache.bytes(id: "x", size: 8, range: 0..<8, rangeFetch: fetch())
+        let before = await counter.count("x")
+        XCTAssertEqual(before, 1, "Cached read must not re-download")
+
         await cache.clear()
-        await gate.release()
-
-        do {
-            _ = try await readTask.value
-            XCTFail("A read whose download finished after clear() must not succeed")
-        } catch is CancellationError {
-            // Expected: the stale result is rejected.
-        }
-
-        let leaked = await recorder.url
-        XCTAssertNotNil(leaked, "fileFetch should have produced a temp file")
-        if let leaked {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: leaked.path),
-                           "A temp file produced after clear() must be deleted, not leaked")
-        }
+        _ = try await cache.bytes(id: "x", size: 8, range: 0..<8, rangeFetch: fetch())
+        let after = await counter.count("x")
+        XCTAssertEqual(after, 2, "clear() must drop the cache so the next read re-downloads")
     }
 }
 
-/// One-shot rendezvous so a test can block a `fileFetch` mid-flight, perform a
-/// `clear()`, then release the fetch and observe the post-clear behavior.
-private actor Gate {
-    private var startWaiter: CheckedContinuation<Void, Never>?
-    private var started = false
-    private var releaseWaiter: CheckedContinuation<Void, Never>?
-    private var released = false
-
-    func signalStarted() {
-        started = true
-        startWaiter?.resume()
-        startWaiter = nil
-    }
-
-    func waitForStart() async {
-        if started { return }
-        await withCheckedContinuation { startWaiter = $0 }
-    }
-
-    func release() {
-        released = true
-        releaseWaiter?.resume()
-        releaseWaiter = nil
-    }
-
-    func waitForRelease() async {
-        if released { return }
-        await withCheckedContinuation { releaseWaiter = $0 }
-    }
-}
-
-/// Records the URL a `fileFetch` produced so the test can assert on its fate.
-private actor URLRecorder {
-    private(set) var url: URL?
-    func set(_ value: URL) { url = value }
+/// Counts how many times a fetch closure was invoked, keyed by attachment id.
+private actor CallCounter {
+    private var counts: [String: Int] = [:]
+    func bump(_ id: String) { counts[id, default: 0] += 1 }
+    func count(_ id: String) -> Int { counts[id] ?? 0 }
 }

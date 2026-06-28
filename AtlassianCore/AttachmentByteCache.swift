@@ -6,7 +6,7 @@ import Foundation
 /// where `data` is exactly the requested window — from a `200 OK` response
 /// where the server ignored the `Range` header and `data` is the **whole**
 /// body. Callers use this to avoid mis-aligning a full body against a partial
-/// offset (which would corrupt the served file).
+/// offset (which would corrupt the served slice).
 public struct RangedDownload: Sendable {
     public let data: Data
     /// `true` when the server returned `206 Partial Content` (the `Range` was
@@ -23,73 +23,56 @@ public struct RangedDownload: Sendable {
 /// attachment to the FSKit `read(...)` path. Used by both the JIRA and
 /// Confluence data sources so the caching/slicing logic lives in one place.
 ///
-/// Two strategies, selectable per instance via ``Mode``:
+/// Strategy:
 ///
-/// - ``Mode/range``: stream only the requested window via an HTTP `Range`
-///   request. If the server honors it (`206`), the window is returned directly
-///   without buffering the whole file. If the server **ignores** `Range` and
-///   returns the full body (`200`), the body is persisted to a local temp file
-///   once and subsequent reads are served as slices from disk — so a
-///   non-compliant server degrades gracefully instead of corrupting the file.
-///   Small, known-size files (`size <= maxInlineBytes`) are downloaded once to
-///   disk up-front to avoid issuing many ranged requests for repeated reads.
+/// - Large (or unknown-size) attachments are streamed via bounded HTTP `Range`
+///   requests and **not** cached, so the extension never buffers a multi-GB
+///   file.
+/// - Small attachments (`size <= maxInlineBytes`) are downloaded whole once and
+///   cached **in memory**, then served as in-memory slices — so repeated reads
+///   don't issue a ranged request per chunk.
+/// - A server that ignores `Range` and returns a `200` full body has that body
+///   cached in memory only when it fits under `maxInlineBytes`; otherwise the
+///   requested slice is served and nothing is retained.
 ///
-/// - ``Mode/download``: always download the whole body once to a local temp
-///   file and serve slices from it. Independent of server `Range` support.
-///
-/// Memory behavior: a bounded (non-`nil`) range read is held to the requested
-/// slice on `Range`-honoring servers. Whole-body (`nil` range) requests and
-/// `.download` mode stream the transfer to disk first, but a whole-body `Data`
-/// return still materializes the full file in memory at the call boundary — so
-/// callers should avoid `nil`-range reads for multi-GB attachments. One residual
-/// case buffers a full body in memory regardless: a server that ignores `Range`
-/// and returns a `200` full body for a ranged request (buffered once via
-/// `data(for:)`, then persisted to disk so later reads are served from it).
+/// The in-memory cache is bounded by `maxTotalBytes` with LRU eviction. Nothing
+/// is ever written to disk, so there is no plaintext-attachment-on-disk exposure
+/// and no temp file to leak or clean up.
 public actor AttachmentByteCache {
-    public enum Mode: Sendable {
-        /// Stream via HTTP `Range`, falling back to a disk copy on a `200` body.
-        case range
-        /// Always download the whole body to disk and slice locally.
-        case download
-    }
-
-    /// The strategy used when a caller does not specify one. `range` preserves
-    /// bandwidth on `Range`-capable servers while still being robust (the `200`
-    /// fallback) on servers that ignore `Range`.
-    public static let defaultMode: Mode = .range
-
     /// Fetches a (possibly ranged) window. A `nil` range requests the whole body.
     public typealias RangeFetch = @Sendable (_ range: Range<Int>?) async throws -> RangedDownload
-    /// Streams the whole body to a temp file and returns its URL (caller owns it).
-    public typealias FileFetch = @Sendable () async throws -> URL
 
-    private let mode: Mode
+    /// Per-attachment cap: a whole body is cached only when it fits under this.
     private let maxInlineBytes: Int
+    /// Total in-memory cache budget across all attachments (LRU-evicted).
+    private let maxTotalBytes: Int
 
-    /// An in-flight whole-body download, tagged with the cache `generation` it
-    /// belongs to and a unique token so completions only mutate their own entry.
-    private struct PendingFile {
-        let generation: Int
+    /// Cached whole bodies, keyed by attachment id.
+    private var cache: [String: Data] = [:]
+    /// Attachment ids in least-recently-used order (oldest first).
+    private var lru: [String] = []
+    /// Running sum of `cache` value sizes, kept in step with inserts/evictions.
+    private var totalBytes: Int = 0
+
+    /// An in-flight whole-body download, tagged with a unique token so a
+    /// completion only mutates its own entry (a `clear()` plus a fresh fetch can
+    /// otherwise interleave).
+    private struct PendingFetch {
         let token: UUID
-        let task: Task<URL, Error>
+        let task: Task<Data, Error>
     }
-
-    /// Materialized whole-body temp files, keyed by attachment id (download mode
-    /// or a `200` fallback in range mode).
-    private var files: [String: URL] = [:]
-    /// Single-flight guard so concurrent reads of the same attachment share one
-    /// download.
-    private var pendingFiles: [String: PendingFile] = [:]
-    /// Incremented by `clear()`. A file-producing path that started before the
-    /// bump must discard its result rather than re-populate the cleared cache,
-    /// so temp files produced by `fileFetch`/`rangeFetch` closures that ignore
-    /// cancellation can't leak past teardown.
+    /// Single-flight guard so concurrent whole-body fetches share one download.
+    private var pending: [String: PendingFetch] = [:]
+    /// Bumped by `clear()`. A fetch that started before the bump must not
+    /// repopulate the just-invalidated cache.
     private var generation: Int = 0
 
-    public init(mode: Mode = AttachmentByteCache.defaultMode,
-                maxInlineBytes: Int = 16 * 1024 * 1024) {
-        self.mode = mode
-        self.maxInlineBytes = max(0, maxInlineBytes)
+    public init(maxInlineBytes: Int = 16 * 1024 * 1024, maxTotalBytes: Int? = nil) {
+        let perEntry = max(0, maxInlineBytes)
+        self.maxInlineBytes = perEntry
+        // Default the total budget to a few max-size entries so alternating
+        // reads of a handful of small attachments don't thrash the cache.
+        self.maxTotalBytes = max(perEntry, maxTotalBytes ?? perEntry * 4)
     }
 
     /// Serves the requested byte window for the attachment identified by `id`.
@@ -99,105 +82,108 @@ public actor AttachmentByteCache {
     ///   - size: Known total size in bytes, or `nil` if unknown.
     ///   - range: Requested window, or `nil` for the whole body.
     ///   - rangeFetch: Performs a (possibly ranged) HTTP download.
-    ///   - fileFetch: Streams the whole body to a temp file.
     public func bytes(id: String, size: Int?, range: Range<Int>?,
-                      rangeFetch: RangeFetch, fileFetch: @escaping FileFetch) async throws -> Data {
+                      rangeFetch: @escaping RangeFetch) async throws -> Data {
         // Clamp the requested window to the known size before doing any work, so
         // the issued HTTP `Range` never reaches past EOF (which stricter servers
-        // reject with `416`) and disk slices stay in bounds. A `nil` size leaves
-        // the range untouched (size unknown — rely on the server/disk to bound).
+        // reject with `416`) and slices stay in bounds. A `nil` size leaves the
+        // range untouched (size unknown — rely on the server to bound it).
         let range = Self.clampedRange(range, size: size)
         // Start at/after EOF (or an empty/inverted window): nothing to serve, and
         // no network request needed.
         if let range, range.isEmpty { return Data() }
-        // Already materialized to disk (download mode, or a prior 200 fallback).
-        if let url = files[id], FileManager.default.fileExists(atPath: url.path) {
-            return try Self.readSlice(at: url, range: range)
+        // Already cached: slice from memory.
+        if let data = cache[id] {
+            touch(id)
+            return Self.slice(data, range: range)
         }
-        switch mode {
-        case .download:
-            let url = try await ensureFile(id: id, fileFetch: fileFetch)
-            return try Self.readSlice(at: url, range: range)
-        case .range:
-            // Stream to disk (and slice locally) for whole-body requests and for
-            // small known-size files, so the in-memory `rangeFetch` path is only
-            // used for bounded windows. A `nil` range fetched via `rangeFetch`
-            // would otherwise buffer the entire body in memory.
-            if range == nil || (size.map { $0 >= 0 && $0 <= maxInlineBytes } ?? false) {
-                let url = try await ensureFile(id: id, fileFetch: fileFetch)
-                return try Self.readSlice(at: url, range: range)
-            }
-            let startGeneration = generation
-            let result = try await rangeFetch(range)
-            if result.isPartial {
-                return result.data
-            }
-            // Server ignored Range and returned the whole body. If a clear()
-            // raced this fetch, persisting now would orphan a temp file past
-            // teardown; abort instead of writing it.
-            guard generation == startGeneration else { throw CancellationError() }
-            // Persist it once so later reads are served from disk instead of
-            // re-downloading the entire file, then return the requested slice.
-            let url = try persistFullBody(id: id, data: result.data)
-            return try Self.readSlice(at: url, range: range)
+        // Whole-body request, or a small known-size file: fetch the whole body
+        // once and cache it (within the per-entry cap), then slice in memory.
+        if range == nil || (size.map { $0 >= 0 && $0 <= maxInlineBytes } ?? false) {
+            let data = try await fetchWholeBody(id: id, rangeFetch: rangeFetch)
+            return Self.slice(data, range: range)
         }
+        // Large/unknown-size bounded read: stream just the requested window.
+        let startGeneration = generation
+        let result = try await rangeFetch(range)
+        if result.isPartial {
+            return result.data
+        }
+        // Server ignored Range and returned the whole body. Cache it if it fits
+        // (and the cache wasn't cleared meanwhile), then serve the slice.
+        if generation == startGeneration {
+            store(id: id, data: result.data)
+        }
+        return Self.slice(result.data, range: range)
     }
 
-    /// Deletes all materialized temp files and cancels in-flight downloads.
-    /// Called on `synchronize()` and unmount.
+    /// Drops all cached bodies and cancels in-flight downloads. Called on
+    /// `synchronize()` and unmount. Synchronous and fast (no disk, no network).
     public func clear() {
         generation &+= 1
-        for pending in pendingFiles.values { pending.task.cancel() }
-        pendingFiles.removeAll()
-        for url in files.values { try? FileManager.default.removeItem(at: url) }
-        files.removeAll()
+        for pending in pending.values { pending.task.cancel() }
+        pending.removeAll()
+        cache.removeAll()
+        lru.removeAll()
+        totalBytes = 0
     }
 
     // MARK: - Private
 
-    private func ensureFile(id: String, fileFetch: @escaping FileFetch) async throws -> URL {
-        if let url = files[id], FileManager.default.fileExists(atPath: url.path) { return url }
-        if let pending = pendingFiles[id] {
-            let url = try await pending.task.value
-            // The cache was cleared while this shared download was in flight, so
-            // the result is stale. The owning fetch deletes the temp file; this
-            // waiter just rejects it.
-            guard generation == pending.generation else { throw CancellationError() }
-            return url
+    private func fetchWholeBody(id: String, rangeFetch: @escaping RangeFetch) async throws -> Data {
+        if let data = cache[id] { touch(id); return data }
+        if let pending = pending[id] {
+            // Share an in-flight download. The owning fetch decides whether to
+            // cache; this waiter just returns the bytes for its read.
+            return try await pending.task.value
         }
         let token = UUID()
         let startGeneration = generation
-        let task = Task<URL, Error> { try await fileFetch() }
-        pendingFiles[id] = PendingFile(generation: startGeneration, token: token, task: task)
+        let task = Task<Data, Error> { try await rangeFetch(nil).data }
+        pending[id] = PendingFetch(token: token, task: task)
         do {
-            let url = try await task.value
-            if pendingFiles[id]?.token == token { pendingFiles[id] = nil }
-            // A clear() ran while this download was in flight: the produced temp
-            // file has no owner in `files` (clear already emptied it), so delete
-            // it here instead of leaking it, and surface cancellation.
-            guard generation == startGeneration else {
-                try? FileManager.default.removeItem(at: url)
-                throw CancellationError()
+            let data = try await task.value
+            if pending[id]?.token == token { pending[id] = nil }
+            // Only cache if the cache wasn't cleared while the fetch was in
+            // flight; the in-memory body is still returned to the caller.
+            if generation == startGeneration {
+                store(id: id, data: data)
             }
-            // A racing caller may have already stored a file; prefer the first.
-            if let existing = files[id], existing != url {
-                try? FileManager.default.removeItem(at: url)
-                return existing
-            }
-            files[id] = url
-            return url
+            return data
         } catch {
-            if pendingFiles[id]?.token == token { pendingFiles[id] = nil }
+            if pending[id]?.token == token { pending[id] = nil }
             throw error
         }
     }
 
-    private func persistFullBody(id: String, data: Data) throws -> URL {
-        if let url = files[id], FileManager.default.fileExists(atPath: url.path) { return url }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try data.write(to: url, options: .atomic)
-        files[id] = url
-        return url
+    /// Caches a whole body (when it fits the per-entry cap), evicting LRU
+    /// entries to honor the total budget.
+    private func store(id: String, data: Data) {
+        guard maxInlineBytes > 0, data.count <= maxInlineBytes else { return }
+        if let existing = cache[id] {
+            totalBytes -= existing.count
+            lru.removeAll { $0 == id }
+        }
+        cache[id] = data
+        totalBytes += data.count
+        lru.append(id)
+        evictIfNeeded()
+    }
+
+    private func evictIfNeeded() {
+        while totalBytes > maxTotalBytes, let oldest = lru.first {
+            lru.removeFirst()
+            if let removed = cache.removeValue(forKey: oldest) {
+                totalBytes -= removed.count
+            }
+        }
+    }
+
+    /// Marks `id` as most-recently-used.
+    private func touch(_ id: String) {
+        guard let idx = lru.firstIndex(of: id) else { return }
+        lru.remove(at: idx)
+        lru.append(id)
     }
 
     /// Clamps a requested window to `[0, size)`. Returns `nil` unchanged (whole
@@ -212,15 +198,14 @@ public actor AttachmentByteCache {
         return lower..<upper
     }
 
-    /// Reads a bounded slice from a local file via `FileHandle`, so only the
-    /// requested window is held in memory. Reads past EOF return the available
-    /// bytes; an empty or inverted range returns empty data.
-    private static func readSlice(at url: URL, range: Range<Int>?) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        guard let range else { return (try handle.readToEnd()) ?? Data() }
-        guard range.lowerBound >= 0, range.upperBound > range.lowerBound else { return Data() }
-        try handle.seek(toOffset: UInt64(range.lowerBound))
-        return (try handle.read(upToCount: range.upperBound - range.lowerBound)) ?? Data()
+    /// Returns the requested in-memory slice. A `nil` range returns the whole
+    /// body; reads past EOF return the available bytes; an empty or inverted
+    /// range returns empty data.
+    private static func slice(_ data: Data, range: Range<Int>?) -> Data {
+        guard let range else { return data }
+        guard range.lowerBound >= 0, range.upperBound > range.lowerBound,
+              range.lowerBound < data.count else { return Data() }
+        let upper = min(range.upperBound, data.count)
+        return data.subdata(in: range.lowerBound..<upper)
     }
 }

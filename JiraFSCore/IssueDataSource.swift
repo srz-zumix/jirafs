@@ -33,8 +33,8 @@ public actor IssueDataSource {
     private let limiter: RateLimiter
 
     /// Shared attachment byte cache: serves bounded windows of attachment bodies
-    /// (streaming via Range or caching to a local temp file, selectable via the
-    /// configured `Mode`). Cleared on `synchronize()` and unmount.
+    /// (streaming large files via Range, caching small files in memory). Cleared
+    /// on `synchronize()` and unmount.
     private let attachmentBytes: AttachmentByteCache
 
     /// Default inline-attachment cap: 16 MiB.
@@ -125,7 +125,6 @@ public actor IssueDataSource {
         maxResults: Int = 100,
         allowedProjectKeys: [String]? = nil,
         maxInlineAttachmentBytes: Int = IssueDataSource.defaultMaxInlineAttachmentBytes,
-        attachmentMode: AttachmentByteCache.Mode = AttachmentByteCache.defaultMode,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
@@ -133,8 +132,7 @@ public actor IssueDataSource {
         self.ttl = ttl
         self.maxResults = maxResults
         self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
-        self.attachmentBytes = AttachmentByteCache(mode: attachmentMode,
-                                                   maxInlineBytes: max(0, maxInlineAttachmentBytes))
+        self.attachmentBytes = AttachmentByteCache(maxInlineBytes: max(0, maxInlineAttachmentBytes))
         // Normalize: trim whitespace, uppercase, de-duplicate, then nil-ify if empty.
         // This ensures keys from manual config.json edits (or any external source)
         // match JIRA's canonical uppercase project keys regardless of how they were stored.
@@ -243,9 +241,6 @@ public actor IssueDataSource {
             range: range,
             rangeFetch: { [client, limiter] range in
                 try await limiter.run { try await client.downloadAttachment(attachment, range: range) }
-            },
-            fileFetch: { [client, limiter] in
-                try await limiter.run { try await client.downloadAttachmentToFile(attachment) }
             }
         )
     }

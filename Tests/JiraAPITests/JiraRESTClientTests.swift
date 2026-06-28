@@ -80,18 +80,6 @@ final class JiraRESTClientTests: XCTestCase {
         XCTAssertEqual(Array(result.data), [9])
     }
 
-    func testDownloadAttachmentToFileWritesBodyToDisk() async throws {
-        let stub = StubTransport()
-        let body = Data([5, 4, 3, 2, 1])
-        stub.responses["/secure/attachment/1/f.txt"] = (200, body)
-        let client = cloudClient(stub)
-        let url = try await client.downloadAttachmentToFile(
-            attachment(content: "https://example.atlassian.net/secure/attachment/1/f.txt"))
-        defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertEqual(try Data(contentsOf: url), body)
-        XCTAssertNil(stub.requests.last?.value(forHTTPHeaderField: "Range"))
-    }
-
     func testDownloadAttachmentRejectsCrossHost() async throws {
         try await assertDownloadRejected(content: "https://evil.example.com/secure/x")
     }

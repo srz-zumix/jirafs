@@ -182,22 +182,6 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return RangedDownload(data: data, isPartial: http.statusCode == 206)
     }
 
-    public func downloadAttachmentToFile(_ attachment: ConfluenceAttachment) async throws -> URL {
-        guard let link = attachment.downloadLink, let url = resolveURL(link) else {
-            throw AtlassianError.invalidURL
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        try await authorize(&request)
-        let (fileURL, http) = try await transport.download(for: request)
-        guard (200..<300).contains(http.statusCode) else {
-            try? FileManager.default.removeItem(at: fileURL)
-            logger.error("downloadAttachmentToFile failed: status=\(http.statusCode, privacy: .public) url=\(url.absoluteString, privacy: .public)")
-            throw mapError(status: http.statusCode, http: http)
-        }
-        return fileURL
-    }
-
     public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
         guard let link = attachment.downloadLink, let url = resolveURL(link) else {
             throw AtlassianError.invalidURL

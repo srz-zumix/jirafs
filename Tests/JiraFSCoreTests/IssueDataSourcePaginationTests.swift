@@ -54,11 +54,6 @@ private final actor StubPaginatedClient: JiraClient {
     func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload {
         RangedDownload(data: Data(), isPartial: range != nil)
     }
-    func downloadAttachmentToFile(_ attachment: JiraAttachment) async throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try Data().write(to: url)
-        return url
-    }
     func listFields() async throws -> [JiraField] { [] }
 }
 

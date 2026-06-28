@@ -80,12 +80,12 @@ public actor PageDataSource {
     private let attachmentBytes: AttachmentByteCache
 
     /// Default inline-attachment threshold: attachments at or below this size are
-    /// downloaded once to a local temp file and served as local slices instead of
-    /// issuing repeated ranged requests. **16 MiB.**
+    /// downloaded once and cached in memory, then served as in-memory slices
+    /// instead of issuing repeated ranged requests. **16 MiB.**
     public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
-    /// Attachments at or below this size are cached whole to a local temp file and
-    /// served as local slices. Forwarded to the shared ``AttachmentByteCache``.
+    /// Attachments at or below this size are cached whole in memory and served as
+    /// in-memory slices. Forwarded to the shared ``AttachmentByteCache``.
     public let maxInlineAttachmentBytes: Int
 
     /// Directory node kinds whose page listing has been enumerated at least once
@@ -173,7 +173,6 @@ public actor PageDataSource {
         includeRestricted: Bool = false,
         renderMacros: Bool = true,
         maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
-        attachmentMode: AttachmentByteCache.Mode = AttachmentByteCache.defaultMode,
         limiter: RateLimiter = RateLimiter()
     ) {
         self.client = client
@@ -185,8 +184,7 @@ public actor PageDataSource {
         self.renderMacros = renderMacros
         let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
-        self.attachmentBytes = AttachmentByteCache(mode: attachmentMode,
-                                                   maxInlineBytes: normalizedMaxInlineAttachmentBytes)
+        self.attachmentBytes = AttachmentByteCache(maxInlineBytes: normalizedMaxInlineAttachmentBytes)
         if let raw = allowedSpaceKeys {
             var seen = Set<String>()
             let normalized = raw
@@ -483,10 +481,10 @@ public actor PageDataSource {
 
     /// Serves a bounded byte window of an attachment.
     ///
-    /// Delegates to the shared ``AttachmentByteCache``, which either streams the
-    /// requested window via HTTP `Range` or serves it from a local temp-file copy
-    /// (falling back to disk if the server ignores `Range`), per the configured
-    /// mode. A `nil` range returns the whole file.
+    /// Delegates to the shared ``AttachmentByteCache``, which streams large files
+    /// via HTTP `Range` and caches small files in memory (falling back to an
+    /// in-memory copy if the server ignores `Range` and the body fits the inline
+    /// cap). A `nil` range returns the whole file.
     public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data {
         try await attachmentBytes.bytes(
             id: attachment.id,
@@ -494,9 +492,6 @@ public actor PageDataSource {
             range: range,
             rangeFetch: { [client, limiter] range in
                 try await limiter.run { try await client.downloadAttachment(attachment, range: range) }
-            },
-            fileFetch: { [client, limiter] in
-                try await limiter.run { try await client.downloadAttachmentToFile(attachment) }
             }
         )
     }

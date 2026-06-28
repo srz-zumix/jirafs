@@ -434,34 +434,6 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.value(forHTTPHeaderField: "Range"), "bytes=10-13")
     }
 
-    func testDownloadAttachmentToFileWritesBodyToDisk() async throws {
-        let stub = ConfluenceStubTransport()
-        let body = Data([9, 8, 7, 6, 5])
-        stub.responses["/download/att4"] = (200, body)
-        let client = cloudClient(stub)
-        let att = ConfluenceAttachment(id: "att4", title: "f.bin", fileSize: 5, downloadLink: "/download/att4")
-
-        let url = try await client.downloadAttachmentToFile(att)
-        defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertEqual(try Data(contentsOf: url), body)
-        // No Range header — the whole body is fetched and served from disk.
-        XCTAssertNil(stub.requests.last?.value(forHTTPHeaderField: "Range"))
-    }
-
-    func testDownloadAttachmentToFileRejectsCrossHost() async throws {
-        let stub = ConfluenceStubTransport()
-        let client = cloudClient(stub)
-        let att = ConfluenceAttachment(id: "x", title: "f.bin", fileSize: nil,
-                                       downloadLink: "https://evil.example.com/download/x")
-        do {
-            _ = try await client.downloadAttachmentToFile(att)
-            XCTFail("expected invalidURL")
-        } catch let error as AtlassianError {
-            XCTAssertEqual(error, .invalidURL)
-        }
-        XCTAssertTrue(stub.requests.isEmpty, "credential-bearing request must not be sent")
-    }
-
     // MARK: - resolveURL / downloadAttachment URL validation (credential-leak prevention)
 
     func testDownloadAttachmentAcceptsRelativeLink() async throws {
