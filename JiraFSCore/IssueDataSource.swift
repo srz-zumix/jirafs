@@ -230,10 +230,10 @@ public actor IssueDataSource {
 
     /// Returns attachment bytes for the requested window.
     ///
-    /// Delegates to the shared ``AttachmentByteCache``, which either streams the
-    /// requested window via HTTP `Range` or serves it from a local temp-file copy
-    /// (falling back to disk if the server ignores `Range`), per the configured
-    /// mode. A `nil` range returns the whole file.
+    /// Delegates to the shared ``AttachmentByteCache``, which streams the requested
+    /// window via HTTP `Range` and caches small bodies in memory. If the server
+    /// ignores `Range` and returns a `200` full body, that body is cached only when
+    /// it fits under `maxInlineAttachmentBytes`. A `nil` range returns the whole file.
     public func attachmentData(_ attachment: JiraAttachment, range: Range<Int>? = nil) async throws -> Data {
         try await attachmentBytes.bytes(
             id: attachment.id,
