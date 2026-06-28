@@ -135,7 +135,7 @@ public actor JiraRESTClient: JiraClient {
         return decoded.fields.attachment ?? []
     }
 
-    public func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data {
+    public func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload {
         guard let contentURLString = attachment.content else {
             throw JiraAPIError.invalidURL
         }
@@ -158,7 +158,7 @@ public actor JiraRESTClient: JiraClient {
         guard (200..<300).contains(http.statusCode) else {
             throw mapError(status: http.statusCode, http: http)
         }
-        return data
+        return RangedDownload(data: data, isPartial: http.statusCode == 206)
     }
 
     // MARK: - Internal

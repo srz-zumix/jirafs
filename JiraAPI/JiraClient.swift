@@ -1,4 +1,5 @@
 import Foundation
+import AtlassianCore
 
 /// JIRA edition (Cloud uses REST API v3, Server uses v2).
 public enum JiraEdition: String, Codable, Sendable {
@@ -42,7 +43,10 @@ public protocol JiraClient: Sendable {
     func getIssue(key: String) async throws -> JiraIssue
     func listComments(issueKey: String) async throws -> [JiraComment]
     func listAttachments(issueKey: String) async throws -> [JiraAttachment]
-    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data
+    /// Downloads an attachment body, optionally a bounded byte window via an HTTP
+    /// `Range` request. The returned ``RangedDownload`` reports whether the server
+    /// honored the range (`206`) or returned the whole body (`200`).
+    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload
     /// Returns all fields defined on the instance (id → name).
     func listFields() async throws -> [JiraField]
 }

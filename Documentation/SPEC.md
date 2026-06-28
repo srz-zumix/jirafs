@@ -285,10 +285,11 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
 
 **メモリ保護 (OOM/DoS ガード)**: 添付ファイルは一括バッファリングせず、サイズに応じて 2 通りに振り分ける。判定には一覧取得時のメタデータ (`size` / `fileSize`) を使い、本体ダウンロード前に決定する。
 
-- **小サイズ (`size <= maxInlineAttachmentBytes`)**: 一度だけ全体ダウンロードしてキャッシュし、以降の読み取りはローカルのスライスで応答する (再ダウンロードなし)。
+- **小サイズ (`size <= maxInlineAttachmentBytes`)**: 一度だけ全体ダウンロードして**メモリにキャッシュ**し、以降の読み取りはメモリ上のスライスで応答する (再ダウンロードなし)。キャッシュは合計上限付きで LRU 退避する。
 - **大サイズ / サイズ不明**: `read(offset:length:)` の要求窓だけを HTTP Range リクエストで取得する (キャッシュしない)。これにより数 GB の添付があっても Extension プロセスがファイル全体をメモリに展開せず、OOM を防ぐ。
+- Range を無視して `200` で本体全体を返すサーバの場合、本体が `maxInlineAttachmentBytes` 以内なら同様にメモリキャッシュする (超過時はキャッシュせず要求窓のみ応答)。
 
-`maxInlineAttachmentBytes` の既定値は **16 MiB** (`IssueDataSource` / `PageDataSource` の init 引数で上書き可能)。
+添付本体は**ディスクに書き出さない** (平文の一時ファイルを残さない)。`maxInlineAttachmentBytes` の既定値は **16 MiB** (`IssueDataSource` / `PageDataSource` の init 引数で上書き可能)。
 
 ## JIRA API クライアント
 
@@ -661,7 +662,7 @@ umount ~/jirafs
 - **FSKit は macOS 15.4 SDK / Xcode 16.4+ が必須**。それ未満では拡張のビルド/動作不可 (フレームワーク `JiraAPI` / `JiraFSCore` とテストは macOS 14.0 を維持)
 - JIRA API のレート制限によるスループット制約
 - 大量イシュー (数万件) の場合、ページネーションと遅延読み込みが必要
-- 添付ファイルの大きなバイナリデータはストリーミング対応が望ましい (ディスクキャッシュには AES-GCM base64 形式で保存; In-Memory キャッシュには保持しない)
+- 添付ファイルの大きなバイナリは HTTP Range でストリーミングし、小サイズのみメモリにキャッシュする (ディスクには書き出さない)。`CacheManager` の L2 ディスクキャッシュ (AES-GCM) は API レスポンス用で、添付本体は保持しない
 - JIRA Cloud の ADF (Atlassian Document Format) → Markdown 変換は完全でない場合がある (主要ノードのみ対応、それ以外は raw fallback)
 - Server 版の wiki markup → Markdown 変換の互換性 (見出し / リスト / リンク / 強調 / `{code}` / `{panel}` / `{quote}` のみ)
 - JIRA Cloud v3 の `/search/jql` エンドポイントを使用 (2024年以降推奨の API)

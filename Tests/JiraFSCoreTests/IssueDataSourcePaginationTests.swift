@@ -1,4 +1,5 @@
 import XCTest
+@testable import AtlassianCore
 @testable import JiraAPI
 @testable import JiraFSCore
 
@@ -50,7 +51,9 @@ private final actor StubPaginatedClient: JiraClient {
     }
     func listComments(issueKey: String) async throws -> [JiraComment] { [] }
     func listAttachments(issueKey: String) async throws -> [JiraAttachment] { [] }
-    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> Data { Data() }
+    func downloadAttachment(_ attachment: JiraAttachment, range: Range<Int>?) async throws -> RangedDownload {
+        RangedDownload(data: Data(), isPartial: range != nil)
+    }
     func listFields() async throws -> [JiraField] { [] }
 }
 

@@ -59,17 +59,8 @@ public actor PageDataSource {
     /// representation so dynamic macros (e.g. Table of Contents) arrive already
     /// expanded. Defaults to `true` (raw storage format when disabled).
     public let renderMacros: Bool
-    /// Upper bound (bytes) for fully downloading + caching an attachment in
-    /// memory. At/under this size an attachment is fetched once and cached;
-    /// larger (or unknown-size) attachments are streamed via bounded HTTP Range
-    /// requests instead, so the extension never buffers a multi-GB file in
-    /// memory (OOM/DoS guard).
-    public let maxInlineAttachmentBytes: Int
     private let limiter: RateLimiter
     private let logger = AtlassianLog.logger("confluence-datasource")
-
-    /// Default inline-attachment cap: 16 MiB.
-    public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
 
     private var refreshing: Set<String> = []
     /// In-flight background refresh tasks, keyed by refresh key. Tracked so they
@@ -82,6 +73,22 @@ public actor PageDataSource {
     /// restricted-ID fetch (root pages of a space, or one parent's children)
     /// when the background pre-caching fills child-page entries in parallel.
     private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
+
+    /// Shared attachment byte cache: serves bounded windows of attachment bodies
+    /// (streaming large files via HTTP `Range`, caching small bodies in memory).
+    /// If the server ignores `Range` and returns a `200` full body, the body is
+    /// cached only when it fits under `maxInlineAttachmentBytes`. Cleared on
+    /// `synchronize()` and unmount.
+    private let attachmentBytes: AttachmentByteCache
+
+    /// Default inline-attachment threshold: attachments at or below this size are
+    /// downloaded once and cached in memory, then served as in-memory slices
+    /// instead of issuing repeated ranged requests. **16 MiB.**
+    public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
+
+    /// Attachments at or below this size are cached whole in memory and served as
+    /// in-memory slices. Forwarded to the shared ``AttachmentByteCache``.
+    public let maxInlineAttachmentBytes: Int
 
     /// Directory node kinds whose page listing has been enumerated at least once
     /// (i.e. directories the user has actually browsed). The periodic poll only
@@ -177,7 +184,9 @@ public actor PageDataSource {
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
-        self.maxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
+        let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
+        self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
+        self.attachmentBytes = AttachmentByteCache(maxInlineBytes: normalizedMaxInlineAttachmentBytes)
         if let raw = allowedSpaceKeys {
             var seen = Set<String>()
             let normalized = raw
@@ -192,6 +201,7 @@ public actor PageDataSource {
 
     public func synchronize() async {
         await cache.synchronize()
+        await attachmentBytes.clear()
     }
 
     /// Force a background refresh of every page-listing directory the user has
@@ -471,29 +481,21 @@ public actor PageDataSource {
         }
     }
 
+    /// Serves a bounded byte window of an attachment.
+    ///
+    /// Delegates to the shared ``AttachmentByteCache``, which streams large files
+    /// via HTTP `Range` and caches small files in memory (falling back to an
+    /// in-memory copy if the server ignores `Range` and the body fits the inline
+    /// cap). A `nil` range returns the whole file.
     public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> Data {
-        let size = attachment.fileSize ?? -1
-        let inlineable = size >= 0 && size <= maxInlineAttachmentBytes
-        if inlineable {
-            let cacheKey = "attachment-bin/\(attachment.id)"
-            let full: Data
-            if let cached = await cache.get(cacheKey, as: Data.self) {
-                full = cached
-            } else {
-                full = try await limiter.run { try await self.client.downloadAttachment(attachment, range: nil) }
-                await cache.set(cacheKey, value: full, ttl: ttl.attachmentBinary)
+        try await attachmentBytes.bytes(
+            id: attachment.id,
+            size: attachment.fileSize,
+            range: range,
+            rangeFetch: { [client, limiter] range in
+                try await limiter.run { try await client.downloadAttachment(attachment, range: range) }
             }
-            guard let range else { return full }
-            let lo = min(max(range.lowerBound, 0), full.count)
-            let hi = min(max(range.upperBound, lo), full.count)
-            return full.subdata(in: lo..<hi)
-        }
-        // Large or unknown size: stream only the requested window. Never cache,
-        // so the extension never buffers a multi-GB file in memory. An explicit
-        // range is required here — a `nil` range would request the whole file and
-        // defeat the OOM/DoS guard, so reject it instead of downloading it all.
-        guard let range else { throw AtlassianError.unsupported }
-        return try await limiter.run { try await self.client.downloadAttachment(attachment, range: range) }
+        )
     }
 
     /// Returns the total byte size of an attachment whose listing metadata omits
@@ -641,12 +643,19 @@ public actor PageDataSource {
     /// requests — or retain this actor and its dependencies — after the volume
     /// is gone. URLSession's async API is cancellation-aware, so cancelling
     /// propagates to any request currently on the wire.
-    public func cancelBackgroundRefreshes() {
+    ///
+    /// `async` so the attachment cache cleanup completes before this returns
+    /// (and therefore before `unmount` replies), rather than racing it on an
+    /// unstructured `Task`.
+    public func cancelBackgroundRefreshes() async {
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         refreshing.removeAll()
         for task in pendingRestrictedIDsFetch.values { task.cancel() }
         pendingRestrictedIDsFetch.removeAll()
+        // Await so any in-flight attachment download is cancelled and the
+        // in-memory attachment cache is cleared before unmount reports completion.
+        await attachmentBytes.clear()
     }
 
     /// Follows the pagination cursor until exhausted (bounded for safety).
