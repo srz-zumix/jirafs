@@ -66,12 +66,25 @@ public actor AttachmentByteCache {
     private let mode: Mode
     private let maxInlineBytes: Int
 
+    /// An in-flight whole-body download, tagged with the cache `generation` it
+    /// belongs to and a unique token so completions only mutate their own entry.
+    private struct PendingFile {
+        let generation: Int
+        let token: UUID
+        let task: Task<URL, Error>
+    }
+
     /// Materialized whole-body temp files, keyed by attachment id (download mode
     /// or a `200` fallback in range mode).
     private var files: [String: URL] = [:]
     /// Single-flight guard so concurrent reads of the same attachment share one
     /// download.
-    private var pendingFiles: [String: Task<URL, Error>] = [:]
+    private var pendingFiles: [String: PendingFile] = [:]
+    /// Incremented by `clear()`. A file-producing path that started before the
+    /// bump must discard its result rather than re-populate the cleared cache,
+    /// so temp files produced by `fileFetch`/`rangeFetch` closures that ignore
+    /// cancellation can't leak past teardown.
+    private var generation: Int = 0
 
     public init(mode: Mode = AttachmentByteCache.defaultMode,
                 maxInlineBytes: Int = 16 * 1024 * 1024) {
@@ -114,13 +127,17 @@ public actor AttachmentByteCache {
                 let url = try await ensureFile(id: id, fileFetch: fileFetch)
                 return try Self.readSlice(at: url, range: range)
             }
+            let startGeneration = generation
             let result = try await rangeFetch(range)
             if result.isPartial {
                 return result.data
             }
-            // Server ignored Range and returned the whole body. Persist it once
-            // so later reads are served from disk instead of re-downloading the
-            // entire file, then return the requested slice.
+            // Server ignored Range and returned the whole body. If a clear()
+            // raced this fetch, persisting now would orphan a temp file past
+            // teardown; abort instead of writing it.
+            guard generation == startGeneration else { throw CancellationError() }
+            // Persist it once so later reads are served from disk instead of
+            // re-downloading the entire file, then return the requested slice.
             let url = try persistFullBody(id: id, data: result.data)
             return try Self.readSlice(at: url, range: range)
         }
@@ -129,7 +146,8 @@ public actor AttachmentByteCache {
     /// Deletes all materialized temp files and cancels in-flight downloads.
     /// Called on `synchronize()` and unmount.
     public func clear() {
-        for task in pendingFiles.values { task.cancel() }
+        generation &+= 1
+        for pending in pendingFiles.values { pending.task.cancel() }
         pendingFiles.removeAll()
         for url in files.values { try? FileManager.default.removeItem(at: url) }
         files.removeAll()
@@ -139,12 +157,28 @@ public actor AttachmentByteCache {
 
     private func ensureFile(id: String, fileFetch: @escaping FileFetch) async throws -> URL {
         if let url = files[id], FileManager.default.fileExists(atPath: url.path) { return url }
-        if let pending = pendingFiles[id] { return try await pending.value }
+        if let pending = pendingFiles[id] {
+            let url = try await pending.task.value
+            // The cache was cleared while this shared download was in flight, so
+            // the result is stale. The owning fetch deletes the temp file; this
+            // waiter just rejects it.
+            guard generation == pending.generation else { throw CancellationError() }
+            return url
+        }
+        let token = UUID()
+        let startGeneration = generation
         let task = Task<URL, Error> { try await fileFetch() }
-        pendingFiles[id] = task
+        pendingFiles[id] = PendingFile(generation: startGeneration, token: token, task: task)
         do {
             let url = try await task.value
-            pendingFiles[id] = nil
+            if pendingFiles[id]?.token == token { pendingFiles[id] = nil }
+            // A clear() ran while this download was in flight: the produced temp
+            // file has no owner in `files` (clear already emptied it), so delete
+            // it here instead of leaking it, and surface cancellation.
+            guard generation == startGeneration else {
+                try? FileManager.default.removeItem(at: url)
+                throw CancellationError()
+            }
             // A racing caller may have already stored a file; prefer the first.
             if let existing = files[id], existing != url {
                 try? FileManager.default.removeItem(at: url)
@@ -153,7 +187,7 @@ public actor AttachmentByteCache {
             files[id] = url
             return url
         } catch {
-            pendingFiles[id] = nil
+            if pendingFiles[id]?.token == token { pendingFiles[id] = nil }
             throw error
         }
     }

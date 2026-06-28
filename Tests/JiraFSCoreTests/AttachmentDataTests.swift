@@ -233,4 +233,88 @@ final class AttachmentDataTests: XCTestCase {
         let data = try await ds.attachmentData(att, range: 8..<20)
         XCTAssertEqual(Array(data), [8, 9], "200 fallback must slice with the clamped range")
     }
+
+    /// A `clear()` that races an in-flight whole-body download must not leak the
+    /// temp file the download produces afterwards. The owning fetch deletes its
+    /// own result (it belongs to a cleared generation) and surfaces cancellation
+    /// instead of re-populating the emptied cache.
+    func testClearDuringDownloadDeletesLateTempFile() async throws {
+        let cache = AttachmentByteCache(mode: .download, maxInlineBytes: 1024)
+        let gate = Gate()
+        let recorder = URLRecorder()
+
+        // A fileFetch that ignores cancellation: it signals start, waits to be
+        // released, then writes a real temp file and returns it regardless.
+        let fileFetch: @Sendable () async throws -> URL = {
+            await gate.signalStarted()
+            await gate.waitForRelease()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try Data([1, 2, 3]).write(to: url, options: .atomic)
+            await recorder.set(url)
+            return url
+        }
+        let rangeFetch: @Sendable (Range<Int>?) async throws -> RangedDownload = { _ in
+            RangedDownload(data: Data(), isPartial: false)
+        }
+
+        let readTask = Task<Data, Error> {
+            try await cache.bytes(id: "x", size: 3, range: nil,
+                                  rangeFetch: rangeFetch, fileFetch: fileFetch)
+        }
+
+        await gate.waitForStart()
+        await cache.clear()
+        await gate.release()
+
+        do {
+            _ = try await readTask.value
+            XCTFail("A read whose download finished after clear() must not succeed")
+        } catch is CancellationError {
+            // Expected: the stale result is rejected.
+        }
+
+        let leaked = await recorder.url
+        XCTAssertNotNil(leaked, "fileFetch should have produced a temp file")
+        if let leaked {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: leaked.path),
+                           "A temp file produced after clear() must be deleted, not leaked")
+        }
+    }
+}
+
+/// One-shot rendezvous so a test can block a `fileFetch` mid-flight, perform a
+/// `clear()`, then release the fetch and observe the post-clear behavior.
+private actor Gate {
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var started = false
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func signalStarted() {
+        started = true
+        startWaiter?.resume()
+        startWaiter = nil
+    }
+
+    func waitForStart() async {
+        if started { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func release() {
+        released = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+
+    func waitForRelease() async {
+        if released { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+}
+
+/// Records the URL a `fileFetch` produced so the test can assert on its fate.
+private actor URLRecorder {
+    private(set) var url: URL?
+    func set(_ value: URL) { url = value }
 }
