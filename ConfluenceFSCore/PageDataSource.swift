@@ -79,6 +79,15 @@ public actor PageDataSource {
     /// configured `Mode`). Cleared on `synchronize()` and unmount.
     private let attachmentBytes: AttachmentByteCache
 
+    /// Default inline-attachment threshold: attachments at or below this size are
+    /// downloaded once to a local temp file and served as local slices instead of
+    /// issuing repeated ranged requests. **16 MiB.**
+    public static let defaultMaxInlineAttachmentBytes = 16 * 1024 * 1024
+
+    /// Attachments at or below this size are cached whole to a local temp file and
+    /// served as local slices. Forwarded to the shared ``AttachmentByteCache``.
+    public let maxInlineAttachmentBytes: Int
+
     /// Directory node kinds whose page listing has been enumerated at least once
     /// (i.e. directories the user has actually browsed). The periodic poll only
     /// refreshes these, so spaces/pages that were never opened don't generate
@@ -163,6 +172,7 @@ public actor PageDataSource {
         includeArchived: Bool = false,
         includeRestricted: Bool = false,
         renderMacros: Bool = true,
+        maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         attachmentMode: AttachmentByteCache.Mode = AttachmentByteCache.defaultMode,
         limiter: RateLimiter = RateLimiter()
     ) {
@@ -173,7 +183,10 @@ public actor PageDataSource {
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
-        self.attachmentBytes = AttachmentByteCache(mode: attachmentMode)
+        let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
+        self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
+        self.attachmentBytes = AttachmentByteCache(mode: attachmentMode,
+                                                   maxInlineBytes: normalizedMaxInlineAttachmentBytes)
         if let raw = allowedSpaceKeys {
             var seen = Set<String>()
             let normalized = raw

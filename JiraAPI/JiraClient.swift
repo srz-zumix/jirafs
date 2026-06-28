@@ -1,4 +1,5 @@
 import Foundation
+import AtlassianCore
 
 /// JIRA edition (Cloud uses REST API v3, Server uses v2).
 public enum JiraEdition: String, Codable, Sendable {
