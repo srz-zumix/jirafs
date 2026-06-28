@@ -366,7 +366,7 @@ public actor IssueDataSource {
     /// after the volume is gone. URLSession's async API is cancellation-aware,
     /// so cancelling propagates to any request currently on the wire.
     ///
-    /// `async` so the attachment temp-file cleanup completes before this returns
+    /// `async` so the attachment cache cleanup completes before this returns
     /// (and therefore before `unmount` replies), rather than racing it on an
     /// unstructured `Task`.
     public func cancelBackgroundRefreshes() async {
@@ -380,8 +380,8 @@ public actor IssueDataSource {
         pendingProjectsFetch = nil
         for task in pendingIssueKeysFetch.values { task.cancel() }
         pendingIssueKeysFetch.removeAll()
-        // Await so any in-flight attachment download is cancelled and its temp
-        // files are deleted before unmount reports completion.
+        // Await so any in-flight attachment download is cancelled and the
+        // in-memory attachment cache is cleared before unmount reports completion.
         await attachmentBytes.clear()
     }
 

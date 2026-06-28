@@ -55,11 +55,11 @@ extension ConfluenceVolume: FSVolume.ReadWriteOperations {
 
     /// Serves a bounded byte window of an attachment without buffering the whole
     /// file. The shared `AttachmentByteCache` streams the requested window via an
-    /// HTTP `Range` request (falling back to a one-time disk copy if the server
-    /// ignores `Range`, or caching small/`download`-mode files to disk), per the
-    /// configured mode — so on `Range`-honoring servers a multi-GB attachment is
-    /// not fully buffered in memory. (A server that ignores `Range` returns the
-    /// whole `200` body, which is buffered once before being persisted to disk.)
+    /// HTTP `Range` request and serves small bodies from an in-memory cache — so
+    /// on `Range`-honoring servers a multi-GB attachment is not fully buffered in
+    /// memory. (A server that ignores `Range` returns the whole `200` body, which
+    /// is buffered once and cached in memory only when it fits the inline cap.)
+    /// Nothing is persisted to disk.
     private func readAttachment(
         pageId: String, attachmentId: String, node: ConfluenceFSItem,
         offset: off_t, length: Int,
