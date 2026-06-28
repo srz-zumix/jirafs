@@ -75,9 +75,10 @@ public actor PageDataSource {
     private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
 
     /// Shared attachment byte cache: serves bounded windows of attachment bodies
-    /// (streaming via Range or caching to a local temp file, selectable via the
-    /// configured `Mode`). Cleared on `synchronize()` and unmount.
-    private let attachmentBytes: AttachmentByteCache
+    /// (streaming large files via HTTP `Range`, caching small bodies in memory).
+    /// If the server ignores `Range` and returns a `200` full body, the body is
+    /// cached only when it fits under `maxInlineAttachmentBytes`. Cleared on
+    /// `synchronize()` and unmount.
 
     /// Default inline-attachment threshold: attachments at or below this size are
     /// downloaded once and cached in memory, then served as in-memory slices
