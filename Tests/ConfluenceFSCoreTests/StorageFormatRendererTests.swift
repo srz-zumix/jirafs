@@ -37,6 +37,20 @@ final class StorageFormatRendererTests: XCTestCase {
         XCTAssertTrue(md.contains("Hi"))
     }
 
+    func testImageFollowedByHeadingHasBlankLine() {
+        let xhtml = #"<ac:image><ri:attachment ri:filename="diagram.png" /></ac:image><h2>Next</h2>"#
+        let md = StorageFormatRenderer.render(xhtml)
+        XCTAssertFalse(md.contains(")## "), "heading must not be glued to image link: \(md)")
+        XCTAssertTrue(md.contains("\n## Next"), "expected blank line before heading: \(md)")
+    }
+
+    func testViewImageFollowedByHeadingHasBlankLine() {
+        let html = #"<img src="diagram.svg" /><h3>Modules</h3>"#
+        let md = StorageFormatRenderer.render(html)
+        XCTAssertFalse(md.contains(")### "), "heading must not be glued to image: \(md)")
+        XCTAssertTrue(md.contains("\n### Modules"), "expected blank line before heading: \(md)")
+    }
+
     func testRenderBodyDispatchesView() {
         // `.view` must route through StorageFormatRenderer (HTML), not the ADF path.
         let body = ConfluenceBody(format: .view, value: "<h1>Title</h1><p>Body</p>")
