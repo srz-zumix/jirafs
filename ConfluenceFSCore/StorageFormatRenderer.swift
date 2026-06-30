@@ -212,7 +212,7 @@ public enum StorageFormatRenderer {
             case "img":
                 let alt = attrs["alt"] ?? ""
                 let src = attrs["src"] ?? ""
-                out += "![\(alt)](\(src))"
+                out += "![\(alt)](\(src))\n\n"
                 return i + 1
             case "ul", "ol":
                 return emitList(ordered: name == "ol", tokens: tokens, i: i, into: &out)
@@ -231,7 +231,12 @@ public enum StorageFormatRenderer {
             case "ac:link", "ac:image":
                 // render inner content (often ri:* or text)
                 let (inner, next) = innerText(tokens, after: i, close: name)
-                out += inner; return next
+                out += inner
+                // `ac:image` is a block-level element; separate it from the
+                // following block (e.g. a heading) with a blank line so the next
+                // block isn't glued onto the image link.
+                if name == "ac:image" { out += "\n\n" }
+                return next
             default:
                 // Unknown tag: ignore the tag itself, keep rendering inner content.
                 if selfClosing { return i + 1 }
