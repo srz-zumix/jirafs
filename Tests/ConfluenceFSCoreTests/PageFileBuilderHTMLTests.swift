@@ -37,6 +37,17 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertFalse(html.contains("/download/attachments/"))
     }
 
+    func testViewURLWithoutQueryRewrittenToLocalPath() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/123/image.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/image.png""#))
+        XCTAssertFalse(html.contains("/download/attachments/"))
+    }
+
     func testExternalURLPreserved() {
         let page = ConfluencePage(
             id: "1", title: "Page",

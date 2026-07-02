@@ -160,7 +160,7 @@ public enum PageFileBuilder {
             let safe = FileNameSanitizer.sanitize(att.title)
             let path = relativeURL("\(folder)/.attachments/\(safe)")
             for attr in ["src", "href"] {
-                result = replaceAll(in: result, pattern: "\(attr)=\"[^\"]*?/\(escapeRegex(att.title))(\\?[^\"]*)?\"") { _ in
+                result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*?/\(escapeRegex(att.title))(?:\\?[^\"]*)?)\"") { _ in
                     "\(attr)=\"\(path)\""
                 }
             }
