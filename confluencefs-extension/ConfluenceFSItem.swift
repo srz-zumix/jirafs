@@ -14,6 +14,12 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
     let kind: ConfluenceNodeKind
     let identifier: FSItem.Identifier
 
+    /// The directory-entry name this item was created for (e.g.
+    /// `{folderName}.html`), when known. Used to recover the page's
+    /// deduplicated on-disk folder stem so rewritten `{Title}.html` attachment
+    /// links resolve to the correct sibling `.attachments/` directory.
+    let displayName: String?
+
     // `cachedData`/`cachedSize` are mutated from multiple concurrent FSKit
     // operation tasks: `openItem`, `read`, and `closeItem` each run as an
     // independent `makeTask` closure (or are invoked directly off the FSKit
@@ -63,6 +69,7 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
 
     init(kind: ConfluenceNodeKind) {
         self.kind = kind
+        self.displayName = nil
         self.identifier = FSItem.Identifier(rawValue: ConfluenceFSItem.stableID(for: kind))!
         super.init()
     }
@@ -81,6 +88,7 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
     /// showing the stale rendered preview even though mtime/size changed.
     init(kind: ConfluenceNodeKind, displayName: String?, salt: String? = nil) {
         self.kind = kind
+        self.displayName = displayName
         self.identifier = FSItem.Identifier(rawValue: ConfluenceFSItem.stableID(for: kind, displayName: displayName, salt: salt))!
         super.init()
     }

@@ -148,6 +148,15 @@ public enum StorageFormatRenderer {
     struct Walker {
         private var listStack: [(ordered: Bool, index: Int)] = []
 
+        /// Tags that begin a new Markdown block. Emitting any of these first
+        /// closes off the current block (via `ensureBlockBoundary`) so preceding
+        /// inline content isn't glued onto it. `img` is intentionally absent so
+        /// inline images don't split the paragraph that contains them.
+        private static let blockLevelTags: Set<String> = [
+            "p", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "blockquote",
+            "pre", "ul", "ol", "table", "ac:image", "ac:structured-macro",
+        ]
+
         mutating func render(_ tokens: [Token]) -> String {
             var out = ""
             var i = 0
@@ -175,6 +184,13 @@ public enum StorageFormatRenderer {
             name: String, attrs: [String: String], selfClosing: Bool,
             tokens: [Token], i: Int, into out: inout String
         ) -> Int {
+            // Block-level elements start on a fresh block so preceding inline
+            // content (e.g. an image) isn't glued onto them. Inline elements
+            // (including `<img>`) never force a break, so an image inside a
+            // paragraph stays inline instead of splitting it.
+            if Self.blockLevelTags.contains(name) {
+                ensureBlockBoundary(&out)
+            }
             switch name {
             case "br":
                 out += "  \n"; return i + 1
@@ -212,7 +228,7 @@ public enum StorageFormatRenderer {
             case "img":
                 let alt = attrs["alt"] ?? ""
                 let src = attrs["src"] ?? ""
-                out += "![\(alt)](\(src))\n\n"
+                out += "![\(alt)](\(src))"
                 return i + 1
             case "ul", "ol":
                 return emitList(ordered: name == "ol", tokens: tokens, i: i, into: &out)
@@ -503,6 +519,14 @@ public enum StorageFormatRenderer {
             s.split(separator: "\n", omittingEmptySubsequences: false)
                 .map { "> \($0)" }
                 .joined(separator: "\n")
+        }
+
+        /// Ensures `out` ends at a block boundary (one blank line) before the next
+        /// block-level element is emitted, without piling up blank lines (which
+        /// `collapseBlankLines` would fold anyway). No-op at the start of output.
+        private func ensureBlockBoundary(_ out: inout String) {
+            guard !out.isEmpty, !out.hasSuffix("\n\n") else { return }
+            out += out.hasSuffix("\n") ? "\n" : "\n\n"
         }
 
         private func collapseBlankLines(_ s: String) -> String {

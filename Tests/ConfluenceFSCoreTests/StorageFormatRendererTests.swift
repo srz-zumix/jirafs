@@ -51,6 +51,14 @@ final class StorageFormatRendererTests: XCTestCase {
         XCTAssertTrue(md.contains("\n### Modules"), "expected blank line before heading: \(md)")
     }
 
+    func testInlineImageDoesNotSplitParagraph() {
+        // A raw <img> inside a paragraph must stay inline, not force a block
+        // break that splits the surrounding text into separate paragraphs.
+        let html = #"<p>Before <img src="icon.png" alt="i"/> after</p>"#
+        let md = StorageFormatRenderer.render(html)
+        XCTAssertTrue(md.contains("Before ![i](icon.png) after"), "inline image split the paragraph: \(md)")
+    }
+
     func testRenderBodyDispatchesView() {
         // `.view` must route through StorageFormatRenderer (HTML), not the ADF path.
         let body = ConfluenceBody(format: .view, value: "<h1>Title</h1><p>Body</p>")

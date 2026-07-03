@@ -49,12 +49,101 @@ final class PageFileBuilderHTMLTests: XCTestCase {
     }
 
     func testExternalURLPreserved() {
+        // An external URL whose basename matches a page attachment must NOT be
+        // rewritten: only Confluence `/download/` URLs are repointed locally.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "x.png")]
         let page = ConfluencePage(
             id: "1", title: "Page",
             body: body(#"<img src="https://example.com/x.png">"#, format: .view)
         )
-        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
         XCTAssertTrue(html.contains("https://example.com/x.png"))
+        XCTAssertFalse(html.contains(".attachments/x.png"))
+    }
+
+    func testMarkdownExternalURLPreserved() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "x.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="https://example.com/x.png">"#, format: .view)
+        )
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("(https://example.com/x.png)"))
+        XCTAssertFalse(md.contains("](.attachments/x.png)"))
+    }
+
+    func testViewURLWithEncodedFilenameRewritten() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "my file.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/123/my%20file.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/my%20file.png""#))
+        XCTAssertFalse(html.contains("/download/attachments/"))
+    }
+
+    func testHTMLFolderNameOverrideUsedForAttachments() {
+        // When two titles sanitize to the same stem, the deduplicated on-disk
+        // folder name must be used for the sibling `.attachments/` path.
+        let page = ConfluencePage(
+            id: "1", title: "My Page",
+            body: body(#"<ac:image><ri:attachment ri:filename="diagram.png" /></ac:image>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, folderName: "My Page (2)"), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="My%20Page%20(2)/.attachments/diagram.png""#))
+    }
+
+    func testThumbnailURLRewritten() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/thumbnails/123/image.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/image.png""#))
+        XCTAssertFalse(html.contains("/download/thumbnails/"))
+    }
+
+    func testDownloadFilesURLNotRewritten() {
+        // A non-attachment `/download/files/` path must not be rewritten just
+        // because it ends with a known attachment filename.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="https://ext.example.com/download/files/image.png">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains("https://ext.example.com/download/files/image.png"))
+        XCTAssertFalse(html.contains(".attachments/image.png"))
+    }
+
+    func testStorageDuplicateAttachmentNamesDeduplicated() {
+        // Two attachments whose titles sanitize to the same name get ` (2)` on
+        // disk; the second storage reference must resolve to that entry.
+        let attachments = [
+            ConfluenceAttachment(id: "a1", title: "a/b.png"),
+            ConfluenceAttachment(id: "a2", title: "a\\b.png"),
+        ]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/1/a%5Cb.png">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        // Both titles sanitize to `a_b.png`; the second listing entry is `a_b (2).png`.
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/a_b%20(2).png""#), html)
+    }
+
+    func testMarkdownStorageAttachmentSanitized() {
+        // Storage `](attachments/X)` where X needs sanitizing resolves to the
+        // sanitized on-disk name.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "a/b.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:link><ri:attachment ri:filename="a/b.png" /></ac:link>"#, format: .storage)
+        )
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/a_b.png)"), md)
     }
 
     func testMarkdownAttachmentLinkRewritten() {

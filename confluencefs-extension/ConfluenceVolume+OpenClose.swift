@@ -74,7 +74,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
         case .pageHtml(_, let pageId):
             let page = try await dataSource.page(id: pageId)
             let attachments = await attachmentsForRewrite(pageId: pageId)
-            data = PageFileBuilder.html(page, attachments: attachments)
+            data = PageFileBuilder.html(page, folderName: htmlFolderName(for: node), attachments: attachments)
             applyPageTimes(page, to: node)
         case .labels(_, let pageId):
             let labels = try await dataSource.labels(pageId: pageId)
@@ -135,6 +135,18 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             )
             return []
         }
+    }
+
+    /// The page's deduplicated on-disk folder stem for a `{Title}.html` node,
+    /// derived from the item's directory-entry name (`{folderName}.html`). Falls
+    /// back to `nil` (letting `PageFileBuilder` sanitize the title) when the name
+    /// is unavailable, so rewritten attachment links point at the matching
+    /// sibling `{folderName}/.attachments/` directory even when two page titles
+    /// sanitize to the same stem.
+    private func htmlFolderName(for node: ConfluenceFSItem) -> String? {
+        guard let name = node.displayName else { return nil }
+        if name.hasSuffix(".html") { return String(name.dropLast(".html".count)) }
+        return name
     }
 
     private func applyPageTimes(_ page: ConfluencePage, to node: ConfluenceFSItem) {

@@ -91,11 +91,12 @@ public enum PageFileBuilder {
     /// Attachment references (images/links) are rewritten to point at the
     /// sibling `{Title}/.attachments/{file}` paths so the rendered HTML resolves
     /// against the mounted filesystem instead of server URLs.
-    public static func html(_ page: ConfluencePage, attachments: [ConfluenceAttachment] = []) -> Data {
+    public static func html(_ page: ConfluencePage, folderName: String? = nil, attachments: [ConfluenceAttachment] = []) -> Data {
         let title = escapeHTML(page.title)
+        let folder = folderName ?? FileNameSanitizer.sanitize(page.title)
         let content: String
         if let body = page.body, body.format == .storage || body.format == .view {
-            content = rewriteAttachmentLinks(body.value, pageTitle: page.title, attachments: attachments)
+            content = rewriteAttachmentLinks(body.value, folder: folder, attachments: attachments)
         } else {
             let md = ConfluenceContentRenderer.renderBody(page.body)
             content = "<pre>\(escapeHTML(md))</pre>"
@@ -133,13 +134,22 @@ public enum PageFileBuilder {
     ///   `<img>` / `<a>` tags pointing at the local path.
     /// - server-rendered **view** HTML — `<img src>` / `<a href>` URLs whose
     ///   trailing filename matches a known attachment are repointed locally.
+    ///
+    /// `folder` must be the page's deduplicated on-disk folder stem (the same
+    /// name used for the sibling `{folder}/` directory), not merely the
+    /// sanitized title, so collisions between pages that sanitize to the same
+    /// title still resolve to the correct `.attachments/` sibling.
     static func rewriteAttachmentLinks(
-        _ body: String, pageTitle: String, attachments: [ConfluenceAttachment]
+        _ body: String, folder: String, attachments: [ConfluenceAttachment]
     ) -> String {
-        let folder = FileNameSanitizer.sanitize(pageTitle)
+        let (ordered, byTitle) = dedupedAttachmentNames(attachments)
         func localPath(for fileName: String) -> String {
-            let safe = FileNameSanitizer.sanitize(fileName)
-            return relativeURL("\(folder)/.attachments/\(safe)")
+            // Prefer the deduplicated on-disk entry name so links resolve to the
+            // exact `.attachments/` file even when two attachments sanitize to
+            // the same name; fall back to a plain sanitize when the referenced
+            // file isn't in the listing (e.g. attachments unavailable).
+            let name = byTitle[fileName] ?? FileNameSanitizer.sanitize(fileName)
+            return relativeURL("\(folder)/.attachments/\(name)")
         }
 
         var result = body
@@ -156,11 +166,14 @@ public enum PageFileBuilder {
         }
 
         // view HTML: repoint src/href URLs ending in a known attachment file.
-        for att in attachments {
-            let safe = FileNameSanitizer.sanitize(att.title)
-            let path = relativeURL("\(folder)/.attachments/\(safe)")
+        // Restricted to Confluence attachment/thumbnail download URLs
+        // (`/download/attachments/` or `/download/thumbnails/`) so an external
+        // URL that merely ends with the same filename is left untouched.
+        for (att, name) in ordered {
+            let path = relativeURL("\(folder)/.attachments/\(name)")
+            let nameAlt = fileNamePattern(att.title)
             for attr in ["src", "href"] {
-                result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*?/\(escapeRegex(att.title))(?:\\?[^\"]*)?)\"") { _ in
+                result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*/download/(?:attachments|thumbnails)/[^\"]*/(?:\(nameAlt))(?:\\?[^\"]*)?)\"") { _ in
                     "\(attr)=\"\(path)\""
                 }
             }
@@ -172,6 +185,34 @@ public enum PageFileBuilder {
         path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
     }
 
+    /// Maps attachments to their deduplicated on-disk `.attachments/` entry
+    /// names, replicating the volume's directory-listing logic
+    /// (`deduplicate(sanitize(title))` in listing order) so rewritten links
+    /// resolve to the exact file. Returns the ordered `(attachment, name)` pairs
+    /// and a first-wins `title → name` lookup.
+    private static func dedupedAttachmentNames(
+        _ attachments: [ConfluenceAttachment]
+    ) -> (ordered: [(att: ConfluenceAttachment, name: String)], byTitle: [String: String]) {
+        var taken = Set<String>()
+        var ordered: [(att: ConfluenceAttachment, name: String)] = []
+        var byTitle: [String: String] = [:]
+        for att in attachments {
+            let name = FileNameSanitizer.deduplicate(FileNameSanitizer.sanitize(att.title), taken: &taken)
+            ordered.append((att, name))
+            if byTitle[att.title] == nil { byTitle[att.title] = name }
+        }
+        return (ordered, byTitle)
+    }
+
+    /// A regex alternation matching a filename either verbatim or in its
+    /// percent-encoded URL-path form (e.g. `my file.png` also matches
+    /// `my%20file.png`), each escaped for literal use in a pattern.
+    private static func fileNamePattern(_ name: String) -> String {
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        if encoded == name { return escapeRegex(name) }
+        return "\(escapeRegex(name))|\(escapeRegex(encoded))"
+    }
+
     /// Rewrites attachment references in rendered Markdown so they resolve to the
     /// sibling `.attachments/{file}` directory: storage-format `attachments/X`
     /// targets become `.attachments/X`, and view/ADF image/link URLs whose
@@ -179,17 +220,24 @@ public enum PageFileBuilder {
     static func rewriteAttachmentLinksMarkdown(
         _ markdown: String, attachments: [ConfluenceAttachment]
     ) -> String {
+        let (ordered, byTitle) = dedupedAttachmentNames(attachments)
         var result = markdown
 
-        // storage renderer emits `](attachments/X)`; point it at `.attachments/`.
+        // storage renderer emits `](attachments/X)`; point it at the
+        // deduplicated `.attachments/` entry (falling back to a plain sanitize
+        // when the referenced file isn't in the listing).
         result = replaceAll(in: result, pattern: "\\]\\(attachments/([^)]+)\\)") { name in
-            "](.attachments/\(relativeURL(name)))"
+            let onDisk = byTitle[name] ?? FileNameSanitizer.sanitize(name)
+            return "](.attachments/\(relativeURL(onDisk)))"
         }
 
         // view/ADF Markdown URLs ending in a known attachment file → local path.
-        for att in attachments {
-            let path = relativeURL(".attachments/\(FileNameSanitizer.sanitize(att.title))")
-            result = replaceAll(in: result, pattern: "\\]\\(([^)]*?/\(escapeRegex(att.title))(?:\\?[^)]*)?)\\)") { _ in
+        // Restricted to Confluence attachment/thumbnail download URLs so external
+        // URLs sharing an attachment's filename are left untouched.
+        for (att, name) in ordered {
+            let path = relativeURL(".attachments/\(name)")
+            let nameAlt = fileNamePattern(att.title)
+            result = replaceAll(in: result, pattern: "\\]\\(([^)]*/download/(?:attachments|thumbnails)/[^)]*/(?:\(nameAlt))(?:\\?[^)]*)?)\\)") { _ in
                 "](\(path))"
             }
         }
