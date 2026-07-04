@@ -134,6 +134,19 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(html.contains(#"src="Page/.attachments/a_b%20(2).png""#), html)
     }
 
+    func testViewURLWithEncodedSlashRewritten() {
+        // An attachment whose title contains `/` appears as `%2F` in Confluence
+        // download URLs; the rewrite must still match and repoint it locally.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "a/b.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/1/a%2Fb.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/a_b.png""#), html)
+        XCTAssertFalse(html.contains("/download/attachments/"))
+    }
+
     func testMarkdownStorageAttachmentSanitized() {
         // Storage `](attachments/X)` where X needs sanitizing resolves to the
         // sanitized on-disk name.

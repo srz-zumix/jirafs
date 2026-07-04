@@ -131,7 +131,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             return try await dataSource.attachments(pageId: pageId)
         } catch {
             logger.warning(
-                "loadPayload: attachments listing failed for rewrite, pageId=\(pageId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "loadPayload: attachments listing failed for rewrite, pageId=\(pageId, privacy: .public): \(error.localizedDescription, privacy: .private)"
             )
             return []
         }

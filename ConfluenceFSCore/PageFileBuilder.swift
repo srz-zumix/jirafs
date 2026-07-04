@@ -206,9 +206,14 @@ public enum PageFileBuilder {
 
     /// A regex alternation matching a filename either verbatim or in its
     /// percent-encoded URL-path form (e.g. `my file.png` also matches
-    /// `my%20file.png`), each escaped for literal use in a pattern.
+    /// `my%20file.png`, and `a/b.png` also matches `a%2Fb.png`), each escaped
+    /// for literal use in a pattern.
     private static func fileNamePattern(_ name: String) -> String {
-        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        // Encode with a set that also percent-encodes `/` (→ %2F): Confluence
+        // download URLs encode path separators inside the filename segment, and
+        // `.urlPathAllowed` would leave `/` literal and never match those URLs.
+        let pathSafe = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: pathSafe) ?? name
         if encoded == name { return escapeRegex(name) }
         return "\(escapeRegex(name))|\(escapeRegex(encoded))"
     }
