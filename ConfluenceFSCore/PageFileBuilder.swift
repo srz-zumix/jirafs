@@ -154,14 +154,24 @@ public enum PageFileBuilder {
 
         var result = body
 
-        // storage: <ac:image …>…<ri:attachment ri:filename="X"/>…</ac:image>
-        result = replaceAll(in: result, pattern: "<ac:image[^>]*>\\s*<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>\\s*(?:</ac:image>)?") { name in
+        // storage: <ac:image …>…<ri:attachment ri:filename="X"/>…</ac:image>.
+        // Tolerate extra children (captions/params) and content around the
+        // attachment inside the block; the tempered-dot tokens never cross the
+        // element's own `</ac:image>`, so an `<ac:image>` without an
+        // `<ri:attachment>` (e.g. an external `<ri:url>` image) is left untouched
+        // instead of the match running forward into a later image. The trailing
+        // `</ac:image>` stays optional to preserve rewriting of malformed,
+        // unclosed blocks (matching the previous behavior).
+        result = replaceAll(in: result, pattern: "<ac:image[^>]*>(?:(?!</ac:image>)[\\s\\S])*?<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>(?:(?:(?!</ac:image>)[\\s\\S])*?</ac:image>)?") { name in
             let alt = escapeAttr(name)
             return "<img src=\"\(localPath(for: name))\" alt=\"\(alt)\">"
         }
 
-        // storage: <ac:link>…<ri:attachment ri:filename="X"/>…</ac:link>
-        result = replaceAll(in: result, pattern: "<ac:link[^>]*>\\s*<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>\\s*</ac:link>") { name in
+        // storage: <ac:link>…<ri:attachment ri:filename="X"/>…</ac:link>.
+        // Tolerate a link body (e.g. `<ac:plain-text-link-body>`) between the
+        // attachment tag and the closing `</ac:link>`; the tempered-dot tokens
+        // keep the match within a single link element.
+        result = replaceAll(in: result, pattern: "<ac:link[^>]*>(?:(?!</ac:link>)[\\s\\S])*?<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>(?:(?!</ac:link>)[\\s\\S])*?</ac:link>") { name in
             "<a href=\"\(localPath(for: name))\">\(escapeHTML(name))</a>"
         }
 
@@ -186,6 +196,21 @@ public enum PageFileBuilder {
 
     private static func relativeURL(_ path: String) -> String {
         path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+    }
+
+    /// Whether a page body could reference attachments worth listing to rewrite.
+    ///
+    /// A cheap necessary-condition pre-check so the caller can skip the
+    /// attachment listing (cache/network) entirely for pages that reference no
+    /// attachment. Attachments only affect the built `page.md` / `{Title}.html`
+    /// when the body contains a storage `<ri:attachment>` tag (rendered to
+    /// `](attachments/X)` / rewritten to `<img>`/`<a>`) or a Confluence
+    /// `/download/(attachments|thumbnails)/` view URL. If none are present,
+    /// listing attachments cannot change the output.
+    public static func bodyReferencesAttachments(_ body: ConfluenceBody?) -> Bool {
+        guard let value = body?.value, !value.isEmpty else { return false }
+        return value.range(of: "ri:attachment", options: .caseInsensitive) != nil
+            || containsDownloadURL(value)
     }
 
     /// Whether `s` contains a Confluence attachment/thumbnail download URL

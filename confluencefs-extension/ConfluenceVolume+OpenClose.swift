@@ -64,7 +64,9 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             data = PageFileBuilder.spaceMeta(space)
         case .pageBody(_, let pageId):
             let page = try await dataSource.page(id: pageId)
-            let attachments = await attachmentsForRewrite(pageId: pageId)
+            let attachments = PageFileBuilder.bodyReferencesAttachments(page.body)
+                ? await attachmentsForRewrite(pageId: pageId)
+                : []
             data = PageFileBuilder.body(page, attachments: attachments)
             applyPageTimes(page, to: node)
         case .pageMeta(_, let pageId):
@@ -73,7 +75,9 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             applyPageTimes(page, to: node)
         case .pageHtml(_, let pageId):
             let page = try await dataSource.page(id: pageId)
-            let attachments = await attachmentsForRewrite(pageId: pageId)
+            let attachments = PageFileBuilder.bodyReferencesAttachments(page.body)
+                ? await attachmentsForRewrite(pageId: pageId)
+                : []
             data = PageFileBuilder.html(page, folderName: htmlFolderName(for: node), attachments: attachments)
             applyPageTimes(page, to: node)
         case .labels(_, let pageId):

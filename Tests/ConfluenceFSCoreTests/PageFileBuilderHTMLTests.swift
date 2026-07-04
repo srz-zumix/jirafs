@@ -26,6 +26,52 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">report.pdf</a>"#))
     }
 
+    func testStorageLinkWithPlainTextBodyRewritten() {
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:link><ri:attachment ri:filename="report.pdf" /><ac:plain-text-link-body><![CDATA[Download report]]></ac:plain-text-link-body></ac:link>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">report.pdf</a>"#))
+        XCTAssertFalse(html.contains("ri:attachment"))
+        XCTAssertFalse(html.contains("plain-text-link-body"))
+    }
+
+    func testStorageImageWithCaptionRewritten() {
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:image ac:align="center"><ri:attachment ri:filename="diagram.png" /><ac:caption><p>A diagram</p></ac:caption></ac:image>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<img src="Page/.attachments/diagram.png" alt="diagram.png">"#))
+        XCTAssertFalse(html.contains("ri:attachment"))
+        XCTAssertFalse(html.contains("ac:caption"))
+    }
+
+    func testStorageExternalURLImageNotRewritten() {
+        // An <ac:image> backed by <ri:url> (no attachment) must be left untouched
+        // even when a later <ac:image> does reference an attachment.
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:image><ri:url ri:value="https://ex.com/a.png" /></ac:image><ac:image><ri:attachment ri:filename="b.png" /></ac:image>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<ri:url ri:value="https://ex.com/a.png" />"#))
+        XCTAssertTrue(html.contains(#"<img src="Page/.attachments/b.png" alt="b.png">"#))
+    }
+
+    func testBodyReferencesAttachments() {
+        XCTAssertTrue(PageFileBuilder.bodyReferencesAttachments(
+            body(#"<ac:image><ri:attachment ri:filename="x.png" /></ac:image>"#, format: .storage)))
+        XCTAssertTrue(PageFileBuilder.bodyReferencesAttachments(
+            body(#"<img src="/download/attachments/1/x.png">"#, format: .view)))
+        XCTAssertTrue(PageFileBuilder.bodyReferencesAttachments(
+            body(#"<img src="/download/thumbnails/1/x.png">"#, format: .view)))
+        XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(
+            body("<p>No attachments here.</p>", format: .storage)))
+        XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(nil))
+    }
+
     func testViewURLRewrittenToLocalPath() {
         let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
         let page = ConfluencePage(
