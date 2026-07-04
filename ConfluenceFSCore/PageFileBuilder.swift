@@ -168,13 +168,16 @@ public enum PageFileBuilder {
         // view HTML: repoint src/href URLs ending in a known attachment file.
         // Restricted to Confluence attachment/thumbnail download URLs
         // (`/download/attachments/` or `/download/thumbnails/`) so an external
-        // URL that merely ends with the same filename is left untouched.
-        for (att, name) in ordered {
-            let path = relativeURL("\(folder)/.attachments/\(name)")
-            let nameAlt = fileNamePattern(att.title)
-            for attr in ["src", "href"] {
-                result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*/download/(?:attachments|thumbnails)/[^\"]*/(?:\(nameAlt))(?:\\?[^\"]*)?)\"") { _ in
-                    "\(attr)=\"\(path)\""
+        // URL that merely ends with the same filename is left untouched. Skip the
+        // per-attachment regex scans entirely when no such URL is present.
+        if containsDownloadURL(result) {
+            for (att, name) in ordered {
+                let path = relativeURL("\(folder)/.attachments/\(name)")
+                let nameAlt = fileNamePattern(att.title)
+                for attr in ["src", "href"] {
+                    result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*/download/(?:attachments|thumbnails)/[^\"]*/(?:\(nameAlt))(?:\\?[^\"]*)?)\"") { _ in
+                        "\(attr)=\"\(path)\""
+                    }
                 }
             }
         }
@@ -183,6 +186,15 @@ public enum PageFileBuilder {
 
     private static func relativeURL(_ path: String) -> String {
         path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+    }
+
+    /// Whether `s` contains a Confluence attachment/thumbnail download URL
+    /// segment. A cheap necessary-condition pre-check (case-insensitive to match
+    /// the rewrite regexes) so the per-attachment scan loop can be skipped when
+    /// the body references no such URLs.
+    private static func containsDownloadURL(_ s: String) -> Bool {
+        s.range(of: "/download/attachments/", options: .caseInsensitive) != nil
+            || s.range(of: "/download/thumbnails/", options: .caseInsensitive) != nil
     }
 
     /// Maps attachments to their deduplicated on-disk `.attachments/` entry
@@ -238,12 +250,15 @@ public enum PageFileBuilder {
 
         // view/ADF Markdown URLs ending in a known attachment file → local path.
         // Restricted to Confluence attachment/thumbnail download URLs so external
-        // URLs sharing an attachment's filename are left untouched.
-        for (att, name) in ordered {
-            let path = relativeURL(".attachments/\(name)")
-            let nameAlt = fileNamePattern(att.title)
-            result = replaceAll(in: result, pattern: "\\]\\(([^)]*/download/(?:attachments|thumbnails)/[^)]*/(?:\(nameAlt))(?:\\?[^)]*)?)\\)") { _ in
-                "](\(path))"
+        // URLs sharing an attachment's filename are left untouched. Skip the
+        // per-attachment regex scans when no such URL is present.
+        if containsDownloadURL(result) {
+            for (att, name) in ordered {
+                let path = relativeURL(".attachments/\(name)")
+                let nameAlt = fileNamePattern(att.title)
+                result = replaceAll(in: result, pattern: "\\]\\(([^)]*/download/(?:attachments|thumbnails)/[^)]*/(?:\(nameAlt))(?:\\?[^)]*)?)\\)") { _ in
+                    "](\(path))"
+                }
             }
         }
         return result

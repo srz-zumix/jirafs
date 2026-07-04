@@ -179,4 +179,15 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(md.contains("](.attachments/image.png)"))
         XCTAssertFalse(md.contains("/download/attachments/"))
     }
+
+    func testMarkdownViewExternalURLWithAttachmentNameNotRewritten() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="https://cdn.example.com/assets/image.png" alt="x">"#, format: .view)
+        )
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("https://cdn.example.com/assets/image.png"))
+        XCTAssertFalse(md.contains("](.attachments/image.png)"))
+    }
 }
