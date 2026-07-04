@@ -203,14 +203,26 @@ public enum PageFileBuilder {
     /// A cheap necessary-condition pre-check so the caller can skip the
     /// attachment listing (cache/network) entirely for pages that reference no
     /// attachment. Attachments only affect the built `page.md` / `{Title}.html`
-    /// when the body contains a storage `<ri:attachment>` tag (rendered to
-    /// `](attachments/X)` / rewritten to `<img>`/`<a>`) or a Confluence
-    /// `/download/(attachments|thumbnails)/` view URL. If none are present,
-    /// listing attachments cannot change the output.
+    /// when the body references one:
+    /// - **storage/view**: a `<ri:attachment>` tag (rendered to `](attachments/X)`
+    ///   / rewritten to `<img>`/`<a>`) or a Confluence
+    ///   `/download/(attachments|thumbnails)/` view URL.
+    /// - **ADF (Cloud)**: a media node (`media`/`mediaSingle`/`mediaGroup`/
+    ///   `mediaInline`), rendered to `](.attachments/…)`.
+    /// If none are present, listing attachments cannot change the output.
     public static func bodyReferencesAttachments(_ body: ConfluenceBody?) -> Bool {
-        guard let value = body?.value, !value.isEmpty else { return false }
-        return value.range(of: "ri:attachment", options: .caseInsensitive) != nil
-            || containsDownloadURL(value)
+        guard let body, !body.value.isEmpty else { return false }
+        let value = body.value
+        switch body.format {
+        case .atlasDocFormat:
+            // ADF node types serialize as `"type":"media"` etc.; a `"media`
+            // substring is a sound necessary condition (a false positive only
+            // costs one cached listing).
+            return value.range(of: "\"media", options: .caseInsensitive) != nil
+        case .storage, .view:
+            return value.range(of: "ri:attachment", options: .caseInsensitive) != nil
+                || containsDownloadURL(value)
+        }
     }
 
     /// Whether `s` contains a Confluence attachment/thumbnail download URL
@@ -264,6 +276,19 @@ public enum PageFileBuilder {
     ) -> String {
         let (ordered, byTitle) = dedupedAttachmentNames(attachments)
         var result = markdown
+
+        // ADF renderer (Cloud) emits media as `](.attachments/<alt>)` using the
+        // raw media alt text (typically the original filename). Normalize it to
+        // the deduplicated, sanitized, percent-encoded on-disk `.attachments/`
+        // entry so alts containing `/`/`\` (sanitized to `_`), spaces (encoded),
+        // or colliding with another attachment resolve to the right file. Runs
+        // before the storage `](attachments/X)` rewrite below: the two markers
+        // never coexist (a body uses one renderer), and the leading dot keeps the
+        // patterns disjoint so storage output isn't re-encoded here.
+        result = replaceAll(in: result, pattern: "\\]\\(\\.attachments/([^)]+)\\)") { name in
+            let onDisk = byTitle[name] ?? FileNameSanitizer.sanitize(name)
+            return "](.attachments/\(relativeURL(onDisk)))"
+        }
 
         // storage renderer emits `](attachments/X)`; point it at the
         // deduplicated `.attachments/` entry (falling back to a plain sanitize

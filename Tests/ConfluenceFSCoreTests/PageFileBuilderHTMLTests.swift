@@ -7,6 +7,12 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         ConfluenceBody(format: format, value: value)
     }
 
+    private func adfMedia(alt: String) -> String {
+        let escaped = alt.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"mediaSingle\",\"content\":[{\"type\":\"media\",\"attrs\":{\"type\":\"file\",\"id\":\"m1\",\"alt\":\"\(escaped)\"}}]}]}"
+    }
+
     func testStorageImageRewrittenToLocalPath() {
         let page = ConfluencePage(
             id: "1", title: "My Page",
@@ -70,6 +76,36 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(
             body("<p>No attachments here.</p>", format: .storage)))
         XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(nil))
+    }
+
+    func testBodyReferencesAttachmentsADF() {
+        XCTAssertTrue(PageFileBuilder.bodyReferencesAttachments(
+            body(adfMedia(alt: "x.png"), format: .atlasDocFormat)))
+        XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(
+            body(#"{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}"#, format: .atlasDocFormat)))
+    }
+
+    func testADFMediaAltWithSlashSanitized() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "a/b.png")]
+        let page = ConfluencePage(id: "1", title: "Page", body: body(adfMedia(alt: "a/b.png"), format: .atlasDocFormat))
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/a_b.png)"))
+        XCTAssertFalse(md.contains("](.attachments/a/b.png)"))
+    }
+
+    func testADFMediaAltWithSpacePercentEncoded() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "my file.png")]
+        let page = ConfluencePage(id: "1", title: "Page", body: body(adfMedia(alt: "my file.png"), format: .atlasDocFormat))
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/my%20file.png)"))
+    }
+
+    func testADFMediaAltSanitizedWithoutAttachmentListing() {
+        // Graceful degradation: even without a listing, a `/` in the alt is
+        // sanitized so the link is not silently broken.
+        let page = ConfluencePage(id: "1", title: "Page", body: body(adfMedia(alt: "a/b.png"), format: .atlasDocFormat))
+        let md = String(decoding: PageFileBuilder.body(page), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/a_b.png)"))
     }
 
     func testViewURLRewrittenToLocalPath() {
