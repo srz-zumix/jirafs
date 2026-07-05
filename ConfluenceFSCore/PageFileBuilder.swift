@@ -322,7 +322,10 @@ public enum PageFileBuilder {
         NSRegularExpression.escapedPattern(for: s)
     }
 
-    /// Applies `transform` to capture group 1 of each match of `pattern`.
+    /// Replaces each full match of `pattern` with the result of applying
+    /// `transform` to that match's capture group 1. The entire matched range is
+    /// substituted (not just group 1); group 1 is merely the value passed to
+    /// `transform`. Matches without a group-1 capture are left unchanged.
     private static func replaceAll(
         in s: String, pattern: String, transform: (String) -> String
     ) -> String {

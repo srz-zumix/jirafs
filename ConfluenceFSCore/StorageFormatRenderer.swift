@@ -187,8 +187,12 @@ public enum StorageFormatRenderer {
             // Block-level elements start on a fresh block so preceding inline
             // content (e.g. an image) isn't glued onto them. Inline elements
             // (including `<img>`) never force a break, so an image inside a
-            // paragraph stays inline instead of splitting it.
-            if Self.blockLevelTags.contains(name) {
+            // paragraph stays inline instead of splitting it. Only enforce this
+            // at the top level: inside a list item the content is flattened onto
+            // a single trimmed line, so injecting a blank line here would emit an
+            // unindented continuation (e.g. `## Heading`) that terminates the
+            // list item and breaks list rendering.
+            if Self.blockLevelTags.contains(name), listStack.isEmpty {
                 ensureBlockBoundary(&out)
             }
             switch name {

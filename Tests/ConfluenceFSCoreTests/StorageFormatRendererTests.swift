@@ -69,6 +69,21 @@ final class StorageFormatRendererTests: XCTestCase {
                        "view body should not hit the ADF raw fallback")
     }
 
+    func testBlockInsideListItemDoesNotBreakList() {
+        // A block-level element inside a list item must not inject a blank line
+        // that emits an unindented continuation (e.g. `## Heading`) and
+        // terminates the list item.
+        let md = StorageFormatRenderer.render("<ul><li>intro<h2>Sub</h2></li><li>two</li></ul>")
+        XCTAssertFalse(md.contains("\n## Sub"), "heading leaked as an unindented line, breaking the list: \(md)")
+        XCTAssertTrue(md.contains("- two"), "list item after a block-containing item was lost: \(md)")
+    }
+
+    func testTopLevelBlockBoundaryStillEnforced() {
+        // The top-level image→heading boundary fix must remain in effect.
+        let md = StorageFormatRenderer.render(#"<img src="a.png" /><h2>H</h2>"#)
+        XCTAssertTrue(md.contains("\n## H"), "expected blank line before top-level heading: \(md)")
+    }
+
     func testRenderBodyNilIsEmpty() {
         XCTAssertEqual(ConfluenceContentRenderer.renderBody(nil), "")
     }
