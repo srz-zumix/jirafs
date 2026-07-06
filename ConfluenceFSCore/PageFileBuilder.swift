@@ -170,9 +170,16 @@ public enum PageFileBuilder {
         // storage: <ac:link>…<ri:attachment ri:filename="X"/>…</ac:link>.
         // Tolerate a link body (e.g. `<ac:plain-text-link-body>`) between the
         // attachment tag and the closing `</ac:link>`; the tempered-dot tokens
-        // keep the match within a single link element.
-        result = replaceAll(in: result, pattern: "<ac:link[^>]*>(?:(?!</ac:link>)[\\s\\S])*?<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>(?:(?!</ac:link>)[\\s\\S])*?</ac:link>") { name in
-            "<a href=\"\(localPath(for: name))\">\(escapeHTML(name))</a>"
+        // keep the match within a single link element. When the link carries an
+        // explicit `<ac:plain-text-link-body>` label, use it as the visible text
+        // so user-authored link labels aren't replaced by the filename.
+        result = replaceAllMatches(
+            in: result,
+            pattern: "<ac:link[^>]*>(?:(?!</ac:link>)[\\s\\S])*?<ri:attachment[^>]*ri:filename=\"([^\"]+)\"[^>]*/?>(?:(?!</ac:link>)[\\s\\S])*?</ac:link>"
+        ) { m, ns in
+            guard let name = group(m, 1, ns) else { return nil }
+            let label = plainTextLinkBody(in: ns.substring(with: m.range)) ?? name
+            return "<a href=\"\(localPath(for: name))\">\(escapeHTML(label))</a>"
         }
 
         // view HTML: repoint src/href URLs ending in a known attachment file.
@@ -225,6 +232,22 @@ public enum PageFileBuilder {
         case .storage, .view:
             return value.range(of: "ri:attachment", options: .caseInsensitive) != nil
                 || containsDownloadURL(value)
+        }
+    }
+
+    /// Whether the Confluence attachment listing is needed to build `{Title}.html`
+    /// for `body`. `html(...)` only rewrites attachment references for storage/view
+    /// bodies; ADF (Cloud) bodies are rendered without consulting the listing, so
+    /// the caller can skip fetching attachments for an ADF HTML body even when it
+    /// contains media nodes. Storage/view bodies defer to
+    /// `bodyReferencesAttachments`.
+    public static func htmlReferencesAttachments(_ body: ConfluenceBody?) -> Bool {
+        guard let body else { return false }
+        switch body.format {
+        case .storage, .view:
+            return bodyReferencesAttachments(body)
+        case .atlasDocFormat:
+            return false
         }
     }
 
@@ -393,6 +416,22 @@ public enum PageFileBuilder {
         guard i < m.numberOfRanges else { return nil }
         let r = m.range(at: i)
         return r.location == NSNotFound ? nil : ns.substring(with: r)
+    }
+
+    /// The visible text of an `<ac:plain-text-link-body>` (CDATA) inside a
+    /// matched `<ac:link>` element, trimmed, or `nil` when absent/empty. This is
+    /// where Confluence stores a custom label for an attachment link; preserving
+    /// it keeps user-authored link text instead of substituting the filename.
+    private static func plainTextLinkBody(in linkElement: String) -> String? {
+        guard let re = try? NSRegularExpression(
+            pattern: "<ac:plain-text-link-body[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*</ac:plain-text-link-body>",
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return nil }
+        let ns = linkElement as NSString
+        guard let m = re.firstMatch(in: linkElement, range: NSRange(location: 0, length: ns.length)),
+              let text = group(m, 1, ns) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func jsonOrNull<T>(_ value: T?) -> Any {

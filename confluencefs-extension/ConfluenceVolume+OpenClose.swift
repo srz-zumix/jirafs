@@ -75,7 +75,7 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             applyPageTimes(page, to: node)
         case .pageHtml(_, let pageId):
             let page = try await dataSource.page(id: pageId)
-            let attachments = PageFileBuilder.bodyReferencesAttachments(page.body)
+            let attachments = PageFileBuilder.htmlReferencesAttachments(page.body)
                 ? await attachmentsForRewrite(pageId: pageId)
                 : []
             data = PageFileBuilder.html(page, folderName: htmlFolderName(for: node), attachments: attachments)

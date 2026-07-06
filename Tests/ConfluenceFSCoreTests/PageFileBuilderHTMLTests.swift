@@ -38,9 +38,42 @@ final class PageFileBuilderHTMLTests: XCTestCase {
             body: body(#"<ac:link><ri:attachment ri:filename="report.pdf" /><ac:plain-text-link-body><![CDATA[Download report]]></ac:plain-text-link-body></ac:link>"#, format: .storage)
         )
         let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
-        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">report.pdf</a>"#))
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">Download report</a>"#), html)
         XCTAssertFalse(html.contains("ri:attachment"))
         XCTAssertFalse(html.contains("plain-text-link-body"))
+    }
+
+    func testStorageLinkPlainTextBodyLabelEscaped() {
+        // A custom label containing HTML metacharacters must be escaped in the
+        // rendered <a> text.
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:link><ri:attachment ri:filename="report.pdf" /><ac:plain-text-link-body><![CDATA[a<b & c>d]]></ac:plain-text-link-body></ac:link>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">a&lt;b &amp; c&gt;d</a>"#), html)
+    }
+
+    func testStorageLinkEmptyPlainTextBodyFallsBackToFilename() {
+        // An empty/whitespace link body falls back to the filename as link text.
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:link><ri:attachment ri:filename="report.pdf" /><ac:plain-text-link-body><![CDATA[   ]]></ac:plain-text-link-body></ac:link>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/report.pdf">report.pdf</a>"#), html)
+    }
+
+    func testAdjacentStorageLinksKeepOwnLabels() {
+        // Two adjacent attachment links must each keep their own label; the label
+        // extraction must not leak across the </ac:link> boundary.
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<ac:link><ri:attachment ri:filename="a.pdf" /><ac:plain-text-link-body><![CDATA[First]]></ac:plain-text-link-body></ac:link><ac:link><ri:attachment ri:filename="b.pdf" /><ac:plain-text-link-body><![CDATA[Second]]></ac:plain-text-link-body></ac:link>"#, format: .storage)
+        )
+        let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/a.pdf">First</a>"#), html)
+        XCTAssertTrue(html.contains(#"<a href="Page/.attachments/b.pdf">Second</a>"#), html)
     }
 
     func testStorageImageWithCaptionRewritten() {
@@ -83,6 +116,20 @@ final class PageFileBuilderHTMLTests: XCTestCase {
             body(adfMedia(alt: "x.png"), format: .atlasDocFormat)))
         XCTAssertFalse(PageFileBuilder.bodyReferencesAttachments(
             body(#"{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}"#, format: .atlasDocFormat)))
+    }
+
+    func testHtmlReferencesAttachments() {
+        // The HTML builder rewrites attachments only for storage/view bodies, so
+        // an ADF body with media must NOT request the attachment listing.
+        XCTAssertFalse(PageFileBuilder.htmlReferencesAttachments(
+            body(adfMedia(alt: "x.png"), format: .atlasDocFormat)))
+        XCTAssertTrue(PageFileBuilder.htmlReferencesAttachments(
+            body(#"<ac:image><ri:attachment ri:filename="x.png" /></ac:image>"#, format: .storage)))
+        XCTAssertTrue(PageFileBuilder.htmlReferencesAttachments(
+            body(#"<img src="/download/attachments/1/x.png">"#, format: .view)))
+        XCTAssertFalse(PageFileBuilder.htmlReferencesAttachments(
+            body("<p>No attachments here.</p>", format: .storage)))
+        XCTAssertFalse(PageFileBuilder.htmlReferencesAttachments(nil))
     }
 
     func testADFMediaAltWithSlashSanitized() {
