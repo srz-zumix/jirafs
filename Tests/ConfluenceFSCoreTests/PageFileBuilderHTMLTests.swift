@@ -272,4 +272,54 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(md.contains("https://cdn.example.com/assets/image.png"))
         XCTAssertFalse(md.contains("](.attachments/image.png)"))
     }
+
+    func testViewURLCaseInsensitiveEncodedSlashRewritten() {
+        // Percent-encoding is emitted uppercase (`%2F`) but a URL may carry the
+        // lowercase form (`%2f`); the match must stay case-insensitive.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "a/b.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/1/a%2fb.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/a_b.png""#), html)
+        XCTAssertFalse(html.contains("/download/attachments/"))
+    }
+
+    func testViewURLQueryWithSlashCapturesRealFilename() {
+        // A query string containing a `/` must not be mistaken for the filename
+        // segment; the real filename before `?` must be captured and rewritten.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/123/image.png?redirect=/other/path" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/image.png""#), html)
+        XCTAssertFalse(html.contains("/download/attachments/"))
+    }
+
+    func testViewURLUnknownFilenameWithKnownNameInQueryNotRewritten() {
+        // The filename segment is unknown; a known attachment name appearing only
+        // inside the query string must NOT trigger a (false-positive) rewrite.
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/123/unknown.png?redirect=/image.png" alt="x">"#, format: .view)
+        )
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains("/download/attachments/123/unknown.png"), html)
+        XCTAssertFalse(html.contains(".attachments/image.png"))
+    }
+
+    func testMarkdownViewURLQueryWithSlashCapturesRealFilename() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image.png")]
+        let page = ConfluencePage(
+            id: "1", title: "Page",
+            body: body(#"<img src="/download/attachments/123/image.png?redirect=/other/path" alt="x">"#, format: .view)
+        )
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/image.png)"), md)
+        XCTAssertFalse(md.contains("/download/attachments/"))
+    }
 }

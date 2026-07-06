@@ -254,8 +254,11 @@ public enum StorageFormatRenderer {
                 out += inner
                 // `ac:image` is a block-level element; separate it from the
                 // following block (e.g. a heading) with a blank line so the next
-                // block isn't glued onto the image link.
-                if name == "ac:image" { out += "\n\n" }
+                // block isn't glued onto the image link. Only at the top level:
+                // inside a list item the content is flattened onto one trimmed
+                // line, so a blank line here would emit an unindented continuation
+                // that terminates the list item and breaks list rendering.
+                if name == "ac:image", listStack.isEmpty { out += "\n\n" }
                 return next
             default:
                 // Unknown tag: ignore the tag itself, keep rendering inner content.

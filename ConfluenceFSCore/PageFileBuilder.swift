@@ -178,17 +178,20 @@ public enum PageFileBuilder {
         // view HTML: repoint src/href URLs ending in a known attachment file.
         // Restricted to Confluence attachment/thumbnail download URLs
         // (`/download/attachments/` or `/download/thumbnails/`) so an external
-        // URL that merely ends with the same filename is left untouched. Skip the
-        // per-attachment regex scans entirely when no such URL is present.
+        // URL that merely ends with the same filename is left untouched. A single
+        // pass over the body captures the attribute and the URL's trailing
+        // filename segment and resolves it against a precomputed lookup, instead
+        // of scanning the whole body once per attachment × attribute. Skipped
+        // entirely when no such URL is present.
         if containsDownloadURL(result) {
-            for (att, name) in ordered {
-                let path = relativeURL("\(folder)/.attachments/\(name)")
-                let nameAlt = fileNamePattern(att.title)
-                for attr in ["src", "href"] {
-                    result = replaceAll(in: result, pattern: "\(attr)=\"([^\"]*/download/(?:attachments|thumbnails)/[^\"]*/(?:\(nameAlt))(?:\\?[^\"]*)?)\"") { _ in
-                        "\(attr)=\"\(path)\""
-                    }
-                }
+            let lookup = downloadFileNameLookup(ordered)
+            result = replaceAllMatches(
+                in: result,
+                pattern: "(src|href)=\"[^\"?]*/download/(?:attachments|thumbnails)/(?:[^\"/?]+/)*([^\"/?]+)(?:\\?[^\"]*)?\""
+            ) { m, ns in
+                guard let attr = group(m, 1, ns), let file = group(m, 2, ns),
+                      let name = lookup[file.lowercased()] else { return nil }
+                return "\(attr)=\"\(relativeURL("\(folder)/.attachments/\(name)"))\""
             }
         }
         return result
@@ -253,18 +256,33 @@ public enum PageFileBuilder {
         return (ordered, byTitle)
     }
 
-    /// A regex alternation matching a filename either verbatim or in its
-    /// percent-encoded URL-path form (e.g. `my file.png` also matches
-    /// `my%20file.png`, and `a/b.png` also matches `a%2Fb.png`), each escaped
-    /// for literal use in a pattern.
-    private static func fileNamePattern(_ name: String) -> String {
-        // Encode with a set that also percent-encodes `/` (→ %2F): Confluence
-        // download URLs encode path separators inside the filename segment, and
-        // `.urlPathAllowed` would leave `/` literal and never match those URLs.
+    /// A filename in its percent-encoded URL-path form, encoding `/` (→ %2F)
+    /// too: Confluence download URLs percent-encode path separators inside the
+    /// filename segment, and `.urlPathAllowed` would otherwise leave `/` literal.
+    private static func percentEncodedFileName(_ name: String) -> String {
         let pathSafe = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        let encoded = name.addingPercentEncoding(withAllowedCharacters: pathSafe) ?? name
-        if encoded == name { return escapeRegex(name) }
-        return "\(escapeRegex(name))|\(escapeRegex(encoded))"
+        return name.addingPercentEncoding(withAllowedCharacters: pathSafe) ?? name
+    }
+
+    /// Maps the filename segment a Confluence download URL can end with — the
+    /// attachment title verbatim or in its percent-encoded form — to the
+    /// deduplicated on-disk `.attachments/` entry name. Lets the view/ADF URL
+    /// rewrites resolve a captured URL filename in one lookup instead of scanning
+    /// the whole body once per attachment. Keys are lowercased so lookups stay
+    /// case-insensitive (matching the rewrite regexes' `.caseInsensitive`, e.g.
+    /// `%2F` vs `%2f` or a URL filename cased differently than the title). First
+    /// title wins on collisions, matching the previous ordered-loop behavior.
+    private static func downloadFileNameLookup(
+        _ ordered: [(att: ConfluenceAttachment, name: String)]
+    ) -> [String: String] {
+        var map: [String: String] = [:]
+        for (att, name) in ordered {
+            let title = att.title.lowercased()
+            if map[title] == nil { map[title] = name }
+            let encoded = percentEncodedFileName(att.title).lowercased()
+            if map[encoded] == nil { map[encoded] = name }
+        }
+        return map
     }
 
     /// Rewrites attachment references in rendered Markdown so they resolve to the
@@ -300,15 +318,18 @@ public enum PageFileBuilder {
 
         // view/ADF Markdown URLs ending in a known attachment file → local path.
         // Restricted to Confluence attachment/thumbnail download URLs so external
-        // URLs sharing an attachment's filename are left untouched. Skip the
-        // per-attachment regex scans when no such URL is present.
+        // URLs sharing an attachment's filename are left untouched. A single pass
+        // captures the URL's trailing filename and resolves it against a
+        // precomputed lookup, instead of scanning once per attachment. Skipped
+        // when no such URL is present.
         if containsDownloadURL(result) {
-            for (att, name) in ordered {
-                let path = relativeURL(".attachments/\(name)")
-                let nameAlt = fileNamePattern(att.title)
-                result = replaceAll(in: result, pattern: "\\]\\(([^)]*/download/(?:attachments|thumbnails)/[^)]*/(?:\(nameAlt))(?:\\?[^)]*)?)\\)") { _ in
-                    "](\(path))"
-                }
+            let lookup = downloadFileNameLookup(ordered)
+            result = replaceAllMatches(
+                in: result,
+                pattern: "\\]\\([^)?]*/download/(?:attachments|thumbnails)/(?:[^)/?]+/)*([^)/?]+)(?:\\?[^)]*)?\\)"
+            ) { m, ns in
+                guard let file = group(m, 1, ns), let name = lookup[file.lowercased()] else { return nil }
+                return "](\(relativeURL(".attachments/\(name)")))"
             }
         }
         return result
@@ -316,10 +337,6 @@ public enum PageFileBuilder {
 
     private static func escapeAttr(_ s: String) -> String {
         escapeHTML(s).replacingOccurrences(of: "\"", with: "&quot;")
-    }
-
-    private static func escapeRegex(_ s: String) -> String {
-        NSRegularExpression.escapedPattern(for: s)
     }
 
     /// Replaces each full match of `pattern` with the result of applying
@@ -343,6 +360,39 @@ public enum PageFileBuilder {
         }
         out += ns.substring(from: last)
         return out
+    }
+
+    /// Replaces each match of `pattern` with `transform(match)`, giving the
+    /// closure access to all capture groups via the compiled result. Returning
+    /// `nil` leaves that match unchanged (its text is preserved verbatim), so a
+    /// single pass can decide per-match whether to rewrite. `group(_:_:)` reads a
+    /// capture group's string (or `nil` when unmatched). Same regex options as
+    /// `replaceAll`.
+    private static func replaceAllMatches(
+        in s: String, pattern: String,
+        transform: (NSTextCheckingResult, NSString) -> String?
+    ) -> String {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return s
+        }
+        let ns = s as NSString
+        var out = ""
+        var last = 0
+        re.enumerateMatches(in: s, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            guard let m, let replacement = transform(m, ns) else { return }
+            out += ns.substring(with: NSRange(location: last, length: m.range.location - last))
+            out += replacement
+            last = m.range.location + m.range.length
+        }
+        out += ns.substring(from: last)
+        return out
+    }
+
+    /// The string of capture group `i` in `m`, or `nil` when it didn't match.
+    private static func group(_ m: NSTextCheckingResult, _ i: Int, _ ns: NSString) -> String? {
+        guard i < m.numberOfRanges else { return nil }
+        let r = m.range(at: i)
+        return r.location == NSNotFound ? nil : ns.substring(with: r)
     }
 
     private static func jsonOrNull<T>(_ value: T?) -> Any {

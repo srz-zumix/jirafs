@@ -84,6 +84,23 @@ final class StorageFormatRendererTests: XCTestCase {
         XCTAssertTrue(md.contains("\n## H"), "expected blank line before top-level heading: \(md)")
     }
 
+    func testAcImageInsideListItemDoesNotBreakList() {
+        // `ac:image` must not append a blank-line boundary inside a list item,
+        // which would leak a following block out of the list.
+        let md = StorageFormatRenderer.render(
+            #"<ul><li><ac:image><ri:attachment ri:filename="d.png" /></ac:image><h2>Sub</h2></li><li>two</li></ul>"#
+        )
+        XCTAssertFalse(md.contains("\n## Sub"), "heading leaked out of the list item: \(md)")
+        XCTAssertTrue(md.contains("- two"), "list item after an image-containing item was lost: \(md)")
+    }
+
+    func testAcImageAtTopLevelStillSeparatesFollowingBlock() {
+        let md = StorageFormatRenderer.render(
+            #"<ac:image><ri:attachment ri:filename="d.png" /></ac:image><h2>Next</h2>"#
+        )
+        XCTAssertTrue(md.contains("\n## Next"), "expected blank line before top-level heading: \(md)")
+    }
+
     func testRenderBodyNilIsEmpty() {
         XCTAssertEqual(ConfluenceContentRenderer.renderBody(nil), "")
     }
