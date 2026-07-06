@@ -64,7 +64,10 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             data = PageFileBuilder.spaceMeta(space)
         case .pageBody(_, let pageId):
             let page = try await dataSource.page(id: pageId)
-            data = PageFileBuilder.body(page)
+            let attachments = PageFileBuilder.bodyReferencesAttachments(page.body)
+                ? await attachmentsForRewrite(pageId: pageId)
+                : []
+            data = PageFileBuilder.body(page, attachments: attachments)
             applyPageTimes(page, to: node)
         case .pageMeta(_, let pageId):
             let page = try await dataSource.page(id: pageId)
@@ -72,7 +75,10 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             applyPageTimes(page, to: node)
         case .pageHtml(_, let pageId):
             let page = try await dataSource.page(id: pageId)
-            data = PageFileBuilder.html(page)
+            let attachments = PageFileBuilder.htmlReferencesAttachments(page.body)
+                ? await attachmentsForRewrite(pageId: pageId)
+                : []
+            data = PageFileBuilder.html(page, folderName: htmlFolderName(for: node), attachments: attachments)
             applyPageTimes(page, to: node)
         case .labels(_, let pageId):
             let labels = try await dataSource.labels(pageId: pageId)
@@ -116,6 +122,35 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
             return
         }
         node.setPayload(data, size: UInt64(data.count))
+    }
+
+    /// Lists a page's attachments for link rewriting, degrading gracefully.
+    ///
+    /// Attachment rewriting is an enhancement over the page body, so a listing
+    /// failure must not fail the whole `page.md` / `{Title}.html` open. Return an
+    /// empty list on error, but log it: otherwise an auth/network failure would
+    /// silently leave server URLs unrewritten with no diagnostic signal.
+    private func attachmentsForRewrite(pageId: String) async -> [ConfluenceAttachment] {
+        do {
+            return try await dataSource.attachments(pageId: pageId)
+        } catch {
+            logger.warning(
+                "loadPayload: attachments listing failed for rewrite, pageId=\(pageId, privacy: .public): \(error.localizedDescription, privacy: .private)"
+            )
+            return []
+        }
+    }
+
+    /// The page's deduplicated on-disk folder stem for a `{Title}.html` node,
+    /// derived from the item's directory-entry name (`{folderName}.html`). Falls
+    /// back to `nil` (letting `PageFileBuilder` sanitize the title) when the name
+    /// is unavailable, so rewritten attachment links point at the matching
+    /// sibling `{folderName}/.attachments/` directory even when two page titles
+    /// sanitize to the same stem.
+    private func htmlFolderName(for node: ConfluenceFSItem) -> String? {
+        guard let name = node.displayName else { return nil }
+        if name.hasSuffix(".html") { return String(name.dropLast(".html".count)) }
+        return name
     }
 
     private func applyPageTimes(_ page: ConfluencePage, to node: ConfluenceFSItem) {
