@@ -26,8 +26,11 @@ public struct ConfluenceFolderEntry: Codable, Sendable, Equatable {
     }
 }
 
-/// A directory entry for a Confluence whiteboard: the sanitized folder name plus
-/// the whiteboard object. Cloud only; always empty on Data Center.
+/// A directory entry for a Confluence whiteboard: the sanitized on-disk
+/// directory name plus the whiteboard object. Cloud only; always empty on Data
+/// Center. `folderName` matches the naming used by `ConfluencePageEntry` /
+/// `ConfluenceFolderEntry` and means "the name of the directory this entry is
+/// exposed as", not that the whiteboard is a folder.
 public struct ConfluenceWhiteboardEntry: Codable, Sendable, Equatable {
     public let folderName: String
     public let whiteboard: ConfluenceWhiteboard
