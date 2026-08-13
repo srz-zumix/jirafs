@@ -36,12 +36,18 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     /// Cloud only; Data Center does not expose folders. Appears inside `pagesDir`
     /// (root folders) or inside another `folderDir` (nested folders).
     case folderDir(spaceKey: String, folderId: String)  // .../folders/{Title}/
+    /// A Confluence whiteboard — exposed as a directory holding the whiteboard's
+    /// metadata and its own children (pages, folders, nested whiteboards). Cloud
+    /// only; the whiteboard canvas itself is not exposed by the REST API.
+    case whiteboardDir(spaceKey: String, whiteboardId: String)  // .../{Title}/
+    /// `.metadata.json` inside a whiteboard directory.
+    case whiteboardMeta(spaceKey: String, whiteboardId: String)
 
     public var isDirectory: Bool {
         switch self {
         case .root, .configDir, .spacesDir, .space, .pagesDir, .pageDir,
              .commentsDir, .attachmentsDir,
-             .archivedRootPagesDir, .archivedChildPagesDir, .folderDir:
+             .archivedRootPagesDir, .archivedChildPagesDir, .folderDir, .whiteboardDir:
             return true
         default:
             return false
@@ -82,6 +88,10 @@ extension ConfluenceNodeKind: CustomStringConvertible {
         case .archivedChildPagesDir(let spaceKey, let pageId):
             return "archivedChildPagesDir(\(spaceKey),\(pageId))"
         case .folderDir(let spaceKey, let folderId): return "folderDir(\(spaceKey),\(folderId))"
+        case .whiteboardDir(let spaceKey, let whiteboardId):
+            return "whiteboardDir(\(spaceKey),\(whiteboardId))"
+        case .whiteboardMeta(let spaceKey, let whiteboardId):
+            return "whiteboardMeta(\(spaceKey),\(whiteboardId))"
         }
     }
 }
@@ -140,6 +150,9 @@ public enum ConfluencePathResolver {
             ]
         case .pageDir(let spaceKey, let pageId):
             return pageDirStaticChildren(spaceKey: spaceKey, pageId: pageId)
+        case .whiteboardDir(let spaceKey, let whiteboardId):
+            return [(PageFile.metadata.rawValue,
+                     .whiteboardMeta(spaceKey: spaceKey, whiteboardId: whiteboardId))]
         default:
             return []
         }

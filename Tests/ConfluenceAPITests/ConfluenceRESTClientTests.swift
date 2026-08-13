@@ -568,7 +568,8 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(page.items[0].version, 5)
         XCTAssertEqual(page.items[1].contentType, .folder)
         XCTAssertEqual(page.items[1].title, "Engineering")
-        XCTAssertEqual(page.items[2].contentType, .other)
+        XCTAssertEqual(page.items[2].contentType, .whiteboard)
+        XCTAssertEqual(page.items[2].title, "Board")
         let url = stub.requests.first?.url?.absoluteString ?? ""
         XCTAssertTrue(url.contains("/wiki/api/v2/pages/p1/direct-children"), "URL was \(url)")
     }
@@ -621,6 +622,78 @@ final class ConfluenceRESTClientTests: XCTestCase {
         let client = dcClient(stub)
         let page = try await client.listFolderChildren(folderId: "f1", cursor: nil, limit: 25)
         XCTAssertTrue(page.items.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    // MARK: - Whiteboards
+
+    func testCloudListWhiteboardChildrenMixedTypes() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "p9", "title": "Notes", "type": "page",
+              "spaceId": "100", "parentId": "w1",
+              "version": {"number": 2},
+              "_links": {"webui": "/spaces/ENG/pages/p9"}
+            },
+            {"id": "w2", "title": "Sub Board", "type": "whiteboard", "spaceId": "100", "parentId": "w1"},
+            {"id": "d1", "title": "Data",      "type": "database",   "spaceId": "100"}
+          ],
+          "_links": {}
+        }
+        """
+        stub.responses["/wiki/api/v2/whiteboards/w1/direct-children"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let page = try await client.listWhiteboardChildren(whiteboardId: "w1", cursor: nil, limit: 25)
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertEqual(page.items[0].contentType, .page)
+        XCTAssertEqual(page.items[1].contentType, .whiteboard)
+        XCTAssertEqual(page.items[1].id, "w2")
+        XCTAssertEqual(page.items[2].contentType, .other)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("/wiki/api/v2/whiteboards/w1/direct-children"), "URL was \(url)")
+    }
+
+    func testDCListWhiteboardChildrenAlwaysEmpty() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let page = try await client.listWhiteboardChildren(whiteboardId: "w1", cursor: nil, limit: 25)
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty, "DC should make no API call for whiteboards")
+    }
+
+    func testCloudGetWhiteboard() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "id": "w1", "title": "Design Board", "spaceId": "100", "parentId": "p1",
+          "authorId": "acc-1", "createdAt": "2024-05-06T07:08:09.000Z",
+          "_links": {"webui": "/spaces/ENG/whiteboards/w1"}
+        }
+        """
+        stub.responses["/wiki/api/v2/whiteboards/w1"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let whiteboard = try await client.getWhiteboard(id: "w1")
+        XCTAssertEqual(whiteboard.id, "w1")
+        XCTAssertEqual(whiteboard.title, "Design Board")
+        XCTAssertEqual(whiteboard.spaceId, "100")
+        XCTAssertEqual(whiteboard.parentId, "p1")
+        XCTAssertEqual(whiteboard.authorId, "acc-1")
+        XCTAssertEqual(whiteboard.createdAt, "2024-05-06T07:08:09.000Z")
+        XCTAssertEqual(whiteboard.webURL, "/spaces/ENG/whiteboards/w1")
+    }
+
+    func testDCGetWhiteboardThrowsNotFound() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        do {
+            _ = try await client.getWhiteboard(id: "w1")
+            XCTFail("expected notFound on Data Center")
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .notFound)
+        }
         XCTAssertTrue(stub.requests.isEmpty)
     }
 

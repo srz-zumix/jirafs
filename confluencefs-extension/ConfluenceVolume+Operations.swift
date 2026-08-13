@@ -340,8 +340,8 @@ extension ConfluenceVolume: FSVolume.Operations {
             guard let space = try await dataSource.space(key: spaceKey) else { return staticKids }
             let entries = try await dataSource.rootPageEntries(space: space)
             // Note: the Confluence Cloud v2 API has no endpoint to enumerate
-            // root-level (parentless) folders, so only folders nested under a page
-            // are surfaced (see the pageDir case below).
+            // root-level (parentless) folders or whiteboards, so only those nested
+            // under a page are surfaced (see the pageDir case below).
             var result = staticKids
             result.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
             if await dataSource.includeArchived {
@@ -352,15 +352,18 @@ extension ConfluenceVolume: FSVolume.Operations {
             var kids = plain(ConfluencePathResolver.childKinds(of: kind))
             let entries = try await dataSource.childPageEntries(pageId: pageId, spaceKey: spaceKey)
             kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
-            // Folder API errors (e.g. on instances without folder support) must not
-            // prevent the child-page listing from rendering. Folders are exposed as
-            // direct children of a page via the v2 direct-children endpoint.
+            // Container API errors (e.g. on instances without folder/whiteboard
+            // support) must not prevent the child-page listing from rendering.
+            // Folders and whiteboards are exposed as direct children of a page via
+            // the v2 direct-children endpoint.
             do {
-                let folderEntries = try await dataSource.pageFolderEntries(pageId: pageId, spaceKey: spaceKey)
-                kids.append(contentsOf: folderDirEntries(folderEntries, spaceKey: spaceKey, existingNames: pageNames(entries, htmlEnabled: htmlEnabled)))
-                logger.debug("pageDir folders pageId=\(pageId, privacy: .public) count=\(folderEntries.count, privacy: .public)")
+                let containers = try await dataSource.pageContainerEntries(pageId: pageId, spaceKey: spaceKey)
+                var taken = pageNames(entries, htmlEnabled: htmlEnabled)
+                kids.append(contentsOf: folderDirEntries(containers.folders, spaceKey: spaceKey, taken: &taken))
+                kids.append(contentsOf: whiteboardDirEntries(containers.whiteboards, spaceKey: spaceKey, taken: &taken))
+                logger.debug("pageDir containers pageId=\(pageId, privacy: .public) folders=\(containers.folders.count, privacy: .public) whiteboards=\(containers.whiteboards.count, privacy: .public)")
             } catch {
-                logger.debug("pageDir folders failed pageId=\(pageId, privacy: .public): \(error, privacy: .public)")
+                logger.debug("pageDir containers failed pageId=\(pageId, privacy: .public): \(error, privacy: .public)")
             }
             if await dataSource.includeArchived {
                 kids.append((".archived", .archivedChildPagesDir(spaceKey: spaceKey, pageId: pageId), nil))
@@ -380,23 +383,25 @@ extension ConfluenceVolume: FSVolume.Operations {
             var result: ConfluenceFolderChildrenResult = .empty
             do {
                 result = try await dataSource.folderChildren(folderId: folderId, spaceKey: spaceKey)
-                logger.debug("folderDir children folderId=\(folderId, privacy: .public) pages=\(result.pages.count, privacy: .public) folders=\(result.folders.count, privacy: .public)")
+                logger.debug("folderDir children folderId=\(folderId, privacy: .public) pages=\(result.pages.count, privacy: .public) folders=\(result.folders.count, privacy: .public) whiteboards=\(result.whiteboards.count, privacy: .public)")
             } catch {
                 logger.error("folderDir children failed folderId=\(folderId, privacy: .public): \(error, privacy: .public)")
             }
-            var out = pageEntries(result.pages, spaceKey: spaceKey)
-            out.append(contentsOf: folderDirEntries(result.folders, spaceKey: spaceKey, existingNames: pageNames(result.pages, htmlEnabled: htmlEnabled)))
-            // Background: pre-cache grandchildren of child pages.
-            let resultPages = result.pages
-            makeTask {
-                await withTaskGroup(of: Void.self) { group in
-                    for entry in resultPages {
-                        let id = entry.page.id
-                        group.addTask { _ = try? await self.dataSource.childPageEntries(pageId: id, spaceKey: spaceKey) }
-                    }
-                }
+            return containerChildEntries(result, spaceKey: spaceKey)
+        case .whiteboardDir(let spaceKey, let whiteboardId):
+            // A whiteboard acts as a container in the Cloud content tree: it can
+            // hold pages, folders and nested whiteboards. Its own canvas is not
+            // exposed by the REST API, so only `.metadata.json` describes the board.
+            var kids = plain(ConfluencePathResolver.childKinds(of: kind))
+            var result: ConfluenceFolderChildrenResult = .empty
+            do {
+                result = try await dataSource.whiteboardChildren(whiteboardId: whiteboardId, spaceKey: spaceKey)
+                logger.debug("whiteboardDir children whiteboardId=\(whiteboardId, privacy: .public) pages=\(result.pages.count, privacy: .public) folders=\(result.folders.count, privacy: .public) whiteboards=\(result.whiteboards.count, privacy: .public)")
+            } catch {
+                logger.error("whiteboardDir children failed whiteboardId=\(whiteboardId, privacy: .public): \(error, privacy: .public)")
             }
-            return out
+            kids.append(contentsOf: containerChildEntries(result, spaceKey: spaceKey))
+            return kids
         case .commentsDir(let spaceKey, let pageId):
             let comments = try await dataSource.comments(pageId: pageId)
             var taken = Set<String>()
@@ -456,18 +461,59 @@ extension ConfluenceVolume: FSVolume.Operations {
     }
 
     /// Emits the directory entries for a set of folder entries, deduplicating their
-    /// names against `existingNames` (the page entries already in the same listing)
-    /// so that a page and a folder with the same sanitized title never collide.
+    /// names against `taken` (the names already used in the same listing) so that a
+    /// page, a folder and a whiteboard with the same sanitized title never collide.
+    /// `taken` is updated with the emitted names.
     private func folderDirEntries(
         _ entries: [ConfluenceFolderEntry],
         spaceKey: String,
-        existingNames: Set<String>
+        taken: inout Set<String>
     ) -> [ChildEntry] {
-        var taken = existingNames
+        var names = taken
+        defer { taken = names }
         return entries.map { entry in
-            let name = FileNameSanitizer.deduplicate(entry.folderName, taken: &taken)
+            let name = FileNameSanitizer.deduplicate(entry.folderName, taken: &names)
             return (name, ConfluenceNodeKind.folderDir(spaceKey: spaceKey, folderId: entry.folder.id), nil)
         }
+    }
+
+    /// Emits the directory entries for a set of whiteboard entries, deduplicated
+    /// against the names already used in the same listing.
+    private func whiteboardDirEntries(
+        _ entries: [ConfluenceWhiteboardEntry],
+        spaceKey: String,
+        taken: inout Set<String>
+    ) -> [ChildEntry] {
+        var names = taken
+        defer { taken = names }
+        return entries.map { entry in
+            let name = FileNameSanitizer.deduplicate(entry.folderName, taken: &names)
+            return (name, ConfluenceNodeKind.whiteboardDir(spaceKey: spaceKey, whiteboardId: entry.whiteboard.id), nil)
+        }
+    }
+
+    /// Flattens a container-children result (pages + folders + whiteboards) into
+    /// directory entries, deduplicating names across all three types, and kicks off
+    /// a background pre-cache of the grandchildren of the contained pages.
+    private func containerChildEntries(
+        _ result: ConfluenceFolderChildrenResult,
+        spaceKey: String
+    ) -> [ChildEntry] {
+        var out = pageEntries(result.pages, spaceKey: spaceKey)
+        var taken = pageNames(result.pages, htmlEnabled: htmlEnabled)
+        out.append(contentsOf: folderDirEntries(result.folders, spaceKey: spaceKey, taken: &taken))
+        out.append(contentsOf: whiteboardDirEntries(result.whiteboards, spaceKey: spaceKey, taken: &taken))
+        // Background: pre-cache grandchildren of child pages.
+        let resultPages = result.pages
+        makeTask {
+            await withTaskGroup(of: Void.self) { group in
+                for entry in resultPages {
+                    let id = entry.page.id
+                    group.addTask { _ = try? await self.dataSource.childPageEntries(pageId: id, spaceKey: spaceKey) }
+                }
+            }
+        }
+        return out
     }
 
     func makeAttributes(for node: ConfluenceFSItem) -> FSItem.Attributes {

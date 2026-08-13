@@ -36,6 +36,24 @@ public enum PageFileBuilder {
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
     }
 
+    /// `.metadata.json` for a whiteboard — structured whiteboard metadata.
+    /// Whiteboard canvas content is not exposed by the Confluence REST API, so
+    /// `webURL` is the way to open the board itself.
+    public static func whiteboardMeta(_ whiteboard: ConfluenceWhiteboard) -> Data {
+        let dict: [String: Any] = [
+            "id": whiteboard.id,
+            "title": whiteboard.title,
+            "type": "whiteboard",
+            "spaceId": jsonOrNull(whiteboard.spaceId),
+            "parentId": jsonOrNull(whiteboard.parentId),
+            "authorId": jsonOrNull(whiteboard.authorId),
+            "createdAt": jsonOrNull(whiteboard.createdAt),
+            "webURL": jsonOrNull(whiteboard.webURL),
+        ]
+        let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
+    }
+
     /// `labels.txt` — one label per line (prefix-qualified when present).
     public static func labels(_ labels: [ConfluenceLabel]) -> Data {
         let lines = labels.map { label -> String in

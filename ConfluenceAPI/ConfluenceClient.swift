@@ -100,6 +100,15 @@ public protocol ConfluenceClient: Sendable {
     /// `GET /wiki/api/v2/folders/{id}/direct-children` (Cloud only; DC always returns empty).
     func listFolderChildren(folderId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild>
 
+    /// Lists the direct children of a **whiteboard** via
+    /// `GET /wiki/api/v2/whiteboards/{id}/direct-children` (Cloud only; DC always returns empty).
+    func listWhiteboardChildren(whiteboardId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild>
+
+    /// Fetches a single whiteboard's metadata via `GET /wiki/api/v2/whiteboards/{id}`
+    /// (Cloud only; DC throws ``AtlassianError/notFound``). The canvas content of a
+    /// whiteboard is not exposed by the REST API.
+    func getWhiteboard(id: String) async throws -> ConfluenceWhiteboard
+
     /// Returns the IDs of **root** pages (depth=root) of a space that have any
     /// user/group restriction (read or update). Cloud uses v1 Space content API
     /// scoped to `depth=root`; Data Center always returns an empty set because

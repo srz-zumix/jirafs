@@ -359,8 +359,8 @@ struct DCLabel: Decodable {
 /// Wire model for items returned by the v2 `direct-children` endpoints
 /// (`GET /wiki/api/v2/pages/{id}/direct-children` and
 /// `GET /wiki/api/v2/folders/{id}/direct-children`). Each item is tagged with a
-/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); only `page` and
-/// `folder` are surfaced by the file system. The `direct-children` response omits
+/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); `page`, `folder`
+/// and `whiteboard` are surfaced by the file system. The `direct-children` response omits
 /// `parentId`/`authorId`/`createdAt`/`version`/`_links`, so those fields stay nil.
 struct CloudFolderChild: Decodable {
     let id: String
@@ -386,6 +386,7 @@ struct CloudFolderChild: Decodable {
         switch type {
         case "page": ct = .page
         case "folder": ct = .folder
+        case "whiteboard": ct = .whiteboard
         default: ct = .other
         }
         return ConfluenceFolderChild(
@@ -393,6 +394,35 @@ struct CloudFolderChild: Decodable {
             spaceId: spaceId, parentId: parentId,
             version: version?.number, authorId: authorId,
             createdAt: createdAt, webURL: links?.webui
+        )
+    }
+}
+
+// MARK: - Cloud Whiteboard (REST v2)
+
+/// Wire model for `GET /wiki/api/v2/whiteboards/{id}` (Cloud only). The
+/// whiteboard canvas itself is not exposed by the REST API, so only descriptive
+/// metadata is available.
+struct CloudWhiteboard: Decodable {
+    let id: String
+    let title: String
+    let spaceId: String?
+    let parentId: String?
+    let authorId: String?
+    let createdAt: String?
+    private let links: CloudLinks?
+
+    struct CloudLinks: Decodable { let webui: String? }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, spaceId, parentId, authorId, createdAt
+        case links = "_links"
+    }
+
+    var domain: ConfluenceWhiteboard {
+        ConfluenceWhiteboard(
+            id: id, title: title, spaceId: spaceId, parentId: parentId,
+            authorId: authorId, createdAt: createdAt, webURL: links?.webui
         )
     }
 }

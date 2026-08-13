@@ -246,6 +246,21 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return ConfluencePageList(items: page.results.map { $0.domain }, nextCursor: page.cursor)
     }
 
+    public func listWhiteboardChildren(whiteboardId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
+        guard config.edition.isCloud else { return ConfluencePageList(items: [], nextCursor: nil) }
+        let page: CloudList<CloudFolderChild> = try await cloudGet(
+            "whiteboards/\(whiteboardId)/direct-children", cursor: cursor, limit: limit
+        )
+        return ConfluencePageList(items: page.results.map { $0.domain }, nextCursor: page.cursor)
+    }
+
+    public func getWhiteboard(id: String) async throws -> ConfluenceWhiteboard {
+        // Whiteboards are a Cloud-only concept; DC has no equivalent resource.
+        guard config.edition.isCloud else { throw AtlassianError.notFound }
+        let whiteboard: CloudWhiteboard = try await sendDecoding(url: try cloudURL("whiteboards/\(id)", query: []))
+        return whiteboard.domain
+    }
+
     /// Paginates a Cloud v1 API endpoint with `start`/`limit` and collects the
     /// IDs of items where `restrictions.hasAny == true`. Each page request is
     /// routed through `limiter` so 429 / server-error retries and backoff are

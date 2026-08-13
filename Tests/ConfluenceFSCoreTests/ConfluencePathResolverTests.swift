@@ -57,4 +57,16 @@ final class ConfluencePathResolverTests: XCTestCase {
     func testFolderDirStaticChildResolvesNil() {
         XCTAssertNil(ConfluencePathResolver.staticChild(name: "SomePage", of: .folderDir(spaceKey: "DOC", folderId: "f1")))
     }
+    func testWhiteboardDirIsDirectoryWithMetadata() {
+        XCTAssertTrue(ConfluenceNodeKind.whiteboardDir(spaceKey: "D", whiteboardId: "w1").isDirectory)
+        XCTAssertFalse(ConfluenceNodeKind.whiteboardMeta(spaceKey: "D", whiteboardId: "w1").isDirectory)
+        let children = ConfluencePathResolver.childKinds(of: .whiteboardDir(spaceKey: "DOC", whiteboardId: "w1"))
+        XCTAssertEqual(children.map(\.name), [".metadata.json"])
+        XCTAssertEqual(ConfluencePathResolver.staticChild(name: ".metadata.json",
+                                                         of: .whiteboardDir(spaceKey: "DOC", whiteboardId: "w1")),
+                       .whiteboardMeta(spaceKey: "DOC", whiteboardId: "w1"))
+        // Child pages / nested boards are dynamic → not resolvable statically.
+        XCTAssertNil(ConfluencePathResolver.staticChild(name: "SomePage",
+                                                       of: .whiteboardDir(spaceKey: "DOC", whiteboardId: "w1")))
+    }
 }
