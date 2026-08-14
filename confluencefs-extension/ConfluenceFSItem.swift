@@ -148,7 +148,8 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         case .folderDir(let space, let id):
             let base = "folderDir:\(space):\(id)"
             return displayName == nil ? base : "\(base):\(displayName!)"
-        // Same rename handling as folderDir: a renamed whiteboard keeps its id.
+        // Same rename handling as folderDir: including the display name means a
+        // whiteboard rename (title changes, whiteboardId stays the same) yields a new fileID.
         case .whiteboardDir(let space, let id):
             let base = "whiteboardDir:\(space):\(id)"
             return displayName == nil ? base : "\(base):\(displayName!)"

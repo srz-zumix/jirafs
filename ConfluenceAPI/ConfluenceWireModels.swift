@@ -360,8 +360,10 @@ struct DCLabel: Decodable {
 /// (`GET /wiki/api/v2/pages/{id}/direct-children` and
 /// `GET /wiki/api/v2/folders/{id}/direct-children`). Each item is tagged with a
 /// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); `page`, `folder`
-/// and `whiteboard` are surfaced by the file system. The `direct-children` response omits
-/// `parentId`/`authorId`/`createdAt`/`version`/`_links`, so those fields stay nil.
+/// and `whiteboard` are surfaced by the file system. Field availability is
+/// content-type dependent (sparse): `authorId`/`createdAt`/`version`/`_links` are
+/// populated only for `page` items, while `spaceId`/`parentId` may appear for any
+/// nested item. Fields absent from a given item decode to nil.
 struct CloudFolderChild: Decodable {
     let id: String
     let title: String
