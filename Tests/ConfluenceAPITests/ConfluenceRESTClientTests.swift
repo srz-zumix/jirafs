@@ -685,6 +685,24 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(whiteboard.webURL, "/spaces/ENG/whiteboards/w1")
     }
 
+    func testCloudGetWhiteboardEpochMillisCreatedAt() async throws {
+        let stub = ConfluenceStubTransport()
+        // The whiteboard endpoint returns `createdAt` as epoch milliseconds (a
+        // JSON number), unlike pages which return an ISO 8601 string.
+        let json = """
+        {
+          "id": "w1", "title": "Design Board", "spaceId": "100", "parentId": "p1",
+          "authorId": "acc-1", "createdAt": 1786800386358,
+          "_links": {"webui": "/spaces/ENG/whiteboards/w1"}
+        }
+        """
+        stub.responses["/wiki/api/v2/whiteboards/w1"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let whiteboard = try await client.getWhiteboard(id: "w1")
+        XCTAssertEqual(whiteboard.id, "w1")
+        XCTAssertEqual(whiteboard.createdAt, "2026-08-15T13:26:26.358Z")
+    }
+
     func testDCGetWhiteboardThrowsNotFound() async throws {
         let stub = ConfluenceStubTransport()
         let client = dcClient(stub)

@@ -421,6 +421,28 @@ struct CloudWhiteboard: Decodable {
         case links = "_links"
     }
 
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        spaceId = try c.decodeIfPresent(String.self, forKey: .spaceId)
+        parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+        authorId = try c.decodeIfPresent(String.self, forKey: .authorId)
+        // Unlike pages (ISO 8601 string), the whiteboard endpoint returns
+        // `createdAt` as epoch milliseconds; accept either and normalize to ISO.
+        if let iso = try? c.decodeIfPresent(String.self, forKey: .createdAt) {
+            createdAt = iso
+        } else if let millis = try? c.decodeIfPresent(Int64.self, forKey: .createdAt) {
+            let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            createdAt = formatter.string(from: date)
+        } else {
+            createdAt = nil
+        }
+        links = try c.decodeIfPresent(CloudLinks.self, forKey: .links)
+    }
+
     var domain: ConfluenceWhiteboard {
         ConfluenceWhiteboard(
             id: id, title: title, spaceId: spaceId, parentId: parentId,
