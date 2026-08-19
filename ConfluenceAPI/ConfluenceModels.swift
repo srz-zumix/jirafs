@@ -156,12 +156,47 @@ public struct ConfluenceFolder: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Whiteboard (Cloud only)
+
+/// A Confluence whiteboard — a free-form drawing surface that can also act as a
+/// container for pages, folders and other whiteboards. Whiteboards are a
+/// Cloud-only concept; Data Center does not support them. Their canvas content
+/// is not exposed by the REST API, so only metadata (and children) is surfaced.
+public struct ConfluenceWhiteboard: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let spaceId: String?
+    public let parentId: String?
+    public let authorId: String?
+    public let createdAt: String?
+    public let webURL: String?
+
+    public init(
+        id: String,
+        title: String,
+        spaceId: String? = nil,
+        parentId: String? = nil,
+        authorId: String? = nil,
+        createdAt: String? = nil,
+        webURL: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.spaceId = spaceId
+        self.parentId = parentId
+        self.authorId = authorId
+        self.createdAt = createdAt
+        self.webURL = webURL
+    }
+}
+
 // MARK: - Folder Child (Cloud only)
 
 /// A single item returned by the folder-children endpoint.
-/// Cloud returns a mixed list of pages and sub-folders tagged with `contentType`.
+/// Cloud returns a mixed list of pages, sub-folders and whiteboards tagged with
+/// `contentType`.
 public struct ConfluenceFolderChild: Sendable {
-    public enum ContentType: String, Sendable { case page, folder, other }
+    public enum ContentType: String, Sendable { case page, folder, whiteboard, other }
 
     public let contentType: ContentType
     public let id: String

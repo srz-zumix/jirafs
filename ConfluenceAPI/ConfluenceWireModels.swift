@@ -359,9 +359,11 @@ struct DCLabel: Decodable {
 /// Wire model for items returned by the v2 `direct-children` endpoints
 /// (`GET /wiki/api/v2/pages/{id}/direct-children` and
 /// `GET /wiki/api/v2/folders/{id}/direct-children`). Each item is tagged with a
-/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); only `page` and
-/// `folder` are surfaced by the file system. The `direct-children` response omits
-/// `parentId`/`authorId`/`createdAt`/`version`/`_links`, so those fields stay nil.
+/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); `page`, `folder`
+/// and `whiteboard` are surfaced by the file system. Field availability is
+/// content-type dependent (sparse): `authorId`/`createdAt`/`version`/`_links` are
+/// populated only for `page` items, while `spaceId`/`parentId` may appear for any
+/// nested item. Fields absent from a given item decode to nil.
 struct CloudFolderChild: Decodable {
     let id: String
     let title: String
@@ -386,6 +388,7 @@ struct CloudFolderChild: Decodable {
         switch type {
         case "page": ct = .page
         case "folder": ct = .folder
+        case "whiteboard": ct = .whiteboard
         default: ct = .other
         }
         return ConfluenceFolderChild(
@@ -393,6 +396,57 @@ struct CloudFolderChild: Decodable {
             spaceId: spaceId, parentId: parentId,
             version: version?.number, authorId: authorId,
             createdAt: createdAt, webURL: links?.webui
+        )
+    }
+}
+
+// MARK: - Cloud Whiteboard (REST v2)
+
+/// Wire model for `GET /wiki/api/v2/whiteboards/{id}` (Cloud only). The
+/// whiteboard canvas itself is not exposed by the REST API, so only descriptive
+/// metadata is available.
+struct CloudWhiteboard: Decodable {
+    let id: String
+    let title: String
+    let spaceId: String?
+    let parentId: String?
+    let authorId: String?
+    let createdAt: String?
+    private let links: CloudLinks?
+
+    struct CloudLinks: Decodable { let webui: String? }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, spaceId, parentId, authorId, createdAt
+        case links = "_links"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        spaceId = try c.decodeIfPresent(String.self, forKey: .spaceId)
+        parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+        authorId = try c.decodeIfPresent(String.self, forKey: .authorId)
+        // Unlike pages (ISO 8601 string), the whiteboard endpoint returns
+        // `createdAt` as epoch milliseconds; accept either and normalize to ISO.
+        if let iso = try? c.decodeIfPresent(String.self, forKey: .createdAt) {
+            createdAt = iso
+        } else if let millis = try? c.decodeIfPresent(Int64.self, forKey: .createdAt) {
+            let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            createdAt = formatter.string(from: date)
+        } else {
+            createdAt = nil
+        }
+        links = try c.decodeIfPresent(CloudLinks.self, forKey: .links)
+    }
+
+    var domain: ConfluenceWhiteboard {
+        ConfluenceWhiteboard(
+            id: id, title: title, spaceId: spaceId, parentId: parentId,
+            authorId: authorId, createdAt: createdAt, webURL: links?.webui
         )
     }
 }

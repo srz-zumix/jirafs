@@ -722,6 +722,10 @@ Confluence スペース / ページを認証なしでマウントできる。HTT
         ├── .comments/
         │   └── NNN_author_date.md
         ├── .attachments/
+        ├── {Folder Title}/        # Cloud のみ。フォルダ (再帰)
+        ├── {Whiteboard Title}/    # Cloud のみ。ホワイトボード
+        │   ├── .metadata.json     # ホワイトボードのメタデータ (webURL 含む)
+        │   └── ...                # 配下のページ / フォルダ / ホワイトボード (再帰)
         ├── {Child Page Title}.html
         └── {Child Page Title}/    # 子ページ (再帰)
             └── ...
@@ -729,6 +733,18 @@ Confluence スペース / ページを認証なしでマウントできる。HTT
 
 ルート直下には `spaces/` のほか、`AGENTS.md` (エージェント向けガイド)、
 `.confluencefs/config.json`、`.metadata_never_index` を配置する。
+
+#### フォルダ / ホワイトボード (Cloud のみ)
+
+Cloud の v2 `direct-children` API (`pages/{id}` / `folders/{id}` /
+`whiteboards/{id}`) で取得したフォルダ・ホワイトボードを、ページと同じ階層に
+ディレクトリとして表示する。ホワイトボードのキャンバス内容は REST API で取得
+できないため、`.metadata.json` (id / title / spaceId / parentId / authorId /
+createdAt / webURL) のみを公開し、実体は `webURL` からブラウザで開く。
+ホワイトボードもフォルダと同様にページ・フォルダ・ホワイトボードを内包できる。
+名前が衝突する場合は同一ディレクトリ内でページ → フォルダ → ホワイトボードの
+順に重複解決 (`FileNameSanitizer.deduplicate`) する。Data Center には
+フォルダ / ホワイトボードの概念がないため常に空。
 
 ### 本文変換
 
@@ -773,6 +789,9 @@ diskutil unmount force ~/confluencefs/myinstance
 ### 既知の制約 (Confluence)
 
 - read-only のみ (ページ編集は未対応)
+- ルート直下 (親を持たない) のフォルダ / ホワイトボードを列挙する API が Cloud v2
+  に存在しないため、これらはページ / フォルダ / ホワイトボード配下にあるものだけを表示する
+- ホワイトボードの描画内容 (キャンバス) は REST API 非公開のため取得できない
 - storage 形式 → Markdown 変換は主要タグのみ対応 (非対応タグは raw fallback)
 - 大規模スペース (数千ページ) ではページツリーの遅延読み込みに依存
 - `includeRestricted: false` (デフォルト) の Cloud での動作:

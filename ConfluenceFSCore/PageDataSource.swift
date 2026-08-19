@@ -26,16 +26,69 @@ public struct ConfluenceFolderEntry: Codable, Sendable, Equatable {
     }
 }
 
-/// Combined result of a folder-children fetch: pages and sub-folders together.
-/// Cached as a unit so one network round-trip fills both listing types.
+/// A directory entry for a Confluence whiteboard: the sanitized on-disk
+/// directory name plus the whiteboard object. Cloud only; always empty on Data
+/// Center. `folderName` matches the naming used by `ConfluencePageEntry` /
+/// `ConfluenceFolderEntry` and means "the name of the directory this entry is
+/// exposed as", not that the whiteboard is a folder.
+public struct ConfluenceWhiteboardEntry: Codable, Sendable, Equatable {
+    public let folderName: String
+    public let whiteboard: ConfluenceWhiteboard
+    public init(folderName: String, whiteboard: ConfluenceWhiteboard) {
+        self.folderName = folderName
+        self.whiteboard = whiteboard
+    }
+}
+
+/// Combined result of a container-children fetch: pages, sub-folders and
+/// whiteboards together. Cached as a unit so one network round-trip fills every
+/// listing type.
 public struct ConfluenceFolderChildrenResult: Codable, Sendable, Equatable {
     public let pages: [ConfluencePageEntry]
     public let folders: [ConfluenceFolderEntry]
-    public init(pages: [ConfluencePageEntry], folders: [ConfluenceFolderEntry]) {
+    public let whiteboards: [ConfluenceWhiteboardEntry]
+    public init(
+        pages: [ConfluencePageEntry],
+        folders: [ConfluenceFolderEntry],
+        whiteboards: [ConfluenceWhiteboardEntry] = []
+    ) {
         self.pages = pages
         self.folders = folders
+        self.whiteboards = whiteboards
     }
-    public static let empty = ConfluenceFolderChildrenResult(pages: [], folders: [])
+
+    /// Decodes `whiteboards` leniently so entries written to the disk cache
+    /// before whiteboard support existed still decode (as an empty list) instead
+    /// of failing and dropping the whole cached listing.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pages = try c.decode([ConfluencePageEntry].self, forKey: .pages)
+        folders = try c.decode([ConfluenceFolderEntry].self, forKey: .folders)
+        whiteboards = try c.decodeIfPresent([ConfluenceWhiteboardEntry].self, forKey: .whiteboards) ?? []
+    }
+
+    public static let empty = ConfluenceFolderChildrenResult(pages: [], folders: [], whiteboards: [])
+}
+
+/// Container children of a page: the folders and whiteboards nested directly
+/// under it. Child *pages* are listed separately (via the child-pages endpoint),
+/// so they are not part of this result.
+public struct ConfluenceContainerEntries: Codable, Sendable, Equatable {
+    public let folders: [ConfluenceFolderEntry]
+    public let whiteboards: [ConfluenceWhiteboardEntry]
+    public init(folders: [ConfluenceFolderEntry], whiteboards: [ConfluenceWhiteboardEntry] = []) {
+        self.folders = folders
+        self.whiteboards = whiteboards
+    }
+
+    /// Lenient decoding for cache entries written before whiteboard support.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        folders = try c.decode([ConfluenceFolderEntry].self, forKey: .folders)
+        whiteboards = try c.decodeIfPresent([ConfluenceWhiteboardEntry].self, forKey: .whiteboards) ?? []
+    }
+
+    public static let empty = ConfluenceContainerEntries(folders: [], whiteboards: [])
 }
 
 /// High-level, cache-aware read-only data source backing the Confluence volume.
@@ -157,7 +210,8 @@ public actor PageDataSource {
     /// directories fall back to the normal stale-while-revalidate path instead.
     public func markBrowsed(_ kind: ConfluenceNodeKind) {
         switch kind {
-        case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir, .folderDir:
+        case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir,
+             .folderDir, .whiteboardDir:
             guard browsedListings.count < PageDataSource.maxBrowsedListings else { return }
             browsedListings.insert(kind)
         default:
@@ -255,8 +309,8 @@ public actor PageDataSource {
                 // Folder refresh errors are non-fatal — a failure here should not
                 // prevent the child-page listing from being committed to the cache.
                 if client.config.edition.isCloud {
-                    if let folderEntries = try? await fetchPageFolderEntries(pageId: pageId) {
-                        await cache.set("pagefolders/\(normalized)/\(pageId)/\(pageListVariant)", value: folderEntries, ttl: ttl.pages)
+                    if let containers = try? await fetchPageContainerEntries(pageId: pageId) {
+                        await cache.set("pagecontainers/\(normalized)/\(pageId)/\(pageListVariant)", value: containers, ttl: ttl.pages)
                     }
                 }
             case .archivedChildPagesDir(let spaceKey, let pageId):
@@ -268,6 +322,10 @@ public actor PageDataSource {
                 let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
                 let result = try await fetchFolderChildren(folderId: folderId, normalizedSpace: normalized)
                 await cache.set("folderchildren/\(normalized)/\(folderId)/\(pageListVariant)", value: result, ttl: ttl.pages)
+            case .whiteboardDir(let spaceKey, let whiteboardId):
+                let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+                let result = try await fetchWhiteboardChildren(whiteboardId: whiteboardId, normalizedSpace: normalized)
+                await cache.set("whiteboardchildren/\(normalized)/\(whiteboardId)/\(pageListVariant)", value: result, ttl: ttl.pages)
             default:
                 return
             }
@@ -390,35 +448,35 @@ public actor PageDataSource {
         return self.makeEntries(filtered)
     }
 
-    // MARK: - Folders (Cloud only)
+    // MARK: - Folders / Whiteboards (Cloud only)
 
-    /// Sanitized, deduplicated folder entries that are **direct children of a page**
-    /// (Cloud only; DC returns `[]`). Confluence Cloud exposes folders as page
-    /// children via `GET /wiki/api/v2/pages/{id}/direct-children`; this extracts the
-    /// `folder`-typed entries from that mixed list.
-    public func pageFolderEntries(pageId: String, spaceKey: String) async throws -> [ConfluenceFolderEntry] {
-        guard client.config.edition.isCloud else { return [] }
+    /// Sanitized, deduplicated folder and whiteboard entries that are **direct
+    /// children of a page** (Cloud only; DC returns `.empty`). Confluence Cloud
+    /// exposes both as page children via
+    /// `GET /wiki/api/v2/pages/{id}/direct-children`; this extracts the `folder`-
+    /// and `whiteboard`-typed entries from that mixed list.
+    public func pageContainerEntries(pageId: String, spaceKey: String) async throws -> ConfluenceContainerEntries {
+        guard client.config.edition.isCloud else { return .empty }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
-        return try await cached("pagefolders/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
-            try await self.fetchPageFolderEntries(pageId: pageId)
+        return try await cached("pagecontainers/\(space)/\(pageId)/\(pageListVariant)", ttl: ttl.pages) {
+            try await self.fetchPageContainerEntries(pageId: pageId)
         }
     }
 
-    private func fetchPageFolderEntries(pageId: String) async throws -> [ConfluenceFolderEntry] {
+    private func fetchPageContainerEntries(pageId: String) async throws -> ConfluenceContainerEntries {
         let children = try await fetchAll { cursor in
             try await self.client.listPageDirectChildren(pageId: pageId, cursor: cursor, limit: self.limit)
         }
-        let folders = children.compactMap { child -> ConfluenceFolder? in
-            guard child.contentType == .folder else { return nil }
-            return ConfluenceFolder(id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId)
-        }
-        return makeFolderEntries(folders)
+        return ConfluenceContainerEntries(
+            folders: makeFolderEntries(folders(in: children)),
+            whiteboards: makeWhiteboardEntries(whiteboards(in: children))
+        )
     }
 
-    /// Combined children of a folder: pages and sub-folders (Cloud only; DC returns `.empty`).
-    /// Pages and sub-folders are deduplicated within their own type; cross-type deduplication
-    /// (ensuring no page name collides with a folder name in the same listing) is the
-    /// caller's responsibility.
+    /// Combined children of a folder: pages, sub-folders and whiteboards (Cloud
+    /// only; DC returns `.empty`). Entries are deduplicated within their own type;
+    /// cross-type deduplication (ensuring no page name collides with a folder or
+    /// whiteboard name in the same listing) is the caller's responsibility.
     public func folderChildren(folderId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
         guard client.config.edition.isCloud else { return .empty }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
@@ -431,7 +489,37 @@ public actor PageDataSource {
         let allChildren = try await fetchAll { cursor in
             try await self.client.listFolderChildren(folderId: folderId, cursor: cursor, limit: self.limit)
         }
-        let rawPages = allChildren.compactMap { child -> ConfluencePage? in
+        return makeChildrenResult(allChildren)
+    }
+
+    /// Combined children of a whiteboard: pages, folders and sub-whiteboards
+    /// (Cloud only; DC returns `.empty`). Whiteboards can act as containers in
+    /// the Cloud content tree just like folders.
+    public func whiteboardChildren(whiteboardId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
+        guard client.config.edition.isCloud else { return .empty }
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("whiteboardchildren/\(space)/\(whiteboardId)/\(pageListVariant)", ttl: ttl.pages) {
+            try await self.fetchWhiteboardChildren(whiteboardId: whiteboardId, normalizedSpace: space)
+        }
+    }
+
+    private func fetchWhiteboardChildren(whiteboardId: String, normalizedSpace space: String) async throws -> ConfluenceFolderChildrenResult {
+        let allChildren = try await fetchAll { cursor in
+            try await self.client.listWhiteboardChildren(whiteboardId: whiteboardId, cursor: cursor, limit: self.limit)
+        }
+        return makeChildrenResult(allChildren)
+    }
+
+    /// Whiteboard metadata (Cloud only). The canvas content itself is not exposed
+    /// by the REST API, so only descriptive metadata is available.
+    public func whiteboard(id: String) async throws -> ConfluenceWhiteboard {
+        try await cached("whiteboard/\(id)", ttl: ttl.pageDetail) {
+            try await self.client.getWhiteboard(id: id)
+        }
+    }
+
+    private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
+        let rawPages = children.compactMap { child -> ConfluencePage? in
             guard child.contentType == .page else { return nil }
             return ConfluencePage(
                 id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
@@ -439,11 +527,28 @@ public actor PageDataSource {
                 createdAt: child.createdAt, webURL: child.webURL
             )
         }
-        let rawFolders = allChildren.compactMap { child -> ConfluenceFolder? in
+        return ConfluenceFolderChildrenResult(
+            pages: makeEntries(rawPages),
+            folders: makeFolderEntries(folders(in: children)),
+            whiteboards: makeWhiteboardEntries(whiteboards(in: children))
+        )
+    }
+
+    private nonisolated func folders(in children: [ConfluenceFolderChild]) -> [ConfluenceFolder] {
+        children.compactMap { child in
             guard child.contentType == .folder else { return nil }
             return ConfluenceFolder(id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId)
         }
-        return ConfluenceFolderChildrenResult(pages: makeEntries(rawPages), folders: makeFolderEntries(rawFolders))
+    }
+
+    private nonisolated func whiteboards(in children: [ConfluenceFolderChild]) -> [ConfluenceWhiteboard] {
+        children.compactMap { child in
+            guard child.contentType == .whiteboard else { return nil }
+            return ConfluenceWhiteboard(
+                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                authorId: child.authorId, createdAt: child.createdAt, webURL: child.webURL
+            )
+        }
     }
 
     public func page(id: String) async throws -> ConfluencePage {
@@ -533,6 +638,18 @@ public actor PageDataSource {
                 let sanitized = FileNameSanitizer.sanitize(folder.title)
                 let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
                 return ConfluenceFolderEntry(folderName: name, folder: folder)
+            }
+    }
+
+    /// Builds sanitized, deduplicated whiteboard entries sorted by title.
+    private nonisolated func makeWhiteboardEntries(_ whiteboards: [ConfluenceWhiteboard]) -> [ConfluenceWhiteboardEntry] {
+        var taken = Set<String>()
+        return whiteboards
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            .map { whiteboard in
+                let sanitized = FileNameSanitizer.sanitize(whiteboard.title)
+                let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
+                return ConfluenceWhiteboardEntry(folderName: name, whiteboard: whiteboard)
             }
     }
 

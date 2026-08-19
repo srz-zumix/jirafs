@@ -80,6 +80,13 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
                 : []
             data = PageFileBuilder.html(page, folderName: htmlFolderName(for: node), attachments: attachments)
             applyPageTimes(page, to: node)
+        case .whiteboardMeta(_, let whiteboardId):
+            let whiteboard = try await dataSource.whiteboard(id: whiteboardId)
+            data = PageFileBuilder.whiteboardMeta(whiteboard)
+            if let created = parseConfluenceDate(whiteboard.createdAt) {
+                node.cachedBirthTime = created
+                node.cachedMTime = created
+            }
         case .labels(_, let pageId):
             let labels = try await dataSource.labels(pageId: pageId)
             data = PageFileBuilder.labels(labels)

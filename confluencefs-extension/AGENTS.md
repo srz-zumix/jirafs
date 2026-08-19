@@ -32,6 +32,10 @@ Pages are nested: child pages live inside their parent page's directory.
         │   └── NNN_author_YYYY-MM-DD.md  # NNN = 1-based comment index
         ├── .attachments/    # Raw attachment files
         │   └── <filename> # Original filename (sanitized; duplicates get " (N)" suffix)
+        ├── {Folder Title}/     # Confluence folder (Cloud only; recursive)
+        ├── {Whiteboard Title}/ # Confluence whiteboard (Cloud only)
+        │   ├── .metadata.json    # Whiteboard metadata (JSON), including its webURL
+        │   └── ...               # Pages/folders/whiteboards nested under the board
         ├── {Child Page Title}.html  # Child page HTML (HTML mode only)
         └── {Child Page Title}/      # Child page directory (recursive)
 ```
@@ -47,6 +51,7 @@ Pages are nested: child pages live inside their parent page's directory.
 | `.comments/NNN_author_YYYY-MM-DD.md` | Markdown | Individual comment body; `NNN` is 1-based index for stable ordering |
 | `.attachments/<filename>` | Binary | Attachment downloaded lazily on read (bounded range requests; never fully buffered) |
 | `{Page Title}.html` | HTML | Self-contained view with body and comments (only when HTML mode is enabled) |
+| `{Whiteboard Title}/.metadata.json` | JSON | Whiteboard id, title, spaceId, parentId, author, createdAt, webURL |
 
 ## Notes for Agents
 
@@ -54,6 +59,7 @@ Pages are nested: child pages live inside their parent page's directory.
 - **Error semantics**: A missing space, page, or file returns `ENOENT`; authentication or permission failures return `EACCES`; rate-limited requests return `EAGAIN`; transient server, network, or decoding errors return `EIO`.
 - **Sanitized names**: Page titles and attachment filenames are sanitized (slashes, control characters, and leading dots become underscores). Duplicate names within a directory get a ` (N)` suffix. Page titles are unique within a space; the sanitized path is resolved internally to the stable Confluence page id.
 - **Restricted/archived filtering**: By default, view-restricted pages are hidden (`includeRestricted` defaults to off) and archived pages are excluded (`includeArchived` defaults to off). Both are controlled per mount in the host app. A page that exists in Confluence but is absent here may be intentionally filtered out, not missing.
+- **Whiteboards**: Cloud-only. The drawing canvas is not exposed by the Confluence REST API, so a whiteboard directory contains only `.metadata.json` plus any pages/folders/whiteboards nested under it; open `webURL` in a browser to see the board itself. Folders and whiteboards without a parent (top level of a space) are not listed, because Confluence Cloud offers no API to enumerate them.
 - **File timestamps**:
   - `page.md`, `.metadata.json`, `{Title}.html` → birthtime = page `created`; mtime is derived from the page `version` (advances one second per version past creation), so it moves forward on each edit. It is **not** a true wall-clock "last edited" time — use the `version` field in `.metadata.json` for exact change tracking.
   - `.comments/*.md` → mtime = birthtime = comment `created`.
