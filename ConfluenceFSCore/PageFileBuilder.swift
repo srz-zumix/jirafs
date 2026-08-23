@@ -54,6 +54,48 @@ public enum PageFileBuilder {
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
     }
 
+    /// `whiteboard.md` — the whiteboard canvas as rendered by Rovo MCP. The
+    /// rendering is produced by a beta API and may vary between calls, so the
+    /// provenance note is part of the file.
+    public static func whiteboardBody(_ whiteboard: ConfluenceWhiteboard, content: String) -> Data {
+        var out = "# \(whiteboard.title)\n\n"
+        out += "> Rendered from the whiteboard canvas via the Atlassian Rovo MCP server (beta).\n"
+        out += "> The Confluence REST API does not expose this content.\n\n"
+        out += WhiteboardCanvasRenderer.render(content) ?? content
+        if !out.hasSuffix("\n") { out += "\n" }
+        return Data(out.utf8)
+    }
+
+    /// `whiteboard.json` — the Rovo MCP response verbatim, so that consumers can
+    /// parse fields the Markdown rendering drops.
+    public static func whiteboardRaw(content: String) -> Data {
+        Data((content.hasSuffix("\n") ? content : content + "\n").utf8)
+    }
+
+    /// `whiteboard.svg` — an approximate drawing of the canvas. Falls back to a
+    /// title-only image when the payload cannot be parsed.
+    public static func whiteboardSVG(_ whiteboard: ConfluenceWhiteboard, content: String) -> Data {
+        if let svg = WhiteboardSVGRenderer.render(content, title: whiteboard.title) {
+            return Data(svg.utf8)
+        }
+        let title = whiteboard.title
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        return Data("""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 120" width="480" height="120">
+            <title>\(title)</title>
+            <rect width="480" height="120" fill="#ffffff"/>
+            <text x="240" y="56" font-family="Helvetica, Arial, sans-serif" font-size="16" \
+            fill="#172b4d" text-anchor="middle">\(title)</text>
+            <text x="240" y="80" font-family="Helvetica, Arial, sans-serif" font-size="12" \
+            fill="#626f86" text-anchor="middle">The canvas could not be drawn.</text>
+            </svg>
+
+            """.utf8)
+    }
+
     /// `labels.txt` — one label per line (prefix-qualified when present).
     public static func labels(_ labels: [ConfluenceLabel]) -> Data {
         let lines = labels.map { label -> String in

@@ -391,8 +391,17 @@ extension ConfluenceVolume: FSVolume.Operations {
         case .whiteboardDir(let spaceKey, let whiteboardId):
             // A whiteboard acts as a container in the Cloud content tree: it can
             // hold pages, folders and nested whiteboards. Its own canvas is not
-            // exposed by the REST API, so only `.metadata.json` describes the board.
+            // exposed by the REST API, so only `.metadata.json` describes the board
+            // unless the mount opts into the Rovo MCP rendering.
             var kids = plain(ConfluencePathResolver.childKinds(of: kind))
+            if await dataSource.whiteboardContentEnabled {
+                kids.append((ConfluencePathResolver.WhiteboardFile.body.rawValue,
+                             .whiteboardBody(spaceKey: spaceKey, whiteboardId: whiteboardId), nil))
+                kids.append((ConfluencePathResolver.WhiteboardFile.raw.rawValue,
+                             .whiteboardRaw(spaceKey: spaceKey, whiteboardId: whiteboardId), nil))
+                kids.append((ConfluencePathResolver.WhiteboardFile.svg.rawValue,
+                             .whiteboardSVG(spaceKey: spaceKey, whiteboardId: whiteboardId), nil))
+            }
             var result: ConfluenceFolderChildrenResult = .empty
             do {
                 result = try await dataSource.whiteboardChildren(whiteboardId: whiteboardId, spaceKey: spaceKey)

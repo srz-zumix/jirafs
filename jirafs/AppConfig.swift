@@ -49,6 +49,9 @@ enum AppConfig {
         let entries: [Configuration.InstanceEntry] = store.mounts.compactMap { mount in
             guard mount.product == .jira,
                   let server = store.server(id: mount.serverID),
+                  // Scoped API tokens need the api.atlassian.com gateway, which
+                  // is only implemented for Confluence.
+                  server.auth.method != .scopedApiToken,
                   let conn = server.jira else { return nil }
             let auth = Configuration.AuthEntry(
                 method: jiraMethod(server.auth.method),
@@ -93,7 +96,7 @@ enum AppConfig {
             }
             let auth = ConfluenceConfiguration.AuthEntry(
                 method: confluenceMethod(server.auth.method),
-                email: server.auth.method == .apiToken ? server.auth.email : nil
+                email: server.auth.method.usesEmail ? server.auth.email : nil
             )
             return ConfluenceConfiguration.InstanceEntry(
                 mountID: mount.id,
@@ -109,6 +112,7 @@ enum AppConfig {
                 includeArchived: mount.includeArchived,
                 includeRestricted: mount.includeRestricted,
                 renderMacros: mount.renderMacros,
+                rovoWhiteboards: mount.rovoWhiteboards,
                 autoMount: mount.autoMount
             )
         }
@@ -119,7 +123,7 @@ enum AppConfig {
 
     private static func jiraMethod(_ m: ServerAuthMethod) -> Configuration.AuthEntry.Method {
         switch m {
-        case .apiToken: return .apiToken
+        case .apiToken, .scopedApiToken: return .apiToken
         case .pat: return .pat
         case .anonymous: return .none
         }
@@ -128,6 +132,7 @@ enum AppConfig {
     private static func confluenceMethod(_ m: ServerAuthMethod) -> ConfluenceConfiguration.AuthEntry.Method {
         switch m {
         case .apiToken: return .apiToken
+        case .scopedApiToken: return .apiTokenScoped
         case .pat: return .pat
         case .anonymous: return .none
         }

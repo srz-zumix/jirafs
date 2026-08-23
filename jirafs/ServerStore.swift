@@ -26,9 +26,14 @@ enum ServerAuthMethod: String, Codable, Sendable, Equatable {
     /// Anonymous access — no credentials. Used for public Atlassian sites
     /// (e.g. a public Confluence space).
     case anonymous
+    /// Cloud API token **with scopes**. Same Basic credentials as `apiToken`,
+    /// but the site host rejects it — requests go through `api.atlassian.com`.
+    /// Required by the Rovo MCP Teamwork Graph tools. Confluence only.
+    case scopedApiToken = "api_token_scoped"
     var displayName: String {
         switch self {
         case .apiToken: return "API Token"
+        case .scopedApiToken: return "API Token (scoped)"
         case .pat: return "PAT"
         case .anonymous: return "Anonymous"
         }
@@ -37,12 +42,15 @@ enum ServerAuthMethod: String, Codable, Sendable, Equatable {
     /// Whether this method requires a credential stored in the Keychain.
     var usesKeychain: Bool { self != .anonymous }
 
+    /// Whether this method authenticates with an email + API token pair.
+    var usesEmail: Bool { self == .apiToken || self == .scopedApiToken }
+
     /// Keychain account name used for this method.
     /// API Token uses the email (or "api_token" when blank); PAT uses "pat";
     /// anonymous stores nothing (returns "anonymous" only as a stable label).
     func keychainAccount(email: String?) -> String {
         switch self {
-        case .apiToken:
+        case .apiToken, .scopedApiToken:
             let e = email ?? ""
             return e.isEmpty ? "api_token" : e
         case .pat:
@@ -125,13 +133,18 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     /// Confluence-only: fetch the server-rendered `view` body so dynamic macros
     /// (e.g. Table of Contents) are evaluated. Ignored for JIRA. Defaults to `true`.
     var renderMacros: Bool
+    /// Confluence-only, experimental: expose whiteboard canvases as
+    /// `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` via the Atlassian
+    /// Rovo MCP server. Cloud + API-token auth only. Ignored for JIRA. Defaults
+    /// to `false`.
+    var rovoWhiteboards: Bool
     var autoMount: Bool
 
     init(id: String = UUID().uuidString, serverID: String, product: MountProduct,
          name: String, mountPath: String? = nil, allowedKeys: [String]? = nil,
          diskCache: Bool = true, htmlView: Bool = false,
          includeArchived: Bool = false, includeRestricted: Bool = false,
-         renderMacros: Bool = true, autoMount: Bool = false) {
+         renderMacros: Bool = true, rovoWhiteboards: Bool = false, autoMount: Bool = false) {
         self.id = id
         self.serverID = serverID
         self.product = product
@@ -143,6 +156,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
+        self.rovoWhiteboards = rovoWhiteboards
         self.autoMount = autoMount
     }
 
@@ -159,6 +173,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
         includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
         renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
+        rovoWhiteboards = try c.decodeIfPresent(Bool.self, forKey: .rovoWhiteboards) ?? false
         autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
     }
 

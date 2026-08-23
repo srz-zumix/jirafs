@@ -54,6 +54,12 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// representation so dynamic macros (e.g. Table of Contents) are evaluated.
         /// Defaults to `true`.
         public var renderMacros: Bool
+        /// When `true`, whiteboard directories expose `whiteboard.md`,
+        /// `whiteboard.json` and `whiteboard.svg`, built from a single Atlassian
+        /// Rovo MCP fetch. Cloud + API-token auth only,
+        /// experimental, and off by default: the MCP tools are beta, rate limited
+        /// per site, and billed in Rovo credits once out of beta.
+        public var rovoWhiteboards: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
         /// Defaults to `false`.
         public var autoMount: Bool
@@ -69,7 +75,8 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
                     url: URL, auth: AuthEntry,
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
-                    includeRestricted: Bool = false, renderMacros: Bool = true, autoMount: Bool = false) {
+                    includeRestricted: Bool = false, renderMacros: Bool = true,
+                    rovoWhiteboards: Bool = false, autoMount: Bool = false) {
             self.mountID = mountID
             self.serverID = serverID
             self.name = name
@@ -83,6 +90,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             self.includeArchived = includeArchived
             self.includeRestricted = includeRestricted
             self.renderMacros = renderMacros
+            self.rovoWhiteboards = rovoWhiteboards
             self.autoMount = autoMount
         }
 
@@ -101,12 +109,20 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             includeArchived = try c.decodeIfPresent(Bool.self, forKey: .includeArchived) ?? false
             includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
             renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
+            rovoWhiteboards = try c.decodeIfPresent(Bool.self, forKey: .rovoWhiteboards) ?? false
             autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }
 
     public struct AuthEntry: Codable, Sendable, Equatable {
-        public enum Method: String, Codable, Sendable { case apiToken = "api_token", pat, none }
+        public enum Method: String, Codable, Sendable {
+            case apiToken = "api_token"
+            /// API token with scopes; reaches the site through the
+            /// `api.atlassian.com` gateway instead of the site host.
+            case apiTokenScoped = "api_token_scoped"
+            case pat
+            case none
+        }
         public var method: Method
         public var email: String?
 

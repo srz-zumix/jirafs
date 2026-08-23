@@ -305,10 +305,33 @@ JIRA Cloud (ADF 形式) と Server (wiki markup) の両方を Markdown に変換
 | 方式 | Cloud | Server | 設定項目 |
 |---|---|---|---|
 | API Token | ✅ | ❌ | email + token |
+| API Token (scoped) | ✅ (Confluence のみ) | ❌ | email + token |
 | Personal Access Token (PAT) | ❌ | ✅ | token |
 | Anonymous (匿名) | ✅ | ✅ | なし |
 
 認証情報は macOS Keychain に保存する。Anonymous は認証情報を保存せず、`Authorization` ヘッダを付けずにリクエストする (公開された JIRA / Confluence サイト向け)。HTTPS 必須は Anonymous でも維持される。
+
+#### API Token (scoped) — `api.atlassian.com` ゲートウェイ
+
+Atlassian の **スコープ付き API トークン** (id.atlassian.com の "Create API token with scopes") は
+従来のトークンと同じ HTTP Basic (`email:token`) だが、**サイトホストでは 401 になる**。
+リクエスト先を API ゲートウェイに変える必要がある。
+
+| | ベース URL | 例 |
+|---|---|---|
+| 従来のトークン | `https://{site}.atlassian.net` | `…/wiki/api/v2/pages` |
+| スコープ付きトークン | `https://api.atlassian.com/ex/confluence/{cloudId}` | `…/ex/confluence/{cloudId}/wiki/api/v2/pages` |
+
+- `cloudId` はサイトの認証不要エンドポイント `GET {siteURL}/_edge/tenant_info` から取得し、
+  `ConfluenceRESTClient` がインスタンスごとに一度だけ解決してキャッシュする。
+- 添付ファイルの `downloadLink` はルート相対 (`/download/attachments/…`) なので、
+  ゲートウェイ利用時は `/ex/confluence/{cloudId}` のコンテキストパスも前置する。
+  同一オリジンチェックはゲートウェイのベース URL に対して行う。
+- Rovo MCP に渡すのは**ブラウザ URL** なので、`RovoWhiteboardSource.siteBaseURL` には
+  ゲートウェイではなくサイト URL (`config.baseURL`) をそのまま渡す。
+- JIRA 側 (`https://api.atlassian.com/ex/jira/{cloudId}`) は未実装。認証情報は Server 単位で
+  共有されるため、`ServerEditorView` はスコープ付きトークン + JIRA 接続の組み合わせを保存させず、
+  `AppConfig.deriveJira` も該当マウントを除外する。
 
 ### 主要エンドポイント
 
@@ -510,7 +533,7 @@ FSKit のボリュームは受動的で、Finder (カーネル) はディレク�
 |---|---|
 | Access Group | `$(AppIdentifierPrefix)com.zumix.jirafs.shared` |
 | Service (項目名) | `com.zumix.jirafs.<instanceName>` |
-| Account | 認証方式に応じた識別子 (例: API Token なら email, PAT なら `pat`)。Anonymous は Keychain を使用しない |
+| Account | 認証方式に応じた識別子 (例: API Token / API Token (scoped) なら email, PAT なら `pat`)。Anonymous は Keychain を使用しない |
 | Service (ディスクキャッシュ鍵) | `com.zumix.jirafs.cachekey.<SHA256(product\|instanceName) 先頭16B hex>` / Account `cache_encryption_key` |
 
 両ターゲットの `entitlements` に以下を含める。
@@ -698,7 +721,7 @@ App Extension のバンドル ID は親アプリ (`com.zumix.jirafs`) の prefix
 
 | エディション | API | 認証 |
 | --- | --- | --- |
-| Cloud | `/wiki/api/v2/` (カーソルページネーション) | API Token (email + token, Basic) / Anonymous |
+| Cloud | `/wiki/api/v2/` (カーソルページネーション) | API Token (email + token, Basic) / API Token (scoped) / Anonymous |
 | Data Center | `/rest/api/` (start/limit ページネーション) | PAT (Bearer) / Anonymous |
 
 Keychain は JIRA と同じ共有アクセスグループ
@@ -725,6 +748,9 @@ Confluence スペース / ページを認証なしでマウントできる。HTT
         ├── {Folder Title}/        # Cloud のみ。フォルダ (再帰)
         ├── {Whiteboard Title}/    # Cloud のみ。ホワイトボード
         │   ├── .metadata.json     # ホワイトボードのメタデータ (webURL 含む)
+        │   ├── whiteboard.md      # rovoWhiteboards:true のときのみ。キャンバスのテキスト化
+        │   ├── whiteboard.json    # rovoWhiteboards:true のときのみ。MCP レスポンス生データ
+        │   ├── whiteboard.svg     # rovoWhiteboards:true のときのみ。キャンバスの近似描画
         │   └── ...                # 配下のページ / フォルダ / ホワイトボード (再帰)
         ├── {Child Page Title}.html
         └── {Child Page Title}/    # 子ページ (再帰)
@@ -745,6 +771,95 @@ createdAt / webURL) のみを公開し、実体は `webURL` からブラウザ�
 名前が衝突する場合は同一ディレクトリ内でページ → フォルダ → ホワイトボードの
 順に重複解決 (`FileNameSanitizer.deduplicate`) する。Data Center には
 フォルダ / ホワイトボードの概念がないため常に空。
+
+#### ホワイトボードのキャンバス取得 (Rovo MCP / 実験的)
+
+`rovoWhiteboards: true` のマウントに限り、ホワイトボードディレクトリに
+`whiteboard.md` (Markdown 化) / `whiteboard.json` (レスポンス生データ) /
+`whiteboard.svg` (キャンバスの近似描画) を追加
+する。3 ファイルは同一のキャッシュエントリを共有するため API 呼び出しは 1 回。
+内容は Atlassian Rovo MCP サーバ
+(`https://mcp.atlassian.com/v1/mcp`) の Teamwork Graph 系ツールから取得する。
+
+- `AtlassianCore.MCPClient` が JSON-RPC 2.0 over Streamable HTTP を話す
+  (`initialize` → `notifications/initialized` → `tools/list` / `tools/call`)。
+  レスポンスは JSON / SSE の両方を受理し、`Mcp-Session-Id` を保持する
+- 認証は `AuthProvider` に委譲。Rovo MCP の API トークン認証を使うため
+  **Cloud + `apiToken` のマウントのみ有効**。それ以外は起動時に無効化してログを残す
+- ツールは beta のため、`ConfluenceAPI.RovoWhiteboardSource` がマウントごとに
+  一度 `tools/list` を実行し、`getTeamworkGraphObject(cloudId:objects:)` /
+  `getTeamworkGraphContext(cloudId:objectIdentifier:objectType:detailLevel:)`
+  を明示的に束縛する。未知のツールは `inputSchema` から URL/ARI を受け取る
+  プロパティを推定してフォールバックする。候補は順に試し、成功したものを固定する
+- `cloudId` はサイトの `_edge/tenant_info` (認証不要) から取得してキャッシュする
+- `getTeamworkGraphContext` の `objectType` は `ConfluenceWhiteboard`
+- ホワイトボードの `_links.webui` は相対パスなので `{baseURL}/wiki{webui}` に
+  絶対化して渡す
+- `getTeamworkGraphObject` は URL を解決できないとき **HTTP 200 + `objects: []`
+  + `errors[]`** を返す (`isError` は立たない)。`resolutionFailure(in:)` で
+  この形を失敗と見なし、ARI
+  (`ari:cloud:confluence:{cloudId}:whiteboard/{id}`) で再試行し、それも駄目なら
+  次のツールにフォールバックする。成功したロケータ形式はピン留めする
+- 前提条件が 2 つあり、どちらも Atlassian 側の設定で、満たさないと `tools/call`
+  だけが 403 で失敗する (`tools/list` までは成功する)
+  - 組織が API トークンによる MCP 接続を許可していること
+    (`You don't have permission to connect via API token.`)
+  - スコープ付き API トークンであること。スコープ無しの旧トークンは不可
+    (`Teamwork Graph tools require a modern API token (API token with scopes).`)
+    → サーバの認証方式を **API Token (scoped)** にする。REST 呼び出しは
+    `api.atlassian.com` ゲートウェイ経由になる (「認証方式」節を参照)
+- いずれも `MCPError.accessDenied` としてマウント単位でスティッキーにキャッシュし
+  (リトライ嵐の防止)、`EACCES` を返す
+- Rovo MCP はサイト単位で 500〜1000 calls/hour のレート制限があり、GA 後は
+  Rovo クレジット課金になるため、キャッシュ TTL は `pageDetail` と 1 時間の
+  大きい方を採用する (`PageDataSource.whiteboardContentMinimumTTL`)
+- レスポンスは生のままキャッシュし、`whiteboard.json` にはそのまま出力する。
+  `whiteboard.md` は生成時に
+  `WhiteboardCanvasRenderer` で Markdown 化する。JSON は 3 重にネストしており
+  (MCP エンベロープ → `raw.bodyValue` の `WHITEBOARD_DOC_FORMAT` 文字列 →
+  各ノードの `text` は ADF 文字列)、ノードをキャンバス座標の
+  上→下・左→右順に並べて箇条書きにする。テキストを持たないノードは
+  種別と個数を末尾に要約する。ベータ仕様のため形が変わったら
+  `nil` を返して生レスポンスをそのまま出力する
+- `whiteboard.svg` は `WhiteboardSVGRenderer` がキャンバスを SVG に近似描画する。
+  ノードを `zIndex` 順に描き、全ノードの外接矩形 + 余白を `viewBox` にする
+  - `geometry.position` はノードの**中心**座標 (左上ではない)。`geometry` が
+    無いノードは `legacyGeometry` を見る
+  - `sticky` / `text` / `shape` → 角丸矩形 + 中央寄せテキスト。折り返し幅は
+    CJK を 1.0em、それ以外を 0.55em として概算する
+  - `drawing` → `points` (`"0"` / `"1"` キーの**絶対**座標) を各セグメント中点を
+    通る二次ベジェで平滑化して描く (直線結びだと Confluence よりカクカクして見える)。
+    このノードは `legacyGeometry` しか持たないため外接矩形も points から求める
+  - `connector` → `presentation: dynamic` は Confluence では直角ルーティングなので、
+    `sourceAnchor` / `targetAnchor` の法線方向に 24 単位のスタブを伸ばして
+    角丸 (r=8) のエルボーを描く。`endCap` / `startCap` が `arrow` のときだけ
+    矢印マーカーを付け、`strokeStyle: dashed` は破線にする
+  - コネクタの `start` / `end` は形状を動かすと**古い値のまま残る**キャッシュなので、
+    トップレベル `edges` の `sourceNode` / `targetNode` からノードを引いて
+    アンカー位置を再計算する (引けないときだけ `start` / `end` にフォールバック)
+  - `image` → 実体は Atlassian Media Services にあり、Confluence の API トークン
+    (scoped / unscoped どちらも) では取得できない。破線のプレースホルダに
+    mimeType / `nativeSize` / `fileId` 先頭 8 桁をラベルとして描く
+    (枠の高さに収まらない行は落とす)。取得不能の根拠は
+    [媒体取得が不可能な理由](#媒体取得が不可能な理由) を参照
+  - 色トークン `palette.{light|dark}.{hue}.{shade}` は公開値が無いため HSL で
+    近似する (厳密な一致ではない)
+  - 描画できない形のときは `nil` を返し、タイトルのみのプレースホルダ SVG を出力する
+
+#### 媒体取得が不可能な理由
+
+ホワイトボードの `image` ノードが持つのは Media Services の `fileId` だけで、
+ダウンロード URL は含まれない。実測した結果:
+
+- `https://api.atlassian.com/ex/confluence/{cloudId}` ゲートウェイは
+  **スコープに対応しないパスを全て 401 `"Unauthorized; scope does not match"`**
+  で返す (存在しないパスも同じ 401)。`/wiki/rest/api/media/*` に対応する
+  OAuth スコープが無いため到達できない
+- サイトホスト直叩き + unscoped API トークンでは `/wiki/rest/api/media/token` が
+  **404** (エンドポイント自体が存在しない)
+- `https://api.media.atlassian.com/file/{fileId}` は media トークン必須で 401
+- ホワイトボードの画像は添付として登録されていない
+  (v1 `child/attachment` は空、v2 `attachments` の一覧にも `fileId` は現れない)
 
 ### 本文変換
 
@@ -772,6 +887,7 @@ Confluence 用設定は JIRA とは別の config.json に保存する。
 | `htmlView` | `Bool` | `false` | 各ページの兄弟として `{Title}.html` ファイルを生成する |
 | `includeArchived` | `Bool` | `false` | アーカイブ済みページをディレクトリ一覧に含める |
 | `includeRestricted` | `Bool` | `false` | ユーザー/グループ閲覧制限・編集制限があるページをディレクトリ一覧に含める。`false` (デフォルト) の場合、read または update 操作に 1 件以上のユーザー/グループ制限が設定されているページは非表示になる |
+| `rovoWhiteboards` | `Bool` | `false` | **実験的**。ホワイトボードディレクトリに `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` (Rovo MCP 経由のキャンバス取得) を追加する。Cloud + API Token 認証のマウントでのみ有効 (実際に `tools/call` が通るのは scoped トークンのみ) |
 
 ### マウント
 

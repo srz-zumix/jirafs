@@ -154,6 +154,9 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
             let base = "whiteboardDir:\(space):\(id)"
             return displayName == nil ? base : "\(base):\(displayName!)"
         case .whiteboardMeta(let space, let id):      return "whiteboardMeta:\(space):\(id)"
+        case .whiteboardBody(let space, let id):      return "whiteboardBody:\(space):\(id)"
+        case .whiteboardRaw(let space, let id):       return "whiteboardRaw:\(space):\(id)"
+        case .whiteboardSVG(let space, let id):       return "whiteboardSVG:\(space):\(id)"
         }
     }
 }

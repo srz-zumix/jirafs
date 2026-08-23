@@ -22,6 +22,7 @@ struct MountEditorView: View {
     @State private var includeArchived: Bool
     @State private var includeRestricted: Bool
     @State private var renderMacros: Bool
+    @State private var rovoWhiteboards: Bool
     @State private var autoMount: Bool
     @State private var saveError: String?
 
@@ -60,6 +61,7 @@ struct MountEditorView: View {
         // Default-on for new/legacy configs (missing field decodes to `true`);
         // otherwise preserve the stored value to honor explicit user intent.
         _renderMacros = State(initialValue: initial?.renderMacros ?? true)
+        _rovoWhiteboards = State(initialValue: initial?.rovoWhiteboards ?? false)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -146,6 +148,12 @@ struct MountEditorView: View {
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .help("Fetch the server-rendered view so dynamic macros (e.g. Table of Contents) are expanded. On by default.")
+                            }
+                            fieldRow("Whiteboards (Rovo)") {
+                                Toggle("", isOn: $rovoWhiteboards)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .help("Experimental: expose whiteboard canvases as whiteboard.md / whiteboard.json / whiteboard.svg via the Atlassian Rovo MCP server. Cloud + API token only; rate limited and billed in Rovo credits. Off by default.")
                             }
                         }
                         fieldRow("Auto-mount") {
@@ -289,6 +297,7 @@ struct MountEditorView: View {
             includeArchived: product == .confluence ? includeArchived : false,
             includeRestricted: product == .confluence ? includeRestricted : false,
             renderMacros: renderMacros,
+            rovoWhiteboards: product == .confluence ? rovoWhiteboards : false,
             autoMount: autoMount
         )
         onSave(mount)

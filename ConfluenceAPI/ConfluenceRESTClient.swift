@@ -7,10 +7,14 @@ import AtlassianCore
 /// speaks REST v1 (`/rest/api/`, start/limit pagination). The two dialects are
 /// bridged onto the shared `Confluence*` domain models here.
 public actor ConfluenceRESTClient: ConfluenceClient {
+    /// Gateway that accepts scoped API tokens.
+    private static let gatewayOrigin = URL(string: "https://api.atlassian.com")!
+
     public let config: ConfluenceInstanceConfig
     private let auth: AuthProvider
     private let transport: HTTPTransport
     private let decoder: JSONDecoder
+    private var cachedGatewayBase: URL?
     private let logger = AtlassianLog.logger("confluence-api")
 
     /// Expand string that fetches restriction subjects (user + group) for both
@@ -119,7 +123,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     public func getPage(id: String, bodyFormat: ConfluenceBodyFormat) async throws -> ConfluencePage {
         if config.edition.isCloud {
             let query = [URLQueryItem(name: "body-format", value: bodyFormat.rawValue)]
-            let page: CloudPage = try await sendDecoding(url: try cloudURL("pages/\(id)", query: query))
+            let page: CloudPage = try await sendDecoding(url: try await cloudURL("pages/\(id)", query: query))
             return page.domain(format: bodyFormat)
         } else {
             // DC: ADF is Cloud-only. `view` yields server-rendered HTML (macros
@@ -127,7 +131,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             let bodyExpand = bodyFormat == .view ? "body.view" : "body.storage"
             let expand = "\(bodyExpand),version,space,ancestors,history"
             let query = [URLQueryItem(name: "expand", value: expand)]
-            let page: DCPage = try await sendDecoding(url: try dcURL("content/\(id)", query: query))
+            let page: DCPage = try await sendDecoding(url: try await dcURL("content/\(id)", query: query))
             return page.domain
         }
     }
@@ -165,7 +169,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     }
 
     public func downloadAttachment(_ attachment: ConfluenceAttachment, range: Range<Int>?) async throws -> RangedDownload {
-        guard let link = attachment.downloadLink, let url = resolveURL(link) else {
+        guard let link = attachment.downloadLink, let url = try await resolveURL(link) else {
             throw AtlassianError.invalidURL
         }
         var request = URLRequest(url: url)
@@ -183,7 +187,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     }
 
     public func attachmentSize(_ attachment: ConfluenceAttachment) async throws -> Int? {
-        guard let link = attachment.downloadLink, let url = resolveURL(link) else {
+        guard let link = attachment.downloadLink, let url = try await resolveURL(link) else {
             throw AtlassianError.invalidURL
         }
         var request = URLRequest(url: url)
@@ -257,7 +261,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     public func getWhiteboard(id: String) async throws -> ConfluenceWhiteboard {
         // Whiteboards are a Cloud-only concept; DC has no equivalent resource.
         guard config.edition.isCloud else { throw AtlassianError.notFound }
-        let whiteboard: CloudWhiteboard = try await sendDecoding(url: try cloudURL("whiteboards/\(id)", query: []))
+        let whiteboard: CloudWhiteboard = try await sendDecoding(url: try await cloudURL("whiteboards/\(id)", query: []))
         return whiteboard.domain
     }
 
@@ -277,7 +281,7 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             var query = baseQuery
             query.append(URLQueryItem(name: "start", value: String(start)))
             query.append(URLQueryItem(name: "limit", value: String(limit)))
-            let url = try cloudV1URL(path, query: query)
+            let url = try await cloudV1URL(path, query: query)
             let page: V1ContentList = try await limiter.run {
                 try await self.sendDecoding(url: url)
             }
@@ -308,16 +312,16 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         var query = extraQuery
         query.append(URLQueryItem(name: "limit", value: String(limit)))
         if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
-        return try await sendDecoding(url: try cloudURL(path, query: query))
+        return try await sendDecoding(url: try await cloudURL(path, query: query))
     }
 
-    private func cloudURL(_ path: String, query: [URLQueryItem]) throws -> URL {
-        try buildURL(basePath: "/wiki/api/v2/\(path)", query: query)
+    private func cloudURL(_ path: String, query: [URLQueryItem]) async throws -> URL {
+        try await buildURL(basePath: "/wiki/api/v2/\(path)", query: query)
     }
 
     /// Cloud v1 REST API URL builder: `/wiki/rest/api/{path}`.
-    private func cloudV1URL(_ path: String, query: [URLQueryItem]) throws -> URL {
-        try buildURL(basePath: "/wiki/rest/api/\(path)", query: query)
+    private func cloudV1URL(_ path: String, query: [URLQueryItem]) async throws -> URL {
+        try await buildURL(basePath: "/wiki/rest/api/\(path)", query: query)
     }
 
     // MARK: - Data Center (v1) helpers
@@ -332,11 +336,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         let start = cursor.flatMap(Int.init) ?? 0
         query.append(URLQueryItem(name: "start", value: String(start)))
         query.append(URLQueryItem(name: "limit", value: String(limit)))
-        return try await sendDecoding(url: try dcURL(path, query: query))
+        return try await sendDecoding(url: try await dcURL(path, query: query))
     }
 
-    private func dcURL(_ path: String, query: [URLQueryItem]) throws -> URL {
-        try buildURL(basePath: "/rest/api/\(path)", query: query)
+    private func dcURL(_ path: String, query: [URLQueryItem]) async throws -> URL {
+        try await buildURL(basePath: "/rest/api/\(path)", query: query)
     }
 
     /// Bridges a Data Center paginated response onto `ConfluencePageList`,
@@ -393,8 +397,8 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         try await auth.authorize(&request)
     }
 
-    private func buildURL(basePath: String, query: [URLQueryItem]) throws -> URL {
-        guard var components = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false) else {
+    private func buildURL(basePath: String, query: [URLQueryItem]) async throws -> URL {
+        guard var components = URLComponents(url: try await apiBaseURL(), resolvingAgainstBaseURL: false) else {
             throw AtlassianError.invalidURL
         }
         let prefix = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
@@ -402,6 +406,44 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         if !query.isEmpty { components.queryItems = query }
         guard let url = components.url else { throw AtlassianError.invalidURL }
         return url
+    }
+
+    /// Whether requests must go through the `api.atlassian.com` gateway.
+    private var usesGateway: Bool { config.scopedToken && config.edition.isCloud }
+
+    /// Origin (plus context path) every REST path is appended to.
+    ///
+    /// Normally the configured site URL. Scoped API tokens, however, are only
+    /// accepted at `https://api.atlassian.com/ex/confluence/{cloudId}`; the site
+    /// host rejects them with 401.
+    private func apiBaseURL() async throws -> URL {
+        guard usesGateway else { return config.baseURL }
+        if let cachedGatewayBase { return cachedGatewayBase }
+        let cloudID = try await fetchCloudID()
+        guard let url = URL(string: "/ex/confluence/\(cloudID)", relativeTo: Self.gatewayOrigin)?.absoluteURL else {
+            throw AtlassianError.invalidURL
+        }
+        logger.debug("confluence gateway base=\(url.absoluteString, privacy: .public)")
+        cachedGatewayBase = url
+        return url
+    }
+
+    /// The site's cloud ID, from its unauthenticated `_edge/tenant_info` endpoint.
+    private func fetchCloudID() async throws -> String {
+        guard let url = URL(string: "/_edge/tenant_info", relativeTo: config.baseURL)?.absoluteURL else {
+            throw AtlassianError.invalidURL
+        }
+        let (data, http) = try await transport.data(for: URLRequest(url: url))
+        guard (200..<300).contains(http.statusCode) else {
+            logger.error("tenant_info failed: status=\(http.statusCode, privacy: .public) url=\(url.absoluteString, privacy: .public)")
+            throw mapError(status: http.statusCode, http: http)
+        }
+        struct TenantInfo: Decodable { let cloudId: String }
+        do {
+            return try decoder.decode(TenantInfo.self, from: data).cloudId
+        } catch {
+            throw AtlassianError.decoding("tenant_info: \(String(describing: error))")
+        }
     }
 
     /// Resolves a possibly-relative link (e.g. `/download/attachments/...`)
@@ -426,14 +468,22 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     /// Resolving them against the bare origin drops `/wiki` and yields a 404, so
     /// a root-relative Cloud link that does not already carry `/wiki` is given
     /// the `/wiki` prefix before resolution. DC links resolve as-is.
-    private func resolveURL(_ link: String) -> URL? {
+    ///
+    /// **Gateway:** when a scoped token routes through
+    /// `api.atlassian.com/ex/confluence/{cloudId}`, a root-relative link would
+    /// drop that context path, so it is prepended too.
+    private func resolveURL(_ link: String) async throws -> URL? {
         var link = link
         if config.edition.isCloud,
            link.hasPrefix("/"), !link.hasPrefix("//"),
            link != "/wiki", !link.hasPrefix("/wiki/") {
             link = "/wiki" + link
         }
-        return InstanceURLValidator.sameOriginURL(link, base: config.baseURL)
+        let base = try await apiBaseURL()
+        if usesGateway, link.hasPrefix("/"), !link.hasPrefix("//") {
+            link = base.path + link
+        }
+        return InstanceURLValidator.sameOriginURL(link, base: base)
     }
 
     private func validate(http: HTTPURLResponse, data: Data) throws {

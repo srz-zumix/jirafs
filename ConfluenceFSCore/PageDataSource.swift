@@ -112,6 +112,9 @@ public actor PageDataSource {
     /// representation so dynamic macros (e.g. Table of Contents) arrive already
     /// expanded. Defaults to `true` (raw storage format when disabled).
     public let renderMacros: Bool
+    /// Rovo MCP source for whiteboard canvases. `nil` (default) disables the
+    /// feature and hides `whiteboard.md` / `whiteboard.json` / `whiteboard.svg`.
+    public let rovoWhiteboards: RovoWhiteboardSource?
     private let limiter: RateLimiter
     private let logger = AtlassianLog.logger("confluence-datasource")
 
@@ -228,6 +231,7 @@ public actor PageDataSource {
         includeArchived: Bool = false,
         includeRestricted: Bool = false,
         renderMacros: Bool = true,
+        rovoWhiteboards: RovoWhiteboardSource? = nil,
         maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
@@ -238,6 +242,7 @@ public actor PageDataSource {
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
+        self.rovoWhiteboards = rovoWhiteboards
         let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
         self.attachmentBytes = AttachmentByteCache(maxInlineBytes: normalizedMaxInlineAttachmentBytes)
@@ -515,6 +520,26 @@ public actor PageDataSource {
     public func whiteboard(id: String) async throws -> ConfluenceWhiteboard {
         try await cached("whiteboard/\(id)", ttl: ttl.pageDetail) {
             try await self.client.getWhiteboard(id: id)
+        }
+    }
+
+    /// `true` when this mount can serve whiteboard canvases via Rovo MCP.
+    public var whiteboardContentEnabled: Bool { rovoWhiteboards != nil }
+
+    /// Floor for the whiteboard-canvas cache TTL. Rovo MCP is rate limited per
+    /// site (and billed in Rovo credits), so a canvas is held far longer than
+    /// ordinary REST detail responses.
+    public static let whiteboardContentMinimumTTL: TimeInterval = 3600
+
+    /// Whiteboard canvas rendered to text via Rovo MCP (Cloud only, opt-in).
+    public func whiteboardContent(id: String) async throws -> String {
+        guard let rovoWhiteboards else { throw AtlassianError.unsupported }
+        let board = try await whiteboard(id: id)
+        let contentTTL = ttl.pageDetail <= 0
+            ? ttl.pageDetail
+            : max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
+        return try await cached("whiteboardcontent/\(id)", ttl: contentTTL) {
+            try await rovoWhiteboards.content(for: board)
         }
     }
 

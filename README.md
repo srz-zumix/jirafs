@@ -16,6 +16,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
 - **Anonymous access** — mount public JIRA/Confluence sites without credentials
+- **Whiteboard canvases (experimental)** — Confluence whiteboards can expose `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` via the Atlassian Rovo MCP server (Confluence Cloud with an *API Token (scoped)* only; off by default)
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
 - Background auto-refresh — newly created issues/pages appear while a folder stays open (configurable interval, can be turned off)
 - Optional `issue.html` / `{Title}.html` formatted view
@@ -59,6 +60,11 @@ Each Confluence instance is mounted at its own path (default `~/confluencefs/<na
                 ├── .labels.txt         # Labels
                 ├── .comments/          # Comment files
                 ├── .attachments/       # Attached files
+                ├── My Whiteboard/      # Whiteboard (Cloud only)
+                │   ├── .metadata.json  # Whiteboard metadata (includes webURL)
+                │   ├── whiteboard.md   # Canvas text      ┐
+                │   ├── whiteboard.json # Raw MCP response │ experimental, off by default
+                │   └── whiteboard.svg  # Canvas drawing   ┘
                 └── Child Page/         # Child pages nested recursively
                     └── page.md
 ```

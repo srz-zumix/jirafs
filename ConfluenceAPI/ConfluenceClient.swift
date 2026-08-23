@@ -29,11 +29,16 @@ public struct ConfluenceInstanceConfig: Sendable, Equatable {
     public let name: String
     public let baseURL: URL
     public let edition: ConfluenceEdition
+    /// `true` when the credential is an Atlassian API token **with scopes**.
+    /// Such tokens are rejected by the site host and must be sent to the
+    /// `api.atlassian.com` gateway instead.
+    public let scopedToken: Bool
 
-    public init(name: String, baseURL: URL, edition: ConfluenceEdition) {
+    public init(name: String, baseURL: URL, edition: ConfluenceEdition, scopedToken: Bool = false) {
         self.name = name
         self.baseURL = baseURL
         self.edition = edition
+        self.scopedToken = scopedToken
     }
 }
 

@@ -14,6 +14,7 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 - read-only マウント
 - macOS Keychain (Access Group 共有) による安全な認証情報管理
 - **匿名アクセス** — 公開された JIRA/Confluence サイトを認証なしでマウント
+- **ホワイトボードのキャンバス取得（実験的）** — Atlassian Rovo MCP サーバ経由で `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` を生成（Confluence Cloud + *API Token (scoped)* 認証のみ。デフォルトはオフ）
 - TTL ベースの In-Memory キャッシュ + オプションで AES-GCM 暗号化ディスクキャッシュ
 - バックグラウンド自動更新—フォルダを開いたまま待つだけで新規 issue / page が表示される（間隔は設定可能、オフにもできる）
 - `issue.html` / `{タイトル}.html` フォーマットビュー（オプション）
@@ -57,6 +58,11 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
                 ├── .labels.txt         # ラベル
                 ├── .comments/          # コメントファイル群
                 ├── .attachments/       # 添付ファイル
+                ├── My Whiteboard/      # ホワイトボード (Cloud のみ)
+                │   ├── .metadata.json  # ホワイトボードのメタデータ (webURL を含む)
+                │   ├── whiteboard.md   # キャンバスのテキスト   ┐
+                │   ├── whiteboard.json # MCP レスポンス生データ │ 実験的、デフォルトはオフ
+                │   └── whiteboard.svg  # キャンバスの描画       ┘
                 └── Child Page/         # 子ページ（再帰的にネスト）
                     └── page.md
 ```

@@ -87,6 +87,30 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
                 node.cachedBirthTime = created
                 node.cachedMTime = created
             }
+        case .whiteboardBody(_, let whiteboardId):
+            let whiteboard = try await dataSource.whiteboard(id: whiteboardId)
+            let content = try await dataSource.whiteboardContent(id: whiteboardId)
+            data = PageFileBuilder.whiteboardBody(whiteboard, content: content)
+            if let created = parseConfluenceDate(whiteboard.createdAt) {
+                node.cachedBirthTime = created
+                node.cachedMTime = created
+            }
+        case .whiteboardRaw(_, let whiteboardId):
+            let whiteboard = try await dataSource.whiteboard(id: whiteboardId)
+            let content = try await dataSource.whiteboardContent(id: whiteboardId)
+            data = PageFileBuilder.whiteboardRaw(content: content)
+            if let created = parseConfluenceDate(whiteboard.createdAt) {
+                node.cachedBirthTime = created
+                node.cachedMTime = created
+            }
+        case .whiteboardSVG(_, let whiteboardId):
+            let whiteboard = try await dataSource.whiteboard(id: whiteboardId)
+            let content = try await dataSource.whiteboardContent(id: whiteboardId)
+            data = PageFileBuilder.whiteboardSVG(whiteboard, content: content)
+            if let created = parseConfluenceDate(whiteboard.createdAt) {
+                node.cachedBirthTime = created
+                node.cachedMTime = created
+            }
         case .labels(_, let pageId):
             let labels = try await dataSource.labels(pageId: pageId)
             data = PageFileBuilder.labels(labels)

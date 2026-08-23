@@ -434,7 +434,83 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.value(forHTTPHeaderField: "Range"), "bytes=10-13")
     }
 
+    // MARK: - Scoped API token gateway
+
+    private func scopedCloudClient(_ stub: ConfluenceStubTransport) -> ConfluenceRESTClient {
+        let cfg = ConfluenceInstanceConfig(
+            name: "cloud",
+            baseURL: URL(string: "https://example.atlassian.net")!,
+            edition: .cloud,
+            scopedToken: true
+        )
+        return ConfluenceRESTClient(config: cfg, auth: APITokenAuth(email: "x", token: "y"), transport: stub)
+    }
+
+    func testScopedTokenRoutesRESTThroughGateway() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/_edge/tenant_info"] = (200, Data(#"{"cloudId":"cid-1"}"#.utf8))
+        stub.responses["/wiki/api/v2/spaces"] = (200, Data(#"{"results":[{"id":"100","key":"DOC","name":"Docs","type":"global"}]}"#.utf8))
+
+        let page = try await scopedCloudClient(stub).listSpaces(cursor: nil, limit: 25)
+
+        XCTAssertEqual(page.items.first?.key, "DOC")
+        XCTAssertEqual(stub.requests.first?.url?.absoluteString,
+                       "https://example.atlassian.net/_edge/tenant_info")
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://api.atlassian.com/ex/confluence/cid-1/wiki/api/v2/spaces?limit=25")
+    }
+
+    func testScopedTokenResolvesCloudIDOnlyOnce() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/_edge/tenant_info"] = (200, Data(#"{"cloudId":"cid-1"}"#.utf8))
+        stub.responses["/wiki/api/v2/spaces"] = (200, Data(#"{"results":[]}"#.utf8))
+        let client = scopedCloudClient(stub)
+
+        _ = try await client.listSpaces(cursor: nil, limit: 25)
+        _ = try await client.listSpaces(cursor: nil, limit: 25)
+
+        let tenantInfoCalls = stub.requests.filter { $0.url?.path == "/_edge/tenant_info" }
+        XCTAssertEqual(tenantInfoCalls.count, 1, "The cloud ID must be cached after the first lookup")
+    }
+
+    func testScopedTokenKeepsGatewayContextPathForAttachmentLinks() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/_edge/tenant_info"] = (200, Data(#"{"cloudId":"cid-1"}"#.utf8))
+        stub.responses["/download/rel"] = (200, Data([7, 7]))
+        let att = ConfluenceAttachment(id: "r", title: "f.bin", fileSize: nil, downloadLink: "/download/rel")
+
+        let result = try await scopedCloudClient(stub).downloadAttachment(att, range: nil)
+
+        XCTAssertEqual(Array(result.data), [7, 7])
+        XCTAssertEqual(stub.requests.last?.url?.absoluteString,
+                       "https://api.atlassian.com/ex/confluence/cid-1/wiki/download/rel")
+    }
+
+    func testScopedTokenPropagatesTenantInfoFailure() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/_edge/tenant_info"] = (404, Data())
+        stub.responses["/wiki/api/v2/spaces"] = (200, Data(#"{"results":[]}"#.utf8))
+
+        do {
+            _ = try await scopedCloudClient(stub).listSpaces(cursor: nil, limit: 25)
+            XCTFail("Expected the cloud ID lookup to fail")
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .notFound)
+        }
+    }
+
+    func testUnscopedCloudClientDoesNotUseGateway() async throws {
+        let stub = ConfluenceStubTransport()
+        stub.responses["/wiki/api/v2/spaces"] = (200, Data(#"{"results":[]}"#.utf8))
+
+        _ = try await cloudClient(stub).listSpaces(cursor: nil, limit: 25)
+
+        XCTAssertEqual(stub.requests.count, 1, "No tenant_info lookup for legacy API tokens")
+        XCTAssertEqual(stub.requests.last?.url?.host, "example.atlassian.net")
+    }
+
     // MARK: - resolveURL / downloadAttachment URL validation (credential-leak prevention)
+
 
     func testDownloadAttachmentAcceptsRelativeLink() async throws {
         let stub = ConfluenceStubTransport()

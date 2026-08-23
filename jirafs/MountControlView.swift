@@ -248,11 +248,6 @@ struct MountControlView: View {
             if !isMounted {
                 errorMessage = "Mount command completed but volume is not visible. Check fskitd and pluginkit registration."
             }
-        } catch MountError.scriptFailed(let msg) where Self.isModuleDisabledError(msg) {
-            // The extension exists but is turned off in System Settings.
-            // fskitd restart won't help here; the user must enable it manually.
-            showExtensionSettingsLink = true
-            errorMessage = "The \(descriptor.extensionLabel) extension is disabled. Go to System Settings › General › Login Items & Extensions, find \(descriptor.extensionLabel) under \"File System Extensions\", and turn it on. Then click Mount again."
         } catch MountError.scriptFailed(let msg) where Self.isExtensionKitError(msg) {
             // fskitd is holding stale state from a previous run — kill it so launchd
             // restarts it and re-registers the extension, then mount again.
@@ -267,9 +262,15 @@ struct MountControlView: View {
                 errorMessage = isMounted ? nil : "Retry failed — try running 'make reinstall' from the project."
             } catch MountError.cancelled {
                 errorMessage = nil
+            } catch MountError.scriptFailed(let retryMsg) where Self.isModuleDisabledError(retryMsg) {
+                showExtensionDisabledError()
             } catch {
                 errorMessage = error.localizedDescription
             }
+        } catch MountError.scriptFailed(let msg) where Self.isModuleDisabledError(msg) {
+            // The extension exists but is turned off in System Settings.
+            // fskitd restart won't help here; the user must enable it manually.
+            showExtensionDisabledError()
         } catch MountError.cancelled {
             // ユーザーが Touch ID / パスワードダイアログをキャンセルした場合はエラー非表示。
         } catch {
@@ -303,12 +304,20 @@ struct MountControlView: View {
 
     // MARK: - Helpers
 
-    private static func isModuleDisabledError(_ msg: String) -> Bool {
-        msg.contains("is disabled") || msg.contains("Unable to invoke task")
+    private func showExtensionDisabledError() {
+        showExtensionSettingsLink = true
+        errorMessage = "The \(descriptor.extensionLabel) extension is disabled. Go to System Settings › General › Login Items & Extensions, find \(descriptor.extensionLabel) under \"File System Extensions\", and turn it on. Then click Mount again."
     }
 
+    private static func isModuleDisabledError(_ msg: String) -> Bool {
+        msg.contains("is disabled")
+    }
+
+    /// ExtensionKit failed to launch the appex — usually fskitd holding stale
+    /// state after the app bundle was replaced.
     private static func isExtensionKitError(_ msg: String) -> Bool {
         msg.contains("extensionKit") || msg.contains("not found") || msg.contains("error 2")
+            || msg.contains("Unable to invoke task")
     }
 
     /// Runs `command` with root privileges.

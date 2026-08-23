@@ -35,6 +35,9 @@ Pages are nested: child pages live inside their parent page's directory.
         ├── {Folder Title}/     # Confluence folder (Cloud only; recursive)
         ├── {Whiteboard Title}/ # Confluence whiteboard (Cloud only)
         │   ├── .metadata.json    # Whiteboard metadata (JSON), including its webURL
+        │   ├── whiteboard.md     # Canvas text via Rovo MCP (only when enabled for the mount)
+        │   ├── whiteboard.json   # Raw Rovo MCP response (only when enabled for the mount)
+        │   ├── whiteboard.svg    # Canvas drawn as SVG (only when enabled for the mount)
         │   └── ...               # Pages/folders/whiteboards nested under the board
         ├── {Child Page Title}.html  # Child page HTML (HTML mode only)
         └── {Child Page Title}/      # Child page directory (recursive)
@@ -52,6 +55,9 @@ Pages are nested: child pages live inside their parent page's directory.
 | `.attachments/<filename>` | Binary | Attachment downloaded lazily on read (bounded range requests; never fully buffered) |
 | `{Page Title}.html` | HTML | Self-contained view with body and comments (only when HTML mode is enabled) |
 | `{Whiteboard Title}/.metadata.json` | JSON | Whiteboard id, title, spaceId, parentId, author, createdAt, webURL |
+| `{Whiteboard Title}/whiteboard.md` | Markdown | Canvas rendered to Markdown from the Atlassian Rovo MCP server (beta): node texts in canvas reading order. Present only when the mount enables it |
+| `{Whiteboard Title}/whiteboard.json` | JSON | The Rovo MCP response verbatim, including node geometry, colours and edges. Present only when the mount enables it |
+| `{Whiteboard Title}/whiteboard.svg` | SVG | Approximate drawing of the canvas: sticky notes, freehand strokes and connectors are redrawn; embedded images become dashed placeholders labelled with their mimeType, native size and `fileId` prefix. Present only when the mount enables it |
 
 ## Notes for Agents
 
@@ -59,7 +65,8 @@ Pages are nested: child pages live inside their parent page's directory.
 - **Error semantics**: A missing space, page, or file returns `ENOENT`; authentication or permission failures return `EACCES`; rate-limited requests return `EAGAIN`; transient server, network, or decoding errors return `EIO`.
 - **Sanitized names**: Page titles and attachment filenames are sanitized (slashes, control characters, and leading dots become underscores). Duplicate names within a directory get a ` (N)` suffix. Page titles are unique within a space; the sanitized path is resolved internally to the stable Confluence page id.
 - **Restricted/archived filtering**: By default, view-restricted pages are hidden (`includeRestricted` defaults to off) and archived pages are excluded (`includeArchived` defaults to off). Both are controlled per mount in the host app. A page that exists in Confluence but is absent here may be intentionally filtered out, not missing.
-- **Whiteboards**: Cloud-only. The drawing canvas is not exposed by the Confluence REST API, so a whiteboard directory contains only `.metadata.json` plus any pages/folders/whiteboards nested under it; open `webURL` in a browser to see the board itself. Folders and whiteboards without a parent (top level of a space) are not listed, because Confluence Cloud offers no API to enumerate them.
+- **Whiteboards**: Cloud-only. A whiteboard directory always contains `.metadata.json` plus any pages/folders/whiteboards nested under it. The canvas itself is not available through the Confluence REST API; when the mount enables the experimental Rovo MCP integration it also contains `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` (all three share one fetch). Otherwise, open `webURL` in a browser to see the board. Folders and whiteboards without a parent (top level of a space) are not listed, because Confluence Cloud offers no API to enumerate them.
+- **Whiteboard images cannot be downloaded**: images on a board live in Atlassian Media Services and are not attachments. No Confluence API token reaches them — the `api.atlassian.com` gateway 401s every `/wiki/rest/api/media/*` path because no OAuth scope covers it, and on the site host `/wiki/rest/api/media/token` returns 404. Do not re-investigate; see `Documentation/SPEC.md` for the full probe results.
 - **File timestamps**:
   - `page.md`, `.metadata.json`, `{Title}.html` → birthtime = page `created`; mtime is derived from the page `version` (advances one second per version past creation), so it moves forward on each edit. It is **not** a true wall-clock "last edited" time — use the `version` field in `.metadata.json` for exact change tracking.
   - `.comments/*.md` → mtime = birthtime = comment `created`.
