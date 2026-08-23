@@ -793,6 +793,19 @@ createdAt / webURL) のみを公開し、実体は `webURL` からブラウザ�
   プロパティを推定してフォールバックする。候補は順に試し、成功したものを固定する
 - `cloudId` はサイトの `_edge/tenant_info` (認証不要) から取得してキャッシュする
 - `getTeamworkGraphContext` の `objectType` は `ConfluenceWhiteboard`
+- **`tools/list` の中身はトークンのスコープとエンドポイントで変わる**。
+  `/v1/mcp` は Confluence アプリの scoped トークンなら Teamwork Graph 系 3 ツール、
+  Rovo アプリの scoped トークンなら 45 ツールを返す。
+  **`/v2/mcp` は別系統のサーバ**で 17 ツール (`discover` / `execute` /
+  `getConfluenceContent` など) を返し、`fetchAtlassian` は存在しない。
+  `discover` は約 219 オペレーションのカタログを検索し、`execute` が
+  名前指定でそれを実行する二段構え。したがって「このツールは存在しない」と
+  判断する前に、どのエンドポイント・どのアプリのトークンかを確認すること
+- v2 の `getConfluenceContent` は `content_format` に `svg` / `png` を取り、
+  ホワイトボードの公式エクスポートを返す (`png` は
+  `api.media.atlassian.com` の presigned URL で、認証なしで取得できる)。
+  jirafs はこれを使わず自前描画する — MCP + Rovo v2 トークン + 組織設定に
+  依存させないため。画像が取れない点は公式エクスポートも同じ
 - ホワイトボードの `_links.webui` は相対パスなので `{baseURL}/wiki{webui}` に
   絶対化して渡す
 - `getTeamworkGraphObject` は URL を解決できないとき **HTTP 200 + `objects: []`
@@ -852,14 +865,81 @@ createdAt / webURL) のみを公開し、実体は `webURL` からブラウザ�
 ダウンロード URL は含まれない。実測した結果:
 
 - `https://api.atlassian.com/ex/confluence/{cloudId}` ゲートウェイは
-  **スコープに対応しないパスを全て 401 `"Unauthorized; scope does not match"`**
-  で返す (存在しないパスも同じ 401)。`/wiki/rest/api/media/*` に対応する
-  OAuth スコープが無いため到達できない
+  **スコープ不足のパスも存在しないパスも区別なく 401
+  `"Unauthorized; scope does not match"`** で返す。この 401 単体は
+  「スコープが足りない」証拠にも「エンドポイントが無い」証拠にもならない
+- そこで **Confluence の read 系スコープを全て付与したトークン**で再検証した。
+  スコープ追加が効いていることは `pages/{id}/footer-comments` が
+  401 → 200 に変わったことで確認済み。その状態でも
+  `/wiki/rest/api/media/token` は GET / POST (`collectionNames` 有無、
+  `contentId` 有無) の全形式で 401 のまま。
+  **read 権限を最大化しても media 経路は開かない**
 - サイトホスト直叩き + unscoped API トークンでは `/wiki/rest/api/media/token` が
   **404** (エンドポイント自体が存在しない)
 - `https://api.media.atlassian.com/file/{fileId}` は media トークン必須で 401
 - ホワイトボードの画像は添付として登録されていない
-  (v1 `child/attachment` は空、v2 `attachments` の一覧にも `fileId` は現れない)
+  (`readonly:content.attachment:confluence` 付きでも v1
+  `content/{whiteboardId}/child/attachment` は 200 で空、
+  v2 `attachments` の一覧にも `fileId` は現れない)
+- Rovo MCP 経由も不可。`initialize` の `capabilities` は `resources: {}` を広告するが、
+  `resources/list` / `resources/templates/list` / `prompts/list` はいずれも
+  `-32601 Method not found` を返す (広告だけで未実装)。**Rovo アプリの scoped
+  トークンで 45 ツールが見える状態でも同じ**。`fetchAtlassian` は名前に反して
+  URL フェッチャーではなく ARI 指定の取得ツールで、whiteboard ARI は
+  `Cannot find a page with id` (v2 pages API を叩いているだけ)、
+  media ARI は **`Unsupported product: media`** を返す。
+  `searchAtlassian` の結果にも media/image の ARI は現れない
+- **決定打: Atlassian 自身のレンダラも画像を読めない。**
+  MCP v2 (`https://mcp.atlassian.com/v2/mcp`) の
+  `getConfluenceContent(content_format:)` はホワイトボードの公式エクスポートを返すが、
+  - `svg` の `<image>` は `href` を持たず `data-file-id` だけの**空要素**
+    (jirafs のプレースホルダと同じ構造)
+  - `png` はサーバサイドでラスタライズした 1920x1080 の実画像を返し、付箋 /
+    コネクタ / 手書きインクは完全に描画されるのに、**画像ノードの位置だけ
+    `Failed to load / Try again` が焼き込まれる**
+
+  したがって「API トークンでは取れない」ではなく
+  **Atlassian のバックエンド自体がホワイトボード画像を再取得できない**のが実態。
+  クライアント側の工夫では解決しない
+
+#### 将来 API が更新されたときの再検証手順
+
+上記は 2026-08 時点の実測。Atlassian 側が直せば状況は変わりうるので、
+再調査するなら**この 1 点だけ**を見ればよい。
+
+```
+POST https://mcp.atlassian.com/v2/mcp   (Basic auth: email:Rovo スコープトークン)
+  tools/call getConfluenceContent
+    { cloudId, content_id: <whiteboardId>, content_format: "png" }
+  → data.body.value の presigned URL を認証なしで GET
+```
+
+**得られた PNG の画像ノード位置に `Failed to load` が出なくなっていたら、
+Atlassian 側が修復されたということ。** そのときだけ、以下を順に再確認する。
+
+1. `content_format: "svg"` の `<image>` に `href` が入るようになったか
+   → 入れば `WhiteboardSVGRenderer.imageElement` をリンク描画に変更できる
+2. v2 `whiteboards/{id}/attachments` が 200 を返すようになったか
+   → 返れば REST だけで完結し、MCP 依存なしで画像を取得できる
+3. `/wiki/rest/api/media/token` が開いたか
+   → 開けば `api.media.atlassian.com/file/{fileId}` を直接叩ける
+
+**注意点** (調査時に踏んだ罠):
+
+- ゲートウェイの 401 `"scope does not match"` は**存在しないパスでも同じ**。
+  スコープ不足の証拠として使うなら、必ず
+  「存在しないパス」と「スコープを足せば通ると分かっている既知のパス」の
+  両方を対照群に入れること
+- MCP の `tools/list` は**エンドポイントとトークンのアプリ種別で中身が変わる**。
+  「そのツールは無い」と判断する前に前提を確認する
+- MCP の SSE レスポンスには `: keepalive` 行が混ざる。`data: ` を剥がすだけでなく
+  `^:` 行も落とさないとパースに失敗する
+- `execute` の `inputs` は camelCase (`contentId`)、primary tool の
+  `getConfluenceContent` は snake_case (`content_id`) と流儀が違う
+- presigned URL の `token` クエリは**それ自体がクレデンシャル**。
+  ログや issue に貼らない
+- Rovo の `search` / `searchAtlassian` は**閲覧制限ページの本文もそのまま返す**。
+  調査スクリプトでフリーテキスト検索を使うと事故るので ID 直指定にする
 
 ### 本文変換
 

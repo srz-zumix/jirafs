@@ -27,6 +27,34 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Xcode 16.4+
 - Swift 6.0
 
+## API Token Scopes (Confluence Cloud)
+
+When using *API Token (scoped)* authentication, grant only these scopes. jirafs is read-only and issues nothing but `GET` and `HEAD`, so **no `write:` or `delete:` scope is ever needed**.
+
+| Scope | Needed for |
+| --- | --- |
+| `read:attachment:confluence` | `.attachments/` listing and downloads |
+| `read:comment:confluence` | `.comments/` |
+| `read:folder:confluence` | Folders under a page |
+| `read:hierarchical-content:confluence` | Walking the page tree (`direct-children`) |
+| `read:label:confluence` | `.labels.txt` |
+| `read:page:confluence` | Page bodies and per-space page lists |
+| `read:space:confluence` | Listing spaces (`/spaces`) |
+| `read:whiteboard:confluence` | Whiteboard metadata and its children |
+
+Add these only if the matching option is enabled:
+
+| Scope | Needed for |
+| --- | --- |
+| `read:content-details:confluence`, `read:content.restriction:confluence` | Hiding view-restricted pages (the default `includeRestricted = off`, which reads restrictions through the v1 content API) |
+| `readonly:content.attachment:confluence` | Only if attachment downloads return 401; the legacy `/wiki/download/...` path is routed by this classic scope |
+
+Notes:
+
+- Scoped tokens are supported for Confluence only. JIRA mounts require a regular API token or a PAT.
+- The experimental Rovo MCP whiteboard integration needs a scoped token, but access is governed by your organisation's "connect via API token" setting rather than by a Confluence scope.
+- Whiteboard **images** cannot be downloaded by any token. They live in Atlassian Media Services, which no Confluence OAuth scope covers, so they are drawn as labelled placeholders in `whiteboard.svg`.
+
 ## Filesystem Layout
 
 Each JIRA instance is mounted at its own path (configurable, default `~/jirafs/<name>`).

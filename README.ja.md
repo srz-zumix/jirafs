@@ -25,6 +25,34 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 - Xcode 16.4+
 - Swift 6.0
 
+## API トークンのスコープ（Confluence Cloud）
+
+*API Token (scoped)* 認証を使う場合、必要なのは以下のスコープだけです。jirafs は読み取り専用で `GET` / `HEAD` しか発行しないため、**`write:` / `delete:` 系は一切不要**です。
+
+| スコープ | 用途 |
+| --- | --- |
+| `read:attachment:confluence` | `.attachments/` の一覧とダウンロード |
+| `read:comment:confluence` | `.comments/` |
+| `read:folder:confluence` | ページ配下のフォルダ |
+| `read:hierarchical-content:confluence` | ページツリーの探索 (`direct-children`) |
+| `read:label:confluence` | `.labels.txt` |
+| `read:page:confluence` | ページ本文・スペース配下のページ一覧 |
+| `read:space:confluence` | スペース一覧 (`/spaces`) |
+| `read:whiteboard:confluence` | ホワイトボードのメタデータと子要素 |
+
+対応するオプションを有効にしている場合のみ追加します。
+
+| スコープ | 用途 |
+| --- | --- |
+| `read:content-details:confluence`, `read:content.restriction:confluence` | 閲覧制限ページの除外（デフォルトの `includeRestricted = off`。制限情報を v1 content API から取得するため） |
+| `readonly:content.attachment:confluence` | 添付のダウンロードが 401 になる場合のみ。レガシーな `/wiki/download/...` パスはこのクラシックスコープでルーティングされます |
+
+補足:
+
+- scoped トークンは Confluence のみ対応です。JIRA のマウントには通常の API トークンか PAT を使ってください
+- 実験的な Rovo MCP ホワイトボード連携は scoped トークンが必須ですが、可否は Confluence のスコープではなく組織の「API トークンでの接続を許可する」設定で決まります
+- ホワイトボードの**画像**はどのトークンでも取得できません。実体が Atlassian Media Services にあり、対応する Confluence の OAuth スコープが存在しないためです。`whiteboard.svg` ではラベル付きのプレースホルダとして描画されます
+
 ## ファイルシステムレイアウト
 
 各 JIRA インスタンスは独自のマウントパスにマウントされます（設定可能、デフォルトは `~/jirafs/<name>`）。
