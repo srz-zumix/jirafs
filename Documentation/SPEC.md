@@ -785,7 +785,7 @@ createdAt / webURL) のみを公開し、実体は `webURL` からブラウザ�
   (`initialize` → `notifications/initialized` → `tools/list` / `tools/call`)。
   レスポンスは JSON / SSE の両方を受理し、`Mcp-Session-Id` を保持する
 - 認証は `AuthProvider` に委譲。Rovo MCP の API トークン認証を使うため
-  **Cloud + `apiToken` のマウントのみ有効**。それ以外は起動時に無効化してログを残す
+  **Cloud + スコープ付き API トークン (`apiTokenScoped`) のマウントのみ有効**。それ以外は起動時に無効化してログを残す
 - ツールは beta のため、`ConfluenceAPI.RovoWhiteboardSource` がマウントごとに
   一度 `tools/list` を実行し、`getTeamworkGraphObject(cloudId:objects:)` /
   `getTeamworkGraphContext(cloudId:objectIdentifier:objectType:detailLevel:)`

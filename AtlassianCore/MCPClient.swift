@@ -42,9 +42,12 @@ public actor MCPClient {
     /// MCP revision advertised during `initialize` and in `MCP-Protocol-Version`.
     public static let protocolVersion = "2025-06-18"
 
-    /// Upper bound on a single response body. MCP replies are JSON documents
-    /// that are fully buffered in memory, so an unbounded (or hostile) stream
-    /// would otherwise be read into the extension's address space.
+    /// Upper bound on a single response body that this client will *accept and
+    /// parse*. Note this is a protocol acceptance limit, not a memory bound:
+    /// `HTTPTransport.data(for:)` fully materialises the response before this
+    /// check runs, so it caps how large a document we attempt to decode rather
+    /// than how many bytes `URLSession` may buffer. Enforcing a true streaming
+    /// byte limit would require a bounded-reader transport abstraction.
     public static let maxResponseBytes = 8 * 1024 * 1024
 
     /// Upper bound on `tools/list` pages followed via `nextCursor`.
@@ -176,6 +179,13 @@ public actor MCPClient {
     }
 
     private func perform(body: Data) async throws -> (Data, HTTPURLResponse) {
+        // The endpoint carries the API-token credentials, so refuse to authorize
+        // an insecure transport or a URL that smuggles credentials via user-info
+        // (mirrors the HTTPS enforcement the REST clients apply before signing).
+        guard endpoint.scheme?.lowercased() == "https",
+              endpoint.user == nil, endpoint.password == nil else {
+            throw AtlassianError.invalidURL
+        }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = body

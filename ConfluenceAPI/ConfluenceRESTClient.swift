@@ -483,7 +483,20 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         if usesGateway, link.hasPrefix("/"), !link.hasPrefix("//") {
             link = base.path + link
         }
-        return InstanceURLValidator.sameOriginURL(link, base: base)
+        guard let resolved = InstanceURLValidator.sameOriginURL(link, base: base) else { return nil }
+        // Same-origin is insufficient through the gateway: every tenant shares
+        // the `api.atlassian.com` host, so an absolute link pointing at another
+        // `/ex/confluence/{otherCloudId}` context would otherwise pass and receive
+        // this mount's scoped Authorization header. Require the resolved path to
+        // stay within the configured tenant context path (exact match or a proper
+        // sub-path, never a sibling like `.../{cloudId}2`).
+        if usesGateway {
+            let basePath = base.path
+            guard resolved.path == basePath || resolved.path.hasPrefix(basePath + "/") else {
+                return nil
+            }
+        }
+        return resolved
     }
 
     private func validate(http: HTTPURLResponse, data: Data) throws {

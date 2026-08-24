@@ -69,7 +69,17 @@ public actor RovoWhiteboardSource {
     public func content(for whiteboard: ConfluenceWhiteboard) async throws -> String {
         guard let url = absoluteWebURL(whiteboard.webURL) else { throw AtlassianError.notFound }
         var failure: Error?
-        for candidate in try await resolveBindings() {
+        let bindings: [Binding]
+        do {
+            bindings = try await resolveBindings()
+        } catch {
+            // A handshake / `tools/list` authorization failure (HTTP 401/403,
+            // surfaced by `MCPClient` as `AtlassianError`) escapes here before any
+            // candidate is tried; make it sticky too so a denied mount stops
+            // re-running discovery on every read.
+            throw stick(error)
+        }
+        for candidate in bindings {
             for form in orderedLocatorForms(for: candidate) {
                 do {
                     let locator = try await self.locator(form, url: url, whiteboard: whiteboard)
@@ -103,9 +113,31 @@ public actor RovoWhiteboardSource {
                 }
             }
         }
-        let error = failure ?? MCPError.noUsableTool
-        if let mcp = error as? MCPError, case .accessDenied = mcp { unsupported = mcp }
-        throw error
+        throw stick(failure ?? MCPError.noUsableTool)
+    }
+
+    /// Pins a terminal authorization failure so subsequent reads short-circuit
+    /// via `unsupported` instead of repeating discovery / tool calls. Only
+    /// permanent auth failures (MCP `accessDenied`, HTTP 401/403) are made sticky;
+    /// transient errors (429, 5xx, transport) and ordinary `toolFailed` are not.
+    private func stick(_ error: Error) -> Error {
+        let sticky: MCPError?
+        if let mcp = error as? MCPError, case .accessDenied = mcp {
+            sticky = mcp
+        } else if let atl = error as? AtlassianError {
+            switch atl {
+            case .forbidden: sticky = .accessDenied("forbidden")
+            case .unauthorized: sticky = .accessDenied("unauthorized")
+            default: sticky = nil
+            }
+        } else {
+            sticky = nil
+        }
+        if let sticky {
+            unsupported = sticky
+            return sticky
+        }
+        return error
     }
 
     /// `getTeamworkGraphObject` reports an unresolvable locator as HTTP 200 with
@@ -126,6 +158,14 @@ public actor RovoWhiteboardSource {
     /// than as an HTTP status, so they have to be recognised by message.
     static func isAccessDenied(_ text: String) -> Bool {
         let haystack = text.lowercased()
+        // The documented scoped-token rejection ("Teamwork Graph tools require a
+        // modern API token (API token with scopes).") names neither permission
+        // nor authorization, so match its narrow signature explicitly. An
+        // unscoped token can never resolve, so treating it as access-denied makes
+        // the mount go sticky instead of retrying every read.
+        if haystack.contains("modern api token") && haystack.contains("scope") {
+            return true
+        }
         return haystack.contains("permission")
             || haystack.contains("unauthorized")
             || haystack.contains("forbidden")
@@ -172,13 +212,15 @@ public actor RovoWhiteboardSource {
         }
     }
 
-    /// Server-generated diagnostics for a beta tool; logged public (and chunked,
-    /// since os_log truncates) because it is the only way to learn the contract.
+    /// Server-generated diagnostics for a beta tool. The text can echo the
+    /// whiteboard payload or user-authored content, so it is logged `.private`
+    /// (only the tool name and chunk index stay public); chunking works around
+    /// os_log truncation.
     private func logFailure(tool: String, text: String) {
         for (index, chunk) in Self.chunks(of: text).enumerated() {
             logger.error("""
                 rovo whiteboard tool=\(tool, privacy: .public) \
-                failed[\(index, privacy: .public)]=\(chunk, privacy: .public)
+                failed[\(index, privacy: .public)]=\(chunk, privacy: .private)
                 """)
         }
     }

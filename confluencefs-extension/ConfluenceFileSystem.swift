@@ -170,8 +170,8 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             logger.error("rovo whiteboards requested but instance is not Cloud; disabling")
             return nil
         }
-        guard auth is APITokenAuth else {
-            logger.error("rovo whiteboards requires API-token authentication; disabling")
+        guard config.scopedToken, auth is APITokenAuth else {
+            logger.error("rovo whiteboards requires a scoped API token; disabling")
             return nil
         }
         let mcp = MCPClient(endpoint: RovoWhiteboardSource.defaultEndpoint, auth: auth)

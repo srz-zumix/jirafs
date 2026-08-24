@@ -129,6 +129,11 @@ public actor PageDataSource {
     /// restricted-ID fetch (root pages of a space, or one parent's children)
     /// when the background pre-caching fills child-page entries in parallel.
     private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
+    /// Single-flight guard for Rovo MCP whiteboard-canvas fetches, keyed by
+    /// whiteboard ID. `whiteboard.md`, `.json` and `.svg` all resolve to the same
+    /// canvas, so concurrent opens would otherwise each miss the cache and issue
+    /// a separate (rate-limited, credit-billed) MCP call.
+    private var pendingWhiteboardContentFetch: [String: Task<String, Error>] = [:]
 
     /// Shared attachment byte cache: serves bounded windows of attachment bodies
     /// (streaming large files via HTTP `Range`, caching small bodies in memory).
@@ -534,13 +539,26 @@ public actor PageDataSource {
     /// Whiteboard canvas rendered to text via Rovo MCP (Cloud only, opt-in).
     public func whiteboardContent(id: String) async throws -> String {
         guard let rovoWhiteboards else { throw AtlassianError.unsupported }
-        let board = try await whiteboard(id: id)
         let contentTTL = ttl.pageDetail <= 0
             ? ttl.pageDetail
             : max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
-        return try await cached("whiteboardcontent/\(id)", ttl: contentTTL) {
-            try await rovoWhiteboards.content(for: board)
+        // Single-flight the whole board→canvas resolution: the three whiteboard
+        // files share one MCP fetch. Joiners share the leader's result and must
+        // never cancel it (cancelling one waiter only fails that waiter, not the
+        // shared task); unmount cancellation is handled by
+        // `cancelBackgroundRefreshes()`.
+        if let pending = pendingWhiteboardContentFetch[id] {
+            return try await pending.value
         }
+        let task = Task<String, Error> {
+            let board = try await self.whiteboard(id: id)
+            return try await self.cached("whiteboardcontent/\(id)", ttl: contentTTL) {
+                try await rovoWhiteboards.content(for: board)
+            }
+        }
+        pendingWhiteboardContentFetch[id] = task
+        defer { pendingWhiteboardContentFetch[id] = nil }
+        return try await task.value
     }
 
     private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
@@ -795,6 +813,8 @@ public actor PageDataSource {
         refreshing.removeAll()
         for task in pendingRestrictedIDsFetch.values { task.cancel() }
         pendingRestrictedIDsFetch.removeAll()
+        for task in pendingWhiteboardContentFetch.values { task.cancel() }
+        pendingWhiteboardContentFetch.removeAll()
         // Await so any in-flight attachment download is cancelled and the
         // in-memory attachment cache is cleared before unmount reports completion.
         await attachmentBytes.clear()

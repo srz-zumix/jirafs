@@ -202,7 +202,31 @@ public enum WhiteboardSVGRenderer {
                      maxX: max(rect.maxX, point.x), maxY: max(rect.maxY, point.y))
             }
         }
-        return box(of: node)
+        guard let box = box(of: node) else { return nil }
+        // Sticky/shape/image nodes are drawn with a `rotate` transform, so their
+        // rotated corners can extend past the axis-aligned box; include them in
+        // the frame or a wide node rotated ~45° gets clipped by the viewBox.
+        return rotatedBounds(box, degrees: number(node["rotation"]))
+    }
+
+    /// Axis-aligned bounds of `box` after rotating it by `degrees` about its
+    /// centre, unioned with the original box so an axis-aligned label centred in
+    /// the unrotated box is never clipped.
+    private static func rotatedBounds(_ box: Rect, degrees: Double?) -> Rect {
+        guard let degrees, degrees.truncatingRemainder(dividingBy: 360) != 0 else { return box }
+        let radians = degrees * .pi / 180
+        let cosA = cos(radians), sinA = sin(radians)
+        let cx = box.midX, cy = box.midY
+        var rotated: Rect?
+        for (x, y) in [(box.minX, box.minY), (box.maxX, box.minY),
+                       (box.maxX, box.maxY), (box.minX, box.maxY)] {
+            let dx = x - cx, dy = y - cy
+            let rx = cx + dx * cosA - dy * sinA
+            let ry = cy + dx * sinA + dy * cosA
+            let point = Rect(minX: rx, minY: ry, maxX: rx, maxY: ry)
+            rotated = Rect.union(rotated, point)
+        }
+        return Rect.union(rotated, box) ?? box
     }
 
     private static func box(of node: JSONValue) -> Rect? {

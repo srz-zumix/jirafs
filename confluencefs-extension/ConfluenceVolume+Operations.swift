@@ -409,7 +409,12 @@ extension ConfluenceVolume: FSVolume.Operations {
             } catch {
                 logger.error("whiteboardDir children failed whiteboardId=\(whiteboardId, privacy: .public): \(error, privacy: .public)")
             }
-            kids.append(contentsOf: containerChildEntries(result, spaceKey: spaceKey))
+            // Seed dedup with the static names already emitted above (e.g.
+            // `.metadata.json` and, when enabled, `whiteboard.md/.json/.svg`) so a
+            // nested page/folder/whiteboard with a colliding sanitized title gets a
+            // ` (N)` suffix instead of producing a duplicate, ambiguous entry.
+            kids.append(contentsOf: containerChildEntries(
+                result, spaceKey: spaceKey, reserved: Set(kids.map(\.name))))
             return kids
         case .commentsDir(let spaceKey, let pageId):
             let comments = try await dataSource.comments(pageId: pageId)
@@ -506,10 +511,11 @@ extension ConfluenceVolume: FSVolume.Operations {
     /// a background pre-cache of the grandchildren of the contained pages.
     private func containerChildEntries(
         _ result: ConfluenceFolderChildrenResult,
-        spaceKey: String
+        spaceKey: String,
+        reserved: Set<String> = []
     ) -> [ChildEntry] {
         var out = pageEntries(result.pages, spaceKey: spaceKey)
-        var taken = pageNames(result.pages, htmlEnabled: htmlEnabled)
+        var taken = reserved.union(pageNames(result.pages, htmlEnabled: htmlEnabled))
         out.append(contentsOf: folderDirEntries(result.folders, spaceKey: spaceKey, taken: &taken))
         out.append(contentsOf: whiteboardDirEntries(result.whiteboards, spaceKey: spaceKey, taken: &taken))
         // Background: pre-cache grandchildren of child pages.
