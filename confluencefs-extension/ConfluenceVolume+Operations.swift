@@ -469,14 +469,39 @@ extension ConfluenceVolume: FSVolume.Operations {
         for entry in entries {
             let pageId = entry.page.id
             let versionSalt = entry.page.version.map { "v\($0)" }
-            let stem = FileNameSanitizer.deduplicate(entry.folderName, taken: &taken)
+            let stem = reservePageStem(entry.folderName, taken: &taken)
             if htmlEnabled {
-                let html = FileNameSanitizer.deduplicate("\(stem).html", taken: &taken)
-                out.append((html, .pageHtml(spaceKey: spaceKey, pageId: pageId), versionSalt))
+                // The HTML file name must stay exactly `stem + ".html"` because
+                // `htmlFolderName(for:)` recovers the page directory by stripping
+                // that suffix; `reservePageStem` already reserved both names.
+                out.append(("\(stem).html", .pageHtml(spaceKey: spaceKey, pageId: pageId), versionSalt))
             }
             out.append((stem, .pageDir(spaceKey: spaceKey, pageId: pageId), nil))
         }
         return out
+    }
+
+    /// Picks a page-directory stem for which both the stem *and* (when the HTML
+    /// view is on) its `stem.html` sibling are unused, then reserves both in
+    /// `taken`. Deduplicating the two names independently could drift them apart
+    /// (e.g. dir `foo`, file `foo (2).html`), which `htmlFolderName(for:)` would
+    /// then mis-map to a nonexistent sibling directory.
+    private func reservePageStem(_ desired: String, taken: inout Set<String>) -> String {
+        func isFree(_ stem: String) -> Bool {
+            !taken.contains(stem) && (!htmlEnabled || !taken.contains("\(stem).html"))
+        }
+        func reserve(_ stem: String) -> String {
+            taken.insert(stem)
+            if htmlEnabled { taken.insert("\(stem).html") }
+            return stem
+        }
+        if isFree(desired) { return reserve(desired) }
+        var n = 2
+        while true {
+            let candidate = "\(desired) (\(n))"
+            if isFree(candidate) { return reserve(candidate) }
+            n += 1
+        }
     }
 
     /// Convenience overload for listings without any sibling static entries

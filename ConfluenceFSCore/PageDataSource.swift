@@ -544,6 +544,14 @@ public actor PageDataSource {
     /// Whiteboard canvas rendered to text via Rovo MCP (Cloud only, opt-in).
     public func whiteboardContent(id: String) async throws -> String {
         guard let rovoWhiteboards else { throw AtlassianError.unsupported }
+        // When ordinary page-detail caching is left enabled (the default,
+        // `pageDetail = 600`), whiteboard content is held for at least
+        // `whiteboardContentMinimumTTL` so the rate-limited/billable Rovo fetch is
+        // not repeated for the three sibling files. When the operator has
+        // *explicitly* disabled detail caching (`pageDetail <= 0`), that choice is
+        // honoured rather than silently overridden — each read then issues a fresh
+        // Rovo call, though the per-id single-flight below still collapses the
+        // concurrent `.md`/`.json`/`.svg` opens into one.
         let contentTTL = ttl.pageDetail <= 0
             ? ttl.pageDetail
             : max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)

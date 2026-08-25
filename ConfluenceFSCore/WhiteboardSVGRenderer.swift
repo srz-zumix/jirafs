@@ -22,7 +22,13 @@ public enum WhiteboardSVGRenderer {
               let nodes = document["nodes"]?.objectValue, !nodes.isEmpty
         else { return nil }
         let canvas = Canvas(nodes: nodes, edges: document["edges"]?.objectValue ?? [:])
-        let ordered = nodes.values.sorted { zIndex($0) < zIndex($1) }
+        // Tie-break equal `zIndex` by the node's dictionary key so overlapping
+        // elements have a stable paint order (and therefore deterministic output
+        // bytes) across runs, instead of relying on `Dictionary` iteration order.
+        let ordered = nodes.sorted { lhs, rhs in
+            let (lz, rz) = (zIndex(lhs.value), zIndex(rhs.value))
+            return lz == rz ? lhs.key < rhs.key : lz < rz
+        }.map(\.value)
 
         var frame: Rect?
         for node in ordered { frame = Rect.union(frame, bounds(of: node, in: canvas)) }
@@ -477,13 +483,15 @@ public enum WhiteboardSVGRenderer {
     }
 
     private static func f(_ value: Double) -> String {
-        // Coordinates come from an untrusted MCP payload; a non-finite or
-        // out-of-Int64-range value would trap in the `Int(...)` fast path below.
-        guard value.isFinite else { return "0" }
-        let rounded = (value * 100).rounded() / 100
-        if rounded == rounded.rounded(),
-           rounded >= Double(Int.min), rounded <= Double(Int.max) {
-            return String(Int(rounded))
+        // Coordinates come from an untrusted MCP payload. `value * 100` can
+        // overflow to infinity and `Int(rounded)` traps on any value not exactly
+        // representable as an `Int` (including `Double(Int.max)` == 2^63), so
+        // guard finiteness and use `Int(exactly:)`.
+        let scaled = value * 100
+        guard scaled.isFinite else { return "0" }
+        let rounded = scaled.rounded() / 100
+        if let integer = Int(exactly: rounded) {
+            return String(integer)
         }
         return String(rounded)
     }

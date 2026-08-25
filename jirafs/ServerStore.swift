@@ -135,8 +135,9 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     var renderMacros: Bool
     /// Confluence-only, experimental: expose whiteboard canvases as
     /// `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` via the Atlassian
-    /// Rovo MCP server. Cloud + API-token auth only. Ignored for JIRA. Defaults
-    /// to `false`.
+    /// Rovo MCP server. Cloud + **scoped** API-token auth only (the Teamwork
+    /// Graph tools reject legacy tokens; the UI disables this otherwise). Ignored
+    /// for JIRA. Defaults to `false`.
     var rovoWhiteboards: Bool
     var autoMount: Bool
 

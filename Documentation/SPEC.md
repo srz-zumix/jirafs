@@ -967,7 +967,7 @@ Confluence 用設定は JIRA とは別の config.json に保存する。
 | `htmlView` | `Bool` | `false` | 各ページの兄弟として `{Title}.html` ファイルを生成する |
 | `includeArchived` | `Bool` | `false` | アーカイブ済みページをディレクトリ一覧に含める |
 | `includeRestricted` | `Bool` | `false` | ユーザー/グループ閲覧制限・編集制限があるページをディレクトリ一覧に含める。`false` (デフォルト) の場合、read または update 操作に 1 件以上のユーザー/グループ制限が設定されているページは非表示になる |
-| `rovoWhiteboards` | `Bool` | `false` | **実験的**。ホワイトボードディレクトリに `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` (Rovo MCP 経由のキャンバス取得) を追加する。Cloud + API Token 認証のマウントでのみ有効 (実際に `tools/call` が通るのは scoped トークンのみ) |
+| `rovoWhiteboards` | `Bool` | `false` | **実験的**。ホワイトボードディレクトリに `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` (Rovo MCP 経由のキャンバス取得) を追加する。Cloud + **scoped API Token** 認証のマウントでのみ有効 (Teamwork Graph ツールは従来のトークンを拒否するため、UI 上でも scoped 以外では無効化される) |
 
 ### マウント
 

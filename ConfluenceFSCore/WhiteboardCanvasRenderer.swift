@@ -12,11 +12,11 @@ public enum WhiteboardCanvasRenderer {
     /// caller can fall back to emitting the raw response. The format is beta and
     /// undocumented, so an unexpected shape is normal rather than an error.
     public static func render(_ payload: String) -> String? {
-        guard let nodes = canvasNodes(in: payload) else { return nil }
+        guard let nodes = canvasKeyedNodes(in: payload) else { return nil }
 
         var labelled: [String] = []
         var unlabelledTypes: [String: Int] = [:]
-        for node in nodes.sorted(by: readingOrder) {
+        for (_, node) in nodes.sorted(by: readingOrder) {
             guard let obj = node.objectValue else { continue }
             let text = obj["text"].flatMap(adfText) ?? ""
             if text.isEmpty {
@@ -46,6 +46,14 @@ public enum WhiteboardCanvasRenderer {
         return Array(nodes.values)
     }
 
+    /// The canvas nodes keyed by their dictionary key, so ordering can tie-break
+    /// on a stable identifier instead of `Dictionary` iteration order.
+    static func canvasKeyedNodes(in payload: String) -> [(key: String, value: JSONValue)]? {
+        guard let nodes = canvasDocument(in: payload)?.objectValue?["nodes"]?.objectValue
+        else { return nil }
+        return nodes.map { ($0.key, $0.value) }
+    }
+
     static func canvasDocument(in payload: String) -> JSONValue? {
         guard let root = decode(payload)?.objectValue,
               let objects = root["data"]?.objectValue?["data"]?.objectValue?["objects"]?.arrayValue,
@@ -54,10 +62,14 @@ public enum WhiteboardCanvasRenderer {
         return decode(body)
     }
 
-    /// Top-to-bottom, left-to-right across the canvas.
-    private static func readingOrder(_ lhs: JSONValue, _ rhs: JSONValue) -> Bool {
-        let a = position(of: lhs), b = position(of: rhs)
-        return a.y == b.y ? a.x < b.x : a.y < b.y
+    /// Top-to-bottom, left-to-right across the canvas; the node key breaks ties
+    /// so equal-position nodes keep a deterministic order across runs.
+    private static func readingOrder(_ lhs: (key: String, value: JSONValue),
+                                     _ rhs: (key: String, value: JSONValue)) -> Bool {
+        let a = position(of: lhs.value), b = position(of: rhs.value)
+        if a.y != b.y { return a.y < b.y }
+        if a.x != b.x { return a.x < b.x }
+        return lhs.key < rhs.key
     }
 
     private static func position(of node: JSONValue) -> (x: Double, y: Double) {

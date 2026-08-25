@@ -79,7 +79,10 @@ public actor RovoWhiteboardSource {
               siteBaseURL.user == nil, siteBaseURL.password == nil else {
             throw AtlassianError.invalidURL
         }
-        guard let url = absoluteWebURL(whiteboard.webURL) else { throw AtlassianError.notFound }
+        // `webURL` is optional (nested boards may have no `_links.webui`); do not
+        // fail the whole read when it is absent — the ARI / raw-ID forms still
+        // resolve. `orderedLocatorForms` drops `.webURL` when `url` is nil.
+        let url = absoluteWebURL(whiteboard.webURL)
         var failure: Error?
         /// Payload-level access denial that is specific to this board (broad
         /// "permission"/"forbidden" text): terminal for this read, higher priority
@@ -99,7 +102,7 @@ public actor RovoWhiteboardSource {
             throw stick(error)
         }
         for candidate in bindings {
-            for form in orderedLocatorForms(for: candidate) {
+            for form in orderedLocatorForms(for: candidate, hasURL: url != nil) {
                 do {
                     let locator = try await self.locator(form, url: url, whiteboard: whiteboard)
                     let arguments = try await arguments(for: candidate, locator: locator)
@@ -118,6 +121,15 @@ public actor RovoWhiteboardSource {
                     if let reason = Self.resolutionFailure(in: result.text) {
                         logFailure(tool: candidate.tool, text: reason)
                         failure = MCPError.toolFailed(reason)
+                        continue
+                    }
+                    // A `tools/call` that "succeeds" with no text blocks yields an
+                    // empty canvas. Accepting it would pin this binding and cache
+                    // an empty file, blocking the fallback tools; treat it as a
+                    // candidate-local failure and keep trying.
+                    if result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        logFailure(tool: candidate.tool, text: "empty result")
+                        failure = MCPError.toolFailed("the tool returned an empty result")
                         continue
                     }
                     binding = candidate
@@ -225,25 +237,28 @@ public actor RovoWhiteboardSource {
     }
 
     /// Pinned form first, then the remaining ones, so a board that stops
-    /// resolving by URL recovers without a remount.
-    private func orderedLocatorForms(for binding: Binding) -> [LocatorForm] {
+    /// resolving by URL recovers without a remount. `hasURL` drops `.webURL` when
+    /// the board has no web link, leaving the ARI / raw-ID forms.
+    private func orderedLocatorForms(for binding: Binding, hasURL: Bool) -> [LocatorForm] {
         switch binding {
         case .locator(_, _, _, let form):
             // A single-parameter tool expects exactly one locator shape (derived
             // from its property name); putting a URL in an `ari`/`id` property
             // just produces a spurious failure, so do not fan out over forms.
-            return [form]
+            return form == .webURL && !hasURL ? [] : [form]
         case .graphObject, .graphContext:
-            let all: [LocatorForm] = [.webURL, .ari]
-            guard let locatorForm else { return all }
+            let all: [LocatorForm] = hasURL ? [.webURL, .ari] : [.ari]
+            guard let locatorForm, all.contains(locatorForm) else { return all }
             return [locatorForm] + all.filter { $0 != locatorForm }
         }
     }
 
-    private func locator(_ form: LocatorForm, url: String,
+    private func locator(_ form: LocatorForm, url: String?,
                          whiteboard: ConfluenceWhiteboard) async throws -> String {
         switch form {
-        case .webURL: return url
+        case .webURL:
+            guard let url else { throw AtlassianError.notFound }
+            return url
         case .ari: return "ari:cloud:confluence:\(try await cloudID()):whiteboard/\(whiteboard.id)"
         case .rawID: return whiteboard.id
         }
@@ -293,8 +308,11 @@ public actor RovoWhiteboardSource {
         }
         struct TenantInfo: Decodable { let cloudId: String }
         let identifier = try JSONDecoder().decode(TenantInfo.self, from: data).cloudId
-        guard !identifier.isEmpty else {
-            throw AtlassianError.transport("tenant_info returned an empty cloudId")
+        // The ID is interpolated into an ARI / tool arguments; `tenant_info` is
+        // unauthenticated, so reject anything but the opaque UUID-style form to
+        // keep a tampered response from injecting delimiters.
+        guard ConfluenceRESTClient.isValidCloudID(identifier) else {
+            throw AtlassianError.decoding("tenant_info returned a malformed cloudId")
         }
         return identifier
     }
@@ -358,6 +376,13 @@ public actor RovoWhiteboardSource {
             return .graphContext(tool: tool.name)
         }
         guard let parameter = locatorParameter(of: tool.inputSchema) else { return nil }
+        // The `.locator` fallback only fills the single locator parameter. If the
+        // schema marks any *other* field as required, the advertised call is
+        // guaranteed to fail server-side validation, so skip the tool rather than
+        // issue a doomed (rate-limited, billable) request.
+        let required = Set((tool.inputSchema.objectValue?["required"]?.arrayValue ?? [])
+            .compactMap(\.stringValue))
+        guard required.subtracting([parameter.name]).isEmpty else { return nil }
         return .locator(tool: tool.name, parameter: parameter.name,
                         wrapsInArray: parameter.isArray, form: locatorForm(for: parameter.name))
     }

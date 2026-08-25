@@ -66,10 +66,22 @@ public enum PageFileBuilder {
         return Data(out.utf8)
     }
 
-    /// `whiteboard.json` — the Rovo MCP response verbatim, so that consumers can
-    /// parse fields the Markdown rendering drops.
+    /// `whiteboard.json` — the Rovo MCP response verbatim when it is valid JSON,
+    /// so consumers can parse fields the Markdown rendering drops. Fallback tools
+    /// may return plain text; to keep the `.json` contract, non-JSON payloads are
+    /// wrapped in a `{"format":"text","raw":…}` envelope rather than written as
+    /// invalid JSON.
     public static func whiteboardRaw(content: String) -> Data {
-        Data((content.hasSuffix("\n") ? content : content + "\n").utf8)
+        if let data = content.data(using: .utf8),
+           (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil {
+            return Data((content.hasSuffix("\n") ? content : content + "\n").utf8)
+        }
+        let envelope: [String: String] = ["format": "text", "raw": content]
+        if let wrapped = try? JSONSerialization.data(withJSONObject: envelope,
+                                                     options: [.sortedKeys, .withoutEscapingSlashes]) {
+            return wrapped + Data("\n".utf8)
+        }
+        return Data("{\"format\":\"text\",\"raw\":\"\"}\n".utf8)
     }
 
     /// `whiteboard.svg` — an approximate drawing of the canvas. Falls back to a

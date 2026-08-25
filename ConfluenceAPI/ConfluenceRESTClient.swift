@@ -464,10 +464,25 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         }
         struct TenantInfo: Decodable { let cloudId: String }
         do {
-            return try decoder.decode(TenantInfo.self, from: data).cloudId
+            let cloudID = try decoder.decode(TenantInfo.self, from: data).cloudId
+            guard Self.isValidCloudID(cloudID) else {
+                logger.error("tenant_info returned a malformed cloudId")
+                throw AtlassianError.decoding("tenant_info: malformed cloudId")
+            }
+            return cloudID
         } catch {
             throw AtlassianError.decoding("tenant_info: \(String(describing: error))")
         }
+    }
+
+    /// The `cloudId` is interpolated into the `/ex/confluence/{cloudId}` gateway
+    /// path and every subsequent scoped-token request is authorized against the
+    /// resulting URL. `tenant_info` is unauthenticated (MITM-able), so a value
+    /// carrying path/query delimiters (`/`, `..`, `?`, `#`, `%`) could steer the
+    /// credential-bearing traffic outside the intended tenant. Restrict it to the
+    /// opaque UUID-style identifier Atlassian actually issues.
+    static func isValidCloudID(_ id: String) -> Bool {
+        !id.isEmpty && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 
     /// Resolves a possibly-relative link (e.g. `/download/attachments/...`)
@@ -504,8 +519,23 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             link = "/wiki" + link
         }
         let base = try await apiBaseURL()
-        if usesGateway, link.hasPrefix("/"), !link.hasPrefix("//") {
-            link = base.path + link
+        if usesGateway {
+            if let absolute = URL(string: link), absolute.scheme != nil {
+                // Absolute attachment links live on the configured *site* origin,
+                // not the gateway. Validate them against the site, then splice
+                // their path (+query) into the gateway tenant context so the
+                // gateway containment checks below still apply. Without this, a
+                // legitimate absolute Cloud link is same-origin-rejected against
+                // the `api.atlassian.com` gateway and cannot be downloaded.
+                guard let siteURL = InstanceURLValidator.sameOriginURL(link, base: config.baseURL),
+                      let site = URLComponents(url: siteURL, resolvingAgainstBaseURL: false) else {
+                    return nil
+                }
+                link = base.path + site.percentEncodedPath
+                if let query = site.percentEncodedQuery { link += "?" + query }
+            } else if link.hasPrefix("/"), !link.hasPrefix("//") {
+                link = base.path + link
+            }
         }
         guard let resolved = InstanceURLValidator.sameOriginURL(link, base: base) else { return nil }
         // Same-origin is insufficient through the gateway: every tenant shares

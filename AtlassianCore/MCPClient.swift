@@ -61,6 +61,11 @@ public actor MCPClient {
     private let logger = AtlassianLog.logger("mcp")
 
     private var sessionID: String?
+    /// Bumped every time the session is (re)established or invalidated. A 404
+    /// recovery captures the generation it observed and only tears the session
+    /// down if no other concurrent recovery has already advanced it, so an older
+    /// task cannot clobber a newer session on this reentrant actor.
+    private var sessionGeneration = 0
     /// Protocol revision the server selected in its `initialize` response. MCP
     /// version negotiation may downgrade to an older supported revision, and
     /// later requests must advertise the negotiated value rather than the
@@ -127,13 +132,21 @@ public actor MCPClient {
     /// retried once with a fresh handshake.
     private func call(method: String, params: JSONValue) async throws -> JSONValue {
         try await ensureHandshake()
+        // Snapshot the session identity used for this attempt. If it 404s, only
+        // the caller that still sees this generation performs recovery; a caller
+        // whose generation was already advanced by a concurrent recovery just
+        // retries against the fresh session instead of tearing it down again.
+        let attemptGeneration = sessionGeneration
         do {
             return try await send(method: method, params: params)
         } catch AtlassianError.notFound where sessionID != nil {
             logger.debug("mcp session expired; re-initializing")
-            handshake = nil
-            sessionID = nil
-            negotiatedProtocolVersion = nil
+            if sessionGeneration == attemptGeneration {
+                sessionGeneration += 1
+                handshake = nil
+                sessionID = nil
+                negotiatedProtocolVersion = nil
+            }
             try await ensureHandshake()
             return try await send(method: method, params: params)
         }
