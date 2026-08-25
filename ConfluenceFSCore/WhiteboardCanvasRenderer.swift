@@ -61,7 +61,11 @@ public enum WhiteboardCanvasRenderer {
     }
 
     private static func position(of node: JSONValue) -> (x: Double, y: Double) {
-        guard let p = node.objectValue?["geometry"]?.objectValue?["position"]?.objectValue else {
+        // Match the SVG renderer's `box(of:)`, which falls back to
+        // `legacyGeometry` when `geometry` is absent, so ordering stays stable
+        // for nodes that only carry the legacy shape.
+        let geometry = node.objectValue?["geometry"] ?? node.objectValue?["legacyGeometry"]
+        guard let p = geometry?.objectValue?["position"]?.objectValue else {
             return (0, 0)
         }
         func value(_ key: String) -> Double {

@@ -29,7 +29,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 
 ## API Token Scopes (Confluence Cloud)
 
-When using *API Token (scoped)* authentication, grant only these scopes. jirafs is read-only and issues nothing but `GET` and `HEAD`, so **no `write:` or `delete:` scope is ever needed**.
+When using *API Token (scoped)* authentication, grant only these scopes. The Confluence REST access is read-only and issues nothing but `GET` and `HEAD`, so **no `write:` or `delete:` scope is ever needed**. (The optional Rovo MCP whiteboard integration issues read-only JSON-RPC `POST` requests to Atlassian's MCP endpoint, but these are not governed by Confluence scopes — see the notes below.)
 
 | Scope | Needed for |
 | --- | --- |

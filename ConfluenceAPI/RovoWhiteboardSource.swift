@@ -26,21 +26,25 @@ public actor RovoWhiteboardSource {
         case graphObject(tool: String)
         /// `getTeamworkGraphContext(cloudId:objectIdentifier:objectType:)`
         case graphContext(tool: String)
-        /// Any other tool that takes the object URL in a single parameter.
-        case locator(tool: String, parameter: String, wrapsInArray: Bool)
+        /// Any other tool that takes the object locator in a single parameter.
+        /// `form` is inferred from the parameter name so an `ari`- or `id`-named
+        /// property receives the matching locator instead of always a web URL.
+        case locator(tool: String, parameter: String, wrapsInArray: Bool, form: LocatorForm)
 
         var tool: String {
             switch self {
-            case .graphObject(let tool), .graphContext(let tool), .locator(let tool, _, _): return tool
+            case .graphObject(let tool), .graphContext(let tool), .locator(let tool, _, _, _): return tool
             }
         }
     }
 
     /// How the whiteboard is addressed in the tool arguments. The Teamwork Graph
-    /// tools accept either form, and which one resolves varies per board.
+    /// tools accept the web URL or ARI form (which resolves varies per board);
+    /// single-parameter tools additionally may want the bare whiteboard ID.
     enum LocatorForm: Sendable, Equatable {
         case webURL
         case ari
+        case rawID
     }
 
     private let mcp: MCPClient
@@ -52,6 +56,7 @@ public actor RovoWhiteboardSource {
     private var locatorForm: LocatorForm?
     private var candidates: [Binding]?
     private var cachedCloudID: String?
+    private var cloudIDTask: Task<String, Error>?
     /// Set once the server is known to expose no usable tool, so the file system
     /// does not re-run discovery on every failed read.
     private var unsupported: MCPError?
@@ -67,8 +72,22 @@ public actor RovoWhiteboardSource {
     /// Text rendering of the whiteboard canvas, or throws when Rovo exposes no
     /// tool able to resolve it.
     public func content(for whiteboard: ConfluenceWhiteboard) async throws -> String {
+        // The tenant lookup and (server-side) board fetch derive from
+        // `siteBaseURL`; refuse an insecure or user-info site URL before doing any
+        // resolution, mirroring the REST client's HTTPS enforcement.
+        guard siteBaseURL.scheme?.lowercased() == "https",
+              siteBaseURL.user == nil, siteBaseURL.password == nil else {
+            throw AtlassianError.invalidURL
+        }
         guard let url = absoluteWebURL(whiteboard.webURL) else { throw AtlassianError.notFound }
         var failure: Error?
+        /// Payload-level access denial that is specific to this board (broad
+        /// "permission"/"forbidden" text): terminal for this read, higher priority
+        /// than an ordinary tool failure, but not mount-wide sticky.
+        var softDenial: MCPError?
+        /// Unmistakable global rejection (scoped-token requirement): disables the
+        /// whole mount so it stops retrying discovery on every read.
+        var stickyDenial: MCPError?
         let bindings: [Binding]
         do {
             bindings = try await resolveBindings()
@@ -87,9 +106,13 @@ public actor RovoWhiteboardSource {
                     let result = try await mcp.callTool(name: candidate.tool, arguments: arguments)
                     if result.isError {
                         logFailure(tool: candidate.tool, text: result.text)
-                        failure = Self.isAccessDenied(result.text)
-                            ? MCPError.accessDenied(result.text)
-                            : MCPError.toolFailed(result.text)
+                        if Self.isScopedTokenRejection(result.text) {
+                            stickyDenial = .accessDenied(result.text)
+                        } else if Self.isAccessDenied(result.text) {
+                            softDenial = softDenial ?? .accessDenied(result.text)
+                        } else {
+                            failure = MCPError.toolFailed(result.text)
+                        }
                         continue
                     }
                     if let reason = Self.resolutionFailure(in: result.text) {
@@ -108,12 +131,21 @@ public actor RovoWhiteboardSource {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
+                    // A thrown transport / HTTP-status / tenant-info / decoding
+                    // error (including 429 and 5xx) is not candidate-specific:
+                    // retrying every other tool and form only amplifies the
+                    // site-wide Rovo rate limit and delays the eventual error.
+                    // Abort this read (making genuine auth failures sticky).
                     logFailure(tool: candidate.tool, text: String(describing: error))
-                    failure = error
+                    throw stick(error)
                 }
             }
         }
-        throw stick(failure ?? MCPError.noUsableTool)
+        // Only candidate-local outcomes (tool `isError` / resolution failures)
+        // reach here. A recognised global rejection disables the mount; otherwise
+        // surface the board-specific denial (preferred over a plain tool failure).
+        if let stickyDenial { throw stick(stickyDenial) }
+        throw softDenial ?? failure ?? MCPError.noUsableTool
     }
 
     /// Pins a terminal authorization failure so subsequent reads short-circuit
@@ -158,18 +190,19 @@ public actor RovoWhiteboardSource {
     /// than as an HTTP status, so they have to be recognised by message.
     static func isAccessDenied(_ text: String) -> Bool {
         let haystack = text.lowercased()
-        // The documented scoped-token rejection ("Teamwork Graph tools require a
-        // modern API token (API token with scopes).") names neither permission
-        // nor authorization, so match its narrow signature explicitly. An
-        // unscoped token can never resolve, so treating it as access-denied makes
-        // the mount go sticky instead of retrying every read.
-        if haystack.contains("modern api token") && haystack.contains("scope") {
-            return true
-        }
         return haystack.contains("permission")
             || haystack.contains("unauthorized")
             || haystack.contains("forbidden")
             || haystack.contains("not authorized")
+    }
+
+    /// The documented, unmistakable global rejection ("Teamwork Graph tools
+    /// require a modern API token (API token with scopes)."). Unlike a broad
+    /// per-object "permission" message this can never resolve for the mount's
+    /// credential, so it disables the whole source rather than just this read.
+    static func isScopedTokenRejection(_ text: String) -> Bool {
+        let haystack = text.lowercased()
+        return haystack.contains("modern api token") && haystack.contains("scope")
     }
 
     private func arguments(for binding: Binding, locator: String) async throws -> [String: JSONValue] {
@@ -186,7 +219,7 @@ public actor RovoWhiteboardSource {
                 "objectType": .string("ConfluenceWhiteboard"),
                 "detailLevel": .string("full"),
             ]
-        case .locator(_, let parameter, let wrapsInArray):
+        case .locator(_, let parameter, let wrapsInArray, _):
             return [parameter: wrapsInArray ? .array([.string(locator)]) : .string(locator)]
         }
     }
@@ -195,8 +228,11 @@ public actor RovoWhiteboardSource {
     /// resolving by URL recovers without a remount.
     private func orderedLocatorForms(for binding: Binding) -> [LocatorForm] {
         switch binding {
-        case .locator:
-            return [.webURL]
+        case .locator(_, _, _, let form):
+            // A single-parameter tool expects exactly one locator shape (derived
+            // from its property name); putting a URL in an `ari`/`id` property
+            // just produces a spurious failure, so do not fan out over forms.
+            return [form]
         case .graphObject, .graphContext:
             let all: [LocatorForm] = [.webURL, .ari]
             guard let locatorForm else { return all }
@@ -209,6 +245,7 @@ public actor RovoWhiteboardSource {
         switch form {
         case .webURL: return url
         case .ari: return "ari:cloud:confluence:\(try await cloudID()):whiteboard/\(whiteboard.id)"
+        case .rawID: return whiteboard.id
         }
     }
 
@@ -226,20 +263,51 @@ public actor RovoWhiteboardSource {
     }
 
     /// Tenant identifier required by the Teamwork Graph tools, from the site's
-    /// unauthenticated `_edge/tenant_info` endpoint.
+    /// unauthenticated `_edge/tenant_info` endpoint. Single-flighted so a fan-out
+    /// of board reads issues one lookup instead of one per read.
     private func cloudID() async throws -> String {
         if let cachedCloudID { return cachedCloudID }
-        guard let url = URL(string: "/_edge/tenant_info", relativeTo: siteBaseURL) else {
+        if let cloudIDTask { return try await cloudIDTask.value }
+        let task = Task { try await self.fetchCloudID() }
+        cloudIDTask = task
+        do {
+            let identifier = try await task.value
+            cloudIDTask = nil
+            cachedCloudID = identifier
+            return identifier
+        } catch {
+            cloudIDTask = nil
+            throw error
+        }
+    }
+
+    private func fetchCloudID() async throws -> String {
+        guard let url = URL(string: "/_edge/tenant_info", relativeTo: siteBaseURL)?.absoluteURL,
+              url.scheme?.lowercased() == "https",
+              url.user == nil, url.password == nil else {
             throw AtlassianError.invalidURL
         }
         let (data, response) = try await transport.data(for: URLRequest(url: url))
         guard response.statusCode == 200 else {
-            throw AtlassianError.transport("tenant_info returned \(response.statusCode)")
+            throw Self.mapStatus(response.statusCode, context: "tenant_info")
         }
         struct TenantInfo: Decodable { let cloudId: String }
         let identifier = try JSONDecoder().decode(TenantInfo.self, from: data).cloudId
-        cachedCloudID = identifier
+        guard !identifier.isEmpty else {
+            throw AtlassianError.transport("tenant_info returned an empty cloudId")
+        }
         return identifier
+    }
+
+    /// Maps an HTTP status to an `AtlassianError` so `stick(_:)` can decide
+    /// stickiness (401/403 terminal; 429/5xx transient).
+    private static func mapStatus(_ status: Int, context: String) -> AtlassianError {
+        switch status {
+        case 401: return .unauthorized
+        case 403: return .forbidden
+        case 404: return .notFound
+        default: return .transport("\(context) returned \(status)")
+        }
     }
 
     private func resolveBindings() async throws -> [Binding] {
@@ -290,7 +358,18 @@ public actor RovoWhiteboardSource {
             return .graphContext(tool: tool.name)
         }
         guard let parameter = locatorParameter(of: tool.inputSchema) else { return nil }
-        return .locator(tool: tool.name, parameter: parameter.name, wrapsInArray: parameter.isArray)
+        return .locator(tool: tool.name, parameter: parameter.name,
+                        wrapsInArray: parameter.isArray, form: locatorForm(for: parameter.name))
+    }
+
+    /// Chooses the locator shape a single-parameter tool wants from its property
+    /// name: an `ari`-named property gets an ARI, a `url`/`uri` one the web URL,
+    /// and a bare `id`/`*Id` one the raw whiteboard ID.
+    static func locatorForm(for parameter: String) -> LocatorForm {
+        let lower = parameter.lowercased()
+        if lower.contains("ari") { return .ari }
+        if lower.contains("url") || lower.contains("uri") { return .webURL }
+        return .rawID
     }
 
     /// os_log truncates long strings, so the schema is emitted in chunks.

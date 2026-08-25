@@ -136,7 +136,11 @@ public enum WhiteboardSVGRenderer {
         if let fileID = node["fileId"]?.stringValue.map({ String($0.prefix(8)) }) {
             labels.append(fileID)
         }
-        labels = Array(labels.prefix(max(1, Int(box.height / imageLabelLineHeight) - 1)))
+        // `box.height` is attacker-controlled; clamp before the `Int(...)`
+        // conversion so a non-finite or enormous height cannot trap.
+        let lineBudget = box.height / imageLabelLineHeight
+        let maxLines = lineBudget.isFinite ? Int(lineBudget.clamped(1, 256)) - 1 : 0
+        labels = Array(labels.prefix(max(1, maxLines)))
 
         let firstLine = box.midY - imageLabelLineHeight * Double(labels.count - 1) / 2
         out += "<text x=\"\(f(box.midX))\" y=\"\(f(firstLine))\" font-family=\"\(fontFamily)\" "
@@ -421,7 +425,11 @@ public enum WhiteboardSVGRenderer {
         guard let token else { return fallback }
         let parts = token.split(separator: ".")
         guard parts.count >= 4, parts[0] == "palette" else { return fallback }
-        let tone = parts[1], hue = String(parts[2]), shade = Double(parts[3]) ?? 300
+        let tone = parts[1], hue = String(parts[2])
+        // Reject a non-finite shade ("nan"/"inf" parse as Double) before it
+        // propagates through `lightness` into `hex`'s `UInt8(...)` conversion,
+        // which would trap (clamping does not neutralise NaN).
+        let shade = Double(parts[3]).flatMap { $0.isFinite ? $0 : nil } ?? 300
         guard let base = hues[hue] else { return fallback }
         let pastel = tone == "light"
         let lightness = (pastel ? 0.84 : 0.42) - (shade - 200) / 1000 * 0.28
@@ -469,8 +477,15 @@ public enum WhiteboardSVGRenderer {
     }
 
     private static func f(_ value: Double) -> String {
+        // Coordinates come from an untrusted MCP payload; a non-finite or
+        // out-of-Int64-range value would trap in the `Int(...)` fast path below.
+        guard value.isFinite else { return "0" }
         let rounded = (value * 100).rounded() / 100
-        return rounded == rounded.rounded() ? String(Int(rounded)) : String(rounded)
+        if rounded == rounded.rounded(),
+           rounded >= Double(Int.min), rounded <= Double(Int.max) {
+            return String(Int(rounded))
+        }
+        return String(rounded)
     }
 
     private static func escape(_ text: String) -> String {

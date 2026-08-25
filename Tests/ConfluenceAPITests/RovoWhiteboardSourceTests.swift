@@ -167,7 +167,8 @@ final class RovoWhiteboardSourceTests: XCTestCase {
         let mcp = MCPClient(endpoint: URL(string: "https://mcp.example.com/v1/mcp")!,
                             auth: APITokenAuth(email: "user@example.com", token: "secret"),
                             transport: stub)
-        return RovoWhiteboardSource(mcp: mcp, siteBaseURL: URL(string: "https://example.atlassian.net")!)
+        return RovoWhiteboardSource(mcp: mcp, siteBaseURL: URL(string: "https://example.atlassian.net")!,
+                                    transport: stub)
     }
 
     func testLocatorParameterPrefersRequiredArrayProperty() {
@@ -272,6 +273,7 @@ final class RovoWhiteboardSourceTests: XCTestCase {
                    "inputSchema":{"type":"object","properties":{"ari":{"type":"string"}},"required":["ari"]}}
                 ]}}
                 """),
+            MCPStubTransport.json(#"{"cloudId":"cloud-1"}"#),
             MCPStubTransport.json("""
                 {"jsonrpc":"2.0","id":3,"result":{"isError":true,"content":[{"type":"text","text":"not permitted"}]}}
                 """),

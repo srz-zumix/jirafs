@@ -61,6 +61,11 @@ public actor MCPClient {
     private let logger = AtlassianLog.logger("mcp")
 
     private var sessionID: String?
+    /// Protocol revision the server selected in its `initialize` response. MCP
+    /// version negotiation may downgrade to an older supported revision, and
+    /// later requests must advertise the negotiated value rather than the
+    /// client's preferred one.
+    private var negotiatedProtocolVersion: String?
     private var handshake: Task<Void, Error>?
     private var nextID = 1
 
@@ -128,6 +133,7 @@ public actor MCPClient {
             logger.debug("mcp session expired; re-initializing")
             handshake = nil
             sessionID = nil
+            negotiatedProtocolVersion = nil
             try await ensureHandshake()
             return try await send(method: method, params: params)
         }
@@ -144,12 +150,14 @@ public actor MCPClient {
             try await task.value
         } catch {
             handshake = nil
+            sessionID = nil
+            negotiatedProtocolVersion = nil
             throw error
         }
     }
 
     private func performHandshake() async throws {
-        _ = try await send(method: "initialize", params: .object([
+        let result = try await send(method: "initialize", params: .object([
             "protocolVersion": .string(Self.protocolVersion),
             "capabilities": .object([:]),
             "clientInfo": .object([
@@ -157,6 +165,12 @@ public actor MCPClient {
                 "version": .string(clientVersion),
             ]),
         ]))
+        // The server must echo the negotiated revision; pin it for later requests
+        // so `tools/list` / `tools/call` advertise the active session's version.
+        guard let version = result.objectValue?["protocolVersion"]?.stringValue, !version.isEmpty else {
+            throw MCPError.protocolFailure("initialize response missing protocolVersion")
+        }
+        negotiatedProtocolVersion = version
         try await notify(method: "notifications/initialized")
     }
 
@@ -191,7 +205,8 @@ public actor MCPClient {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue(Self.protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version")
+        request.setValue(negotiatedProtocolVersion ?? Self.protocolVersion,
+                         forHTTPHeaderField: "MCP-Protocol-Version")
         if let sessionID {
             request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
         }

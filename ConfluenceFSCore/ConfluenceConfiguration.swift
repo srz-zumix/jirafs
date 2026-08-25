@@ -56,9 +56,10 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public var renderMacros: Bool
         /// When `true`, whiteboard directories expose `whiteboard.md`,
         /// `whiteboard.json` and `whiteboard.svg`, built from a single Atlassian
-        /// Rovo MCP fetch. Cloud + API-token auth only,
-        /// experimental, and off by default: the MCP tools are beta, rate limited
-        /// per site, and billed in Rovo credits once out of beta.
+        /// Rovo MCP fetch. Cloud + **scoped** API-token auth only (the Teamwork
+        /// Graph tools reject a legacy unscoped token), experimental, and off by
+        /// default: the MCP tools are beta, rate limited per site, and billed in
+        /// Rovo credits once out of beta.
         public var rovoWhiteboards: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
         /// Defaults to `false`.

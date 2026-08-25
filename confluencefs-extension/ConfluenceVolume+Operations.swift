@@ -343,7 +343,11 @@ extension ConfluenceVolume: FSVolume.Operations {
             // root-level (parentless) folders or whiteboards, so only those nested
             // under a page are surfaced (see the pageDir case below).
             var result = staticKids
-            result.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
+            var taken = Set(staticKids.map(\.name))
+            // Reserve `.archived` up front (appended below) so a page titled
+            // `.archived` cannot claim the name and duplicate the directory.
+            if await dataSource.includeArchived { taken.insert(".archived") }
+            result.append(contentsOf: pageEntries(entries, spaceKey: spaceKey, taken: &taken))
             if await dataSource.includeArchived {
                 result.append((".archived", .archivedRootPagesDir(spaceKey: spaceKey), nil))
             }
@@ -351,14 +355,19 @@ extension ConfluenceVolume: FSVolume.Operations {
         case .pageDir(let spaceKey, let pageId):
             var kids = plain(ConfluencePathResolver.childKinds(of: kind))
             let entries = try await dataSource.childPageEntries(pageId: pageId, spaceKey: spaceKey)
-            kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey))
+            // Seed dedup with the static page files (`page.md`, `.metadata.json`,
+            // …) and the `.archived` directory appended below so nested pages,
+            // folders and whiteboards with colliding titles are suffixed instead
+            // of duplicating a static entry.
+            var taken = Set(kids.map(\.name))
+            if await dataSource.includeArchived { taken.insert(".archived") }
+            kids.append(contentsOf: pageEntries(entries, spaceKey: spaceKey, taken: &taken))
             // Container API errors (e.g. on instances without folder/whiteboard
             // support) must not prevent the child-page listing from rendering.
             // Folders and whiteboards are exposed as direct children of a page via
             // the v2 direct-children endpoint.
             do {
                 let containers = try await dataSource.pageContainerEntries(pageId: pageId, spaceKey: spaceKey)
-                var taken = pageNames(entries, htmlEnabled: htmlEnabled)
                 kids.append(contentsOf: folderDirEntries(containers.folders, spaceKey: spaceKey, taken: &taken))
                 kids.append(contentsOf: whiteboardDirEntries(containers.whiteboards, spaceKey: spaceKey, taken: &taken))
                 logger.debug("pageDir containers pageId=\(pageId, privacy: .public) folders=\(containers.folders.count, privacy: .public) whiteboards=\(containers.whiteboards.count, privacy: .public)")
@@ -448,30 +457,34 @@ extension ConfluenceVolume: FSVolume.Operations {
     /// folder plus an optional sibling `{Title}.html` file sharing the stem.
     /// The HTML sibling carries the page version as its fileID salt so editing a
     /// page (new version, same title) gives it a new fileID and Finder
-    /// regenerates the rendered preview.
-    private func pageEntries(_ entries: [ConfluencePageEntry], spaceKey: String) -> [ChildEntry] {
+    /// regenerates the rendered preview. Names are deduplicated against `taken`
+    /// (seeded with the static entries already emitted in the same listing) and
+    /// across sibling pages, so a page whose sanitized title collides with a
+    /// static file (`.metadata.json`, `whiteboard.md`, …) or another page gets a
+    /// ` (N)` suffix instead of silently duplicating an entry. `taken` is updated
+    /// with the emitted names.
+    private func pageEntries(_ entries: [ConfluencePageEntry], spaceKey: String,
+                             taken: inout Set<String>) -> [ChildEntry] {
         var out: [ChildEntry] = []
         for entry in entries {
             let pageId = entry.page.id
             let versionSalt = entry.page.version.map { "v\($0)" }
+            let stem = FileNameSanitizer.deduplicate(entry.folderName, taken: &taken)
             if htmlEnabled {
-                out.append(("\(entry.folderName).html", .pageHtml(spaceKey: spaceKey, pageId: pageId), versionSalt))
+                let html = FileNameSanitizer.deduplicate("\(stem).html", taken: &taken)
+                out.append((html, .pageHtml(spaceKey: spaceKey, pageId: pageId), versionSalt))
             }
-            out.append((entry.folderName, .pageDir(spaceKey: spaceKey, pageId: pageId), nil))
+            out.append((stem, .pageDir(spaceKey: spaceKey, pageId: pageId), nil))
         }
         return out
     }
 
-    /// Returns the set of names already occupied by page entries (including optional
-    /// `.html` siblings). Used as the starting `taken` set for cross-type deduplication
-    /// when folder entries are added to the same listing.
-    private func pageNames(_ entries: [ConfluencePageEntry], htmlEnabled: Bool) -> Set<String> {
-        var names = Set<String>()
-        for entry in entries {
-            names.insert(entry.folderName)
-            if htmlEnabled { names.insert("\(entry.folderName).html") }
-        }
-        return names
+    /// Convenience overload for listings without any sibling static entries
+    /// (archived page directories), where page titles still need to be
+    /// deduplicated against one another.
+    private func pageEntries(_ entries: [ConfluencePageEntry], spaceKey: String) -> [ChildEntry] {
+        var taken = Set<String>()
+        return pageEntries(entries, spaceKey: spaceKey, taken: &taken)
     }
 
     /// Emits the directory entries for a set of folder entries, deduplicating their
@@ -514,8 +527,8 @@ extension ConfluenceVolume: FSVolume.Operations {
         spaceKey: String,
         reserved: Set<String> = []
     ) -> [ChildEntry] {
-        var out = pageEntries(result.pages, spaceKey: spaceKey)
-        var taken = reserved.union(pageNames(result.pages, htmlEnabled: htmlEnabled))
+        var taken = reserved
+        var out = pageEntries(result.pages, spaceKey: spaceKey, taken: &taken)
         out.append(contentsOf: folderDirEntries(result.folders, spaceKey: spaceKey, taken: &taken))
         out.append(contentsOf: whiteboardDirEntries(result.whiteboards, spaceKey: spaceKey, taken: &taken))
         // Background: pre-cache grandchildren of child pages.

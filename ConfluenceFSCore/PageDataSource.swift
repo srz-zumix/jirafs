@@ -128,12 +128,17 @@ public actor PageDataSource {
     /// concurrent tasks from each initiating the same directory-scoped
     /// restricted-ID fetch (root pages of a space, or one parent's children)
     /// when the background pre-caching fills child-page entries in parallel.
-    private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
+    private var pendingRestrictedIDsFetch: [String: (generation: UInt64, task: Task<Set<String>, Error>)] = [:]
     /// Single-flight guard for Rovo MCP whiteboard-canvas fetches, keyed by
     /// whiteboard ID. `whiteboard.md`, `.json` and `.svg` all resolve to the same
     /// canvas, so concurrent opens would otherwise each miss the cache and issue
     /// a separate (rate-limited, credit-billed) MCP call.
-    private var pendingWhiteboardContentFetch: [String: Task<String, Error>] = [:]
+    private var pendingWhiteboardContentFetch: [String: (generation: UInt64, task: Task<String, Error>)] = [:]
+    /// Monotonic tag for single-flight entries. A leader clears its pending entry
+    /// only when the stored generation still matches its own, so a leader that
+    /// was cancelled/removed by `cancelBackgroundRefreshes()` cannot wipe a newer
+    /// task a later caller installed under the same key.
+    private var singleFlightGeneration: UInt64 = 0
 
     /// Shared attachment byte cache: serves bounded windows of attachment bodies
     /// (streaming large files via HTTP `Range`, caching small bodies in memory).
@@ -548,16 +553,22 @@ public actor PageDataSource {
         // shared task); unmount cancellation is handled by
         // `cancelBackgroundRefreshes()`.
         if let pending = pendingWhiteboardContentFetch[id] {
-            return try await pending.value
+            return try await pending.task.value
         }
+        singleFlightGeneration += 1
+        let generation = singleFlightGeneration
         let task = Task<String, Error> {
             let board = try await self.whiteboard(id: id)
             return try await self.cached("whiteboardcontent/\(id)", ttl: contentTTL) {
                 try await rovoWhiteboards.content(for: board)
             }
         }
-        pendingWhiteboardContentFetch[id] = task
-        defer { pendingWhiteboardContentFetch[id] = nil }
+        pendingWhiteboardContentFetch[id] = (generation, task)
+        defer {
+            if pendingWhiteboardContentFetch[id]?.generation == generation {
+                pendingWhiteboardContentFetch[id] = nil
+            }
+        }
         return try await task.value
     }
 
@@ -742,19 +753,26 @@ public actor PageDataSource {
         // leader's result and must never cancel it: it is a single-flight task
         // that other callers depend on, and the leader owns caching + cleanup.
         if let pending = pendingRestrictedIDsFetch[cacheKey] {
-            return try await pending.value
+            return try await pending.task.value
         }
         // Start a new fetch and register it so other concurrent callers can join.
+        singleFlightGeneration += 1
+        let generation = singleFlightGeneration
         let task = Task<Set<String>, Error>(operation: fetch)
-        pendingRestrictedIDsFetch[cacheKey] = task
+        pendingRestrictedIDsFetch[cacheKey] = (generation, task)
         // Clear the pending entry on every exit path. `defer` runs after the
         // `return ids` value (and therefore after `cache.set`) is evaluated, so
         // the entry stays registered until the cache is populated — a concurrent
         // caller arriving during `cache.set` still joins this fetch instead of
         // starting a duplicate one (single-flight guarantee). The shared task is
         // never cancelled here; unmount cancellation is handled separately by
-        // `cancelBackgroundRefreshes()`.
-        defer { pendingRestrictedIDsFetch[cacheKey] = nil }
+        // `cancelBackgroundRefreshes()`. Only clear when the generation still
+        // matches, so a cancelled leader cannot wipe a newer caller's entry.
+        defer {
+            if pendingRestrictedIDsFetch[cacheKey]?.generation == generation {
+                pendingRestrictedIDsFetch[cacheKey] = nil
+            }
+        }
         let ids = try await task.value
         await cache.set(cacheKey, value: ids, ttl: ttl.pages)
         return ids
@@ -811,9 +829,9 @@ public actor PageDataSource {
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         refreshing.removeAll()
-        for task in pendingRestrictedIDsFetch.values { task.cancel() }
+        for entry in pendingRestrictedIDsFetch.values { entry.task.cancel() }
         pendingRestrictedIDsFetch.removeAll()
-        for task in pendingWhiteboardContentFetch.values { task.cancel() }
+        for entry in pendingWhiteboardContentFetch.values { entry.task.cancel() }
         pendingWhiteboardContentFetch.removeAll()
         // Await so any in-flight attachment download is cancelled and the
         // in-memory attachment cache is cleared before unmount reports completion.

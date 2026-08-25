@@ -15,6 +15,10 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     private let transport: HTTPTransport
     private let decoder: JSONDecoder
     private var cachedGatewayBase: URL?
+    /// Single-flight guard for the gateway-base (cloud ID) lookup. This actor is
+    /// reentrant across the `tenant_info` await, so without it concurrent first
+    /// requests would each issue the unrate-limited lookup.
+    private var gatewayBaseTask: Task<URL, Error>?
     private let logger = AtlassianLog.logger("confluence-api")
 
     /// Expand string that fetches restriction subjects (user + group) for both
@@ -419,18 +423,38 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     private func apiBaseURL() async throws -> URL {
         guard usesGateway else { return config.baseURL }
         if let cachedGatewayBase { return cachedGatewayBase }
-        let cloudID = try await fetchCloudID()
-        guard let url = URL(string: "/ex/confluence/\(cloudID)", relativeTo: Self.gatewayOrigin)?.absoluteURL else {
-            throw AtlassianError.invalidURL
+        // Join an in-flight lookup rather than starting a duplicate one.
+        if let gatewayBaseTask { return try await gatewayBaseTask.value }
+        let task = Task<URL, Error> {
+            let cloudID = try await self.fetchCloudID()
+            guard let url = URL(string: "/ex/confluence/\(cloudID)", relativeTo: Self.gatewayOrigin)?.absoluteURL else {
+                throw AtlassianError.invalidURL
+            }
+            return url
         }
-        logger.debug("confluence gateway base=\(url.absoluteString, privacy: .public)")
-        cachedGatewayBase = url
-        return url
+        gatewayBaseTask = task
+        do {
+            let url = try await task.value
+            cachedGatewayBase = url
+            gatewayBaseTask = nil
+            logger.debug("confluence gateway base=\(url.absoluteString, privacy: .public)")
+            return url
+        } catch {
+            gatewayBaseTask = nil
+            throw error
+        }
     }
 
     /// The site's cloud ID, from its unauthenticated `_edge/tenant_info` endpoint.
     private func fetchCloudID() async throws -> String {
         guard let url = URL(string: "/_edge/tenant_info", relativeTo: config.baseURL)?.absoluteURL else {
+            throw AtlassianError.invalidURL
+        }
+        // This bootstrap runs before any credential-bearing gateway request, but
+        // an attacker who can MITM a plaintext tenant lookup can substitute the
+        // `cloudId` and steer the subsequent scoped-token traffic to another
+        // tenant context. Refuse a non-HTTPS or user-info site URL up front.
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else {
             throw AtlassianError.invalidURL
         }
         let (data, http) = try await transport.data(for: URLRequest(url: url))
@@ -488,11 +512,23 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         // the `api.atlassian.com` host, so an absolute link pointing at another
         // `/ex/confluence/{otherCloudId}` context would otherwise pass and receive
         // this mount's scoped Authorization header. Require the resolved path to
-        // stay within the configured tenant context path (exact match or a proper
-        // sub-path, never a sibling like `.../{cloudId}2`).
+        // stay within the configured tenant context path.
         if usesGateway {
+            // A lexical prefix check is not enough: `.../{cloudId}/../{other}/...`
+            // (including percent-encoded `%2e%2e`) keeps the prefix but the HTTP
+            // server normalises it into another tenant context. Reject any dot
+            // segment explicitly, then containment-check the canonical path (exact
+            // match or a proper sub-path, never a sibling like `.../{cloudId}2`).
+            guard let components = URLComponents(url: resolved, resolvingAgainstBaseURL: false) else {
+                return nil
+            }
+            for segment in components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: true) {
+                let decoded = segment.removingPercentEncoding ?? String(segment)
+                if decoded == "." || decoded == ".." { return nil }
+            }
+            let canonical = resolved.standardized.path
             let basePath = base.path
-            guard resolved.path == basePath || resolved.path.hasPrefix(basePath + "/") else {
+            guard canonical == basePath || canonical.hasPrefix(basePath + "/") else {
                 return nil
             }
         }

@@ -27,7 +27,7 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 
 ## API トークンのスコープ（Confluence Cloud）
 
-*API Token (scoped)* 認証を使う場合、必要なのは以下のスコープだけです。jirafs は読み取り専用で `GET` / `HEAD` しか発行しないため、**`write:` / `delete:` 系は一切不要**です。
+*API Token (scoped)* 認証を使う場合、必要なのは以下のスコープだけです。Confluence REST アクセスは読み取り専用で `GET` / `HEAD` しか発行しないため、**`write:` / `delete:` 系は一切不要**です。（オプションの Rovo MCP ホワイトボード連携は Atlassian の MCP エンドポイントへ読み取り専用の JSON-RPC `POST` を発行しますが、これは Confluence スコープではなく後述の設定で制御されます。）
 
 | スコープ | 用途 |
 | --- | --- |
