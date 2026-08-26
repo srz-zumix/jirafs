@@ -567,9 +567,15 @@ public actor PageDataSource {
         singleFlightGeneration += 1
         let generation = singleFlightGeneration
         let task = Task<String, Error> {
-            let board = try await self.whiteboard(id: id)
-            return try await self.cached("whiteboardcontent/\(id)", ttl: contentTTL) {
-                try await rovoWhiteboards.content(for: board)
+            // Fetch the board metadata only when the canvas actually needs to be
+            // (re)computed — i.e. inside the content-cache closure. Fetching it
+            // eagerly would issue a `getWhiteboard` REST call (or, once the
+            // shorter `pageDetail` metadata TTL expires, a stale-serve + background
+            // refresh) on every open of the three sibling files even while the
+            // longer-lived canvas string is still cached.
+            try await self.cached("whiteboardcontent/\(id)", ttl: contentTTL) {
+                let board = try await self.whiteboard(id: id)
+                return try await rovoWhiteboards.content(for: board)
             }
         }
         pendingWhiteboardContentFetch[id] = (generation, task)
