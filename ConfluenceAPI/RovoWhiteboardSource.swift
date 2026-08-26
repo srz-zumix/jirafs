@@ -88,9 +88,6 @@ public actor RovoWhiteboardSource {
         /// "permission"/"forbidden" text): terminal for this read, higher priority
         /// than an ordinary tool failure, but not mount-wide sticky.
         var softDenial: MCPError?
-        /// Unmistakable global rejection (scoped-token requirement): disables the
-        /// whole mount so it stops retrying discovery on every read.
-        var stickyDenial: MCPError?
         let bindings: [Binding]
         do {
             bindings = try await resolveBindings()
@@ -109,8 +106,11 @@ public actor RovoWhiteboardSource {
                     let result = try await mcp.callTool(name: candidate.tool, arguments: arguments)
                     if result.isError {
                         logFailure(tool: candidate.tool, text: result.text)
-                        if Self.isScopedTokenRejection(result.text) {
-                            stickyDenial = .accessDenied(result.text)
+                        if Self.isScopedTokenRejection(result.text) || Self.isConnectViaTokenDenied(result.text) {
+                            // An unmistakable mount-wide rejection: stop probing the
+                            // remaining tools/forms immediately (each further call is
+                            // billable and equally doomed) and disable the source.
+                            throw stick(MCPError.accessDenied(result.text))
                         } else if Self.isAccessDenied(result.text) {
                             softDenial = softDenial ?? .accessDenied(result.text)
                         } else {
@@ -154,9 +154,9 @@ public actor RovoWhiteboardSource {
             }
         }
         // Only candidate-local outcomes (tool `isError` / resolution failures)
-        // reach here. A recognised global rejection disables the mount; otherwise
-        // surface the board-specific denial (preferred over a plain tool failure).
-        if let stickyDenial { throw stick(stickyDenial) }
+        // reach here. Recognised mount-wide rejections already threw above via
+        // `stick`, so surface the board-specific denial (preferred over a plain
+        // tool failure) or the last ordinary failure.
         throw softDenial ?? failure ?? MCPError.noUsableTool
     }
 
@@ -215,6 +215,15 @@ public actor RovoWhiteboardSource {
     static func isScopedTokenRejection(_ text: String) -> Bool {
         let haystack = text.lowercased()
         return haystack.contains("modern api token") && haystack.contains("scope")
+    }
+
+    /// The org-level rejection surfaced when an API token is not permitted to
+    /// connect at all ("You don't have permission to connect via API token.").
+    /// This is mount-wide like a scoped-token rejection, so match the whole known
+    /// phrase — not its individual words — to avoid classifying a board-specific
+    /// "permission" message as a global denial.
+    static func isConnectViaTokenDenied(_ text: String) -> Bool {
+        text.lowercased().contains("permission to connect via api token")
     }
 
     private func arguments(for binding: Binding, locator: String) async throws -> [String: JSONValue] {
@@ -455,7 +464,12 @@ public actor RovoWhiteboardSource {
                 guard let kind = Self.locatorKind(of: name) else { return nil }
                 return (name, kind, required.contains(name) ? 0 : 1)
             }
-            .sorted { ($0.kind, $0.requirement, $0.name) < ($1.kind, $1.requirement, $1.name) }
+            // Requirement first: the `.locator` binding can fill exactly one
+            // parameter, so a *required* locator field must win over an optional
+            // one — otherwise `binding(for:)` would pick the optional field and
+            // then reject the tool because the required field stays unfilled.
+            // Within the same requirement tier, prefer the more locator-like kind.
+            .sorted { ($0.requirement, $0.kind, $0.name) < ($1.requirement, $1.kind, $1.name) }
         guard let best = ranked.first else { return nil }
         let property = properties[best.name]?.objectValue
         let isArray = property?["type"]?.stringValue == "array" || property?["items"] != nil
@@ -468,11 +482,20 @@ public actor RovoWhiteboardSource {
         "accountid", "userid", "workspaceid", "clientid",
     ]
 
+    /// Identifiers that address a *related* object (the board's parent/container)
+    /// rather than the board itself. Filling one of these with the whiteboard's
+    /// locator would address the wrong object, so — like tenant identifiers — they
+    /// are never eligible to carry the locator even when marked required.
+    private static let relationshipIdentifiers: Set<String> = [
+        "parentid", "parentids", "containerid", "containerids",
+        "ancestorid", "ancestorids", "spaceid", "folderid",
+    ]
+
     /// 0 for URL-ish names, 1 for a bare `id`, 2 for other id-ish names, nil when
     /// the name cannot hold an object locator.
     private static func locatorKind(of name: String) -> Int? {
         let lower = name.lowercased()
-        guard !contextIdentifiers.contains(lower) else { return nil }
+        guard !contextIdentifiers.contains(lower), !relationshipIdentifiers.contains(lower) else { return nil }
         if ["url", "uri", "ari"].contains(where: { lower.contains($0) }) { return 0 }
         if lower == "id" || lower == "ids" { return 1 }
         if lower.hasSuffix("id") || lower.hasSuffix("ids") { return 2 }
@@ -480,11 +503,19 @@ public actor RovoWhiteboardSource {
     }
 
     /// Confluence returns `_links.webui` relative to the site's `/wiki` context;
-    /// Rovo needs an absolute URL.
+    /// Rovo needs an absolute URL. An already-absolute `webui` is only honoured
+    /// when it is HTTPS and same-origin with `siteBaseURL`: the resolved URL is
+    /// handed to an authenticated Rovo tool, so an attacker-influenced `_links`
+    /// value pointing at an arbitrary scheme/host must not be forwarded. A
+    /// rejected absolute URL returns nil so the caller falls back to the ARI /
+    /// raw-ID forms.
     func absoluteWebURL(_ webURL: String?) -> String? {
         guard let webURL, !webURL.isEmpty else { return nil }
         if let absolute = URL(string: webURL), absolute.scheme != nil {
-            return absolute.absoluteString
+            guard absolute.scheme?.lowercased() == "https",
+                  let sameOrigin = InstanceURLValidator.sameOriginURL(webURL, base: siteBaseURL)
+            else { return nil }
+            return sameOrigin.absoluteString
         }
         let rooted = webURL.hasPrefix("/") ? webURL : "/" + webURL
         let path = rooted.hasPrefix("/wiki/") ? rooted : "/wiki" + rooted

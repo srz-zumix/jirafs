@@ -544,24 +544,25 @@ public actor PageDataSource {
     /// Whiteboard canvas rendered to text via Rovo MCP (Cloud only, opt-in).
     public func whiteboardContent(id: String) async throws -> String {
         guard let rovoWhiteboards else { throw AtlassianError.unsupported }
-        // When ordinary page-detail caching is left enabled (the default,
-        // `pageDetail = 600`), whiteboard content is held for at least
-        // `whiteboardContentMinimumTTL` so the rate-limited/billable Rovo fetch is
-        // not repeated for the three sibling files. When the operator has
-        // *explicitly* disabled detail caching (`pageDetail <= 0`), that choice is
-        // honoured rather than silently overridden — each read then issues a fresh
-        // Rovo call, though the per-id single-flight below still collapses the
-        // concurrent `.md`/`.json`/`.svg` opens into one.
-        let contentTTL = ttl.pageDetail <= 0
-            ? ttl.pageDetail
-            : max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
+        // Whiteboard canvases are ALWAYS cached in memory for at least
+        // `whiteboardContentMinimumTTL`, regardless of `ttl.pageDetail`. Disabling
+        // detail caching (`pageDetail <= 0`) suppresses caching of ordinary REST
+        // detail responses, but it does NOT disable this cache: a Rovo MCP fetch
+        // is rate-limited per site and billed in Rovo credits, and `cached()`
+        // serves the *stale* entry (scheduling a background refresh) once expired,
+        // so a short/zero TTL would re-issue the billable call for every one of
+        // the three sibling files. The floor keeps the in-memory entry fresh for
+        // an hour; disk persistence remains governed by the separate diskCache
+        // flag, so this never forces a disk write.
+        let contentTTL = max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
         // Single-flight the whole board→canvas resolution: the three whiteboard
-        // files share one MCP fetch. Joiners share the leader's result and must
-        // never cancel it (cancelling one waiter only fails that waiter, not the
-        // shared task); unmount cancellation is handled by
+        // files share one MCP fetch. Joiners share the leader's result via a
+        // cancellation-aware wait (`joinShared`): cancelling one waiter fails only
+        // that waiter with `CancellationError` and leaves the shared task — and
+        // the other waiters — running. Unmount cancellation is handled by
         // `cancelBackgroundRefreshes()`.
         if let pending = pendingWhiteboardContentFetch[id] {
-            return try await pending.task.value
+            return try await Self.joinShared(pending.task)
         }
         singleFlightGeneration += 1
         let generation = singleFlightGeneration
@@ -577,18 +578,34 @@ public actor PageDataSource {
                 pendingWhiteboardContentFetch[id] = nil
             }
         }
-        return try await task.value
+        // The leader also waits cancellably: if this read is aborted the shared
+        // task keeps running to completion (populating the cache for later reads
+        // and any concurrent joiners) instead of hanging on a non-cancellable
+        // `task.value`.
+        return try await Self.joinShared(task)
     }
 
     private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
-        let rawPages = children.compactMap { child -> ConfluencePage? in
-            guard child.contentType == .page else { return nil }
-            return ConfluencePage(
-                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
-                version: child.version, authorId: child.authorId,
-                createdAt: child.createdAt, webURL: child.webURL
-            )
-        }
+        // Page children of a folder/whiteboard cannot be restriction-filtered: a
+        // v2 container is not a v1 "content" object, so the directory-scoped
+        // restricted-ID API used for page children (`restrictedChildPageIDs`)
+        // does not apply to it, and the v2 `direct-children` payload carries no
+        // restriction data. When restricted pages must stay hidden
+        // (`includeRestricted == false`, the default) we cannot tell which of
+        // these children are restricted, so — preferring a false negative over a
+        // privacy leak — hide ALL page children here. Sub-folders and whiteboards
+        // are still listed. (`includeRestricted` is part of the folder/whiteboard
+        // cache key via `pageListVariant`, so toggling the flag re-reads.)
+        let rawPages: [ConfluencePage] = includeRestricted
+            ? children.compactMap { child -> ConfluencePage? in
+                guard child.contentType == .page else { return nil }
+                return ConfluencePage(
+                    id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                    version: child.version, authorId: child.authorId,
+                    createdAt: child.createdAt, webURL: child.webURL
+                )
+            }
+            : []
         return ConfluenceFolderChildrenResult(
             pages: makeEntries(rawPages),
             folders: makeFolderEntries(folders(in: children)),
@@ -864,5 +881,82 @@ public actor PageDataSource {
             logger.warning("fetchAll: pagination guard limit (1000 pages) reached; \(items.count) items collected so far. Some items may be missing.")
         }
         return items
+    }
+
+    /// Awaits a shared single-flight `Task` without ever cancelling it. The wait
+    /// itself is cancellation-aware: if the *current* caller's task is cancelled
+    /// this returns `CancellationError` promptly while the shared task keeps
+    /// running for its other waiters (and to populate the cache). `Task.value` is
+    /// not cancellation-aware, so awaiting it directly would pin an aborted read
+    /// until the shared fetch finished.
+    static func joinShared<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
+        let waiter = SingleResume<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.begin(continuation: continuation, awaiting: task)
+            }
+        } onCancel: {
+            waiter.cancel()
+        }
+    }
+}
+
+/// One-shot resume coordinator shared between a continuation, an observer of the
+/// shared task, and a cancellation handler. Exactly one of "the shared task
+/// finished" or "this waiter was cancelled" resumes the continuation; the other
+/// becomes a no-op. Cancelling a waiter never cancels the shared task.
+private final class SingleResume<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var observer: Task<Void, Never>?
+    private var finished = false
+    private var cancelledEarly = false
+
+    func begin(continuation: CheckedContinuation<T, Error>, awaiting task: Task<T, Error>) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        if cancelledEarly {
+            // Cancellation arrived before the continuation was installed.
+            finished = true
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        observer = Task { [weak self] in
+            let result = await task.result
+            self?.finish(with: result)
+        }
+        lock.unlock()
+    }
+
+    private func finish(with result: Result<T, Error>) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation
+        self.continuation = nil
+        observer = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+
+    func cancel() {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        guard let continuation else {
+            // Continuation not installed yet: record so `begin` resumes it.
+            cancelledEarly = true
+            lock.unlock()
+            return
+        }
+        finished = true
+        self.continuation = nil
+        let observer = self.observer
+        self.observer = nil
+        lock.unlock()
+        // Stop observing (does not cancel the shared task) and fail this waiter.
+        observer?.cancel()
+        continuation.resume(throwing: CancellationError())
     }
 }

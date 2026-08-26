@@ -53,6 +53,15 @@ public actor MCPClient {
     /// Upper bound on `tools/list` pages followed via `nextCursor`.
     public static let maxToolPages = 20
 
+    /// Bounded, cancellation-aware retry budget for HTTP 429 responses. Retries
+    /// re-send the *same* logical request while honouring a capped `Retry-After`;
+    /// this is orthogonal to any higher-level fan-out abort, which decides
+    /// whether to keep probing *other* tools after a request ultimately fails.
+    static let maxRateLimitRetries = 2
+    /// Ceiling applied to a server-provided `Retry-After` (or the synthetic
+    /// backoff) so a hostile/broken header cannot park a mount for minutes.
+    static let maxRateLimitBackoff: TimeInterval = 5
+
     public let endpoint: URL
     private let auth: AuthProvider
     private let transport: HTTPTransport
@@ -71,7 +80,13 @@ public actor MCPClient {
     /// later requests must advertise the negotiated value rather than the
     /// client's preferred one.
     private var negotiatedProtocolVersion: String?
-    private var handshake: Task<Void, Error>?
+    /// The in-flight (or completed) handshake plus a monotonic token identifying
+    /// it. `Task` is a value type with no usable identity, so the token lets a
+    /// waiter detect that the handshake it awaited was replaced by a newer one
+    /// (e.g. after a 404 recovery) and re-join the current handshake instead of
+    /// returning from — or clearing — an obsolete one on this reentrant actor.
+    private var handshake: (token: Int, task: Task<Void, Error>)?
+    private var handshakeCounter = 0
     private var nextID = 1
 
     public init(
@@ -129,47 +144,86 @@ public actor MCPClient {
 
     /// Sends a request, performing the `initialize` handshake first. A dropped
     /// server-side session (HTTP 404 for a session we believed was live) is
-    /// retried once with a fresh handshake.
+    /// retried once with a fresh handshake, and HTTP 429 is retried a bounded
+    /// number of times honouring a capped `Retry-After`.
     private func call(method: String, params: JSONValue) async throws -> JSONValue {
-        try await ensureHandshake()
-        // Snapshot the session identity used for this attempt. If it 404s, only
-        // the caller that still sees this generation performs recovery; a caller
-        // whose generation was already advanced by a concurrent recovery just
-        // retries against the fresh session instead of tearing it down again.
-        let attemptGeneration = sessionGeneration
-        do {
-            return try await send(method: method, params: params)
-        } catch AtlassianError.notFound where sessionID != nil {
-            logger.debug("mcp session expired; re-initializing")
-            if sessionGeneration == attemptGeneration {
-                sessionGeneration += 1
-                handshake = nil
-                sessionID = nil
-                negotiatedProtocolVersion = nil
-            }
+        var recovered = false
+        var rateLimitAttempts = 0
+        while true {
             try await ensureHandshake()
-            return try await send(method: method, params: params)
+            // Snapshot the session identity *for this attempt*. `sessionID` may be
+            // cleared by a concurrent recovery while this request is suspended, so
+            // the recovery decision must use the value observed when the attempt
+            // began — not the live property — and only the caller that still sees
+            // this generation performs the teardown.
+            let hadSession = sessionID != nil
+            let attemptGeneration = sessionGeneration
+            do {
+                return try await send(method: method, params: params)
+            } catch AtlassianError.notFound where hadSession && !recovered {
+                recovered = true
+                logger.debug("mcp session expired; re-initializing")
+                if sessionGeneration == attemptGeneration {
+                    sessionGeneration += 1
+                    handshake = nil
+                    sessionID = nil
+                    negotiatedProtocolVersion = nil
+                }
+                continue
+            } catch AtlassianError.rateLimited(let retryAfter) where rateLimitAttempts < Self.maxRateLimitRetries {
+                rateLimitAttempts += 1
+                let backoff = min(retryAfter ?? Double(rateLimitAttempts), Self.maxRateLimitBackoff)
+                if backoff > 0 {
+                    // Cancellation-aware: a cancelled read aborts the wait promptly.
+                    try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                }
+                continue
+            }
         }
     }
 
     private func ensureHandshake() async throws {
-        if let handshake {
-            try await handshake.value
-            return
-        }
-        let task = Task { try await self.performHandshake() }
-        handshake = task
-        do {
-            try await task.value
-        } catch {
-            handshake = nil
-            sessionID = nil
-            negotiatedProtocolVersion = nil
-            throw error
+        while true {
+            if let current = handshake {
+                do {
+                    try await current.task.value
+                } catch {
+                    // Clear only if this handshake is still current; a concurrent
+                    // recovery may already have installed a replacement.
+                    if handshake?.token == current.token { handshake = nil }
+                    // No replacement installed => surface the failure. Otherwise a
+                    // newer handshake exists, so loop to join it instead.
+                    if handshake == nil { throw error }
+                    continue
+                }
+                // Completed successfully. If it was replaced while we awaited, the
+                // session it established is obsolete: join the replacement.
+                if handshake?.token == current.token { return }
+                continue
+            }
+            handshakeCounter += 1
+            let token = handshakeCounter
+            let generation = sessionGeneration
+            let task = Task { try await self.performHandshake(generation: generation) }
+            handshake = (token, task)
+            do {
+                try await task.value
+                if handshake?.token == token { return }
+                continue
+            } catch {
+                if handshake?.token == token {
+                    handshake = nil
+                    if sessionGeneration == generation {
+                        sessionID = nil
+                        negotiatedProtocolVersion = nil
+                    }
+                }
+                throw error
+            }
         }
     }
 
-    private func performHandshake() async throws {
+    private func performHandshake(generation: Int) async throws {
         let result = try await send(method: "initialize", params: .object([
             "protocolVersion": .string(Self.protocolVersion),
             "capabilities": .object([:]),
@@ -183,6 +237,13 @@ public actor MCPClient {
         guard let version = result.objectValue?["protocolVersion"]?.stringValue, !version.isEmpty else {
             throw MCPError.protocolFailure("initialize response missing protocolVersion")
         }
+        // A concurrent recovery may have advanced the generation while `initialize`
+        // was in flight; if so this handshake is obsolete. Do not commit its
+        // protocol version or emit `notifications/initialized` for a session the
+        // client no longer owns.
+        guard sessionGeneration == generation else {
+            throw MCPError.protocolFailure("handshake superseded")
+        }
         negotiatedProtocolVersion = version
         try await notify(method: "notifications/initialized")
     }
@@ -191,8 +252,13 @@ public actor MCPClient {
         let id = nextID
         nextID += 1
         let body = try JSONEncoder().encode(RPCRequest(id: id, method: method, params: params))
+        // Capture the session epoch before suspending. A late response from an
+        // obsolete session (whose generation was superseded while we awaited) must
+        // not resurrect its `Mcp-Session-Id` over the current session's header.
+        let generation = sessionGeneration
         let (data, http) = try await perform(body: body)
-        if let session = http.value(forHTTPHeaderField: "Mcp-Session-Id"), !session.isEmpty {
+        if let session = http.value(forHTTPHeaderField: "Mcp-Session-Id"), !session.isEmpty,
+           sessionGeneration == generation {
             sessionID = session
         }
         try validate(http: http, data: data, method: method)

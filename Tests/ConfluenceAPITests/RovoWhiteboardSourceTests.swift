@@ -215,10 +215,58 @@ final class RovoWhiteboardSourceTests: XCTestCase {
         XCTAssertEqual(resolved, "https://example.atlassian.net/wiki/spaces/ENG/whiteboards/w1")
     }
 
+    func testLocatorParameterPrefersRequiredOverOptionalLocatorLikeName() {
+        // A required `objectId` must beat an optional `url`: `.locator` fills only
+        // one parameter, so picking the optional url would leave objectId unfilled
+        // and get the tool rejected by `binding(for:)`.
+        let schema = JSONValue.object([
+            "properties": .object([
+                "url": .object(["type": .string("string")]),
+                "objectId": .object(["type": .string("string")]),
+            ]),
+            "required": .array([.string("objectId")]),
+        ])
+        XCTAssertEqual(RovoWhiteboardSource.locatorParameter(of: schema)?.name, "objectId")
+    }
+
+    func testLocatorParameterIgnoresRelationshipIdentifiers() {
+        // parentId/containerId address a *related* object, never the board itself,
+        // so they must not be selected even when required.
+        let schema = JSONValue.object([
+            "properties": .object([
+                "parentId": .object(["type": .string("string")]),
+                "url": .object(["type": .string("string")]),
+            ]),
+            "required": .array([.string("parentId")]),
+        ])
+        XCTAssertEqual(RovoWhiteboardSource.locatorParameter(of: schema)?.name, "url")
+    }
+
+    func testConnectViaTokenDenialIsRecognised() {
+        XCTAssertTrue(RovoWhiteboardSource.isConnectViaTokenDenied(
+            "You don't have permission to connect via API token."))
+        XCTAssertFalse(RovoWhiteboardSource.isConnectViaTokenDenied(
+            "You don't have permission to view this board."))
+    }
+
     func testAbsoluteWebURLIsPassedThrough() async {
         let stub = MCPStubTransport()
+        let resolved = await source(stub).absoluteWebURL("https://example.atlassian.net/wiki/x")
+        XCTAssertEqual(resolved, "https://example.atlassian.net/wiki/x")
+    }
+
+    func testCrossOriginAbsoluteWebURLIsRejected() async {
+        let stub = MCPStubTransport()
+        // A `_links.webui` pointing at a foreign host must not be forwarded to the
+        // authenticated Rovo tool; returning nil falls back to the ARI / raw-ID.
         let resolved = await source(stub).absoluteWebURL("https://other.example/wiki/x")
-        XCTAssertEqual(resolved, "https://other.example/wiki/x")
+        XCTAssertNil(resolved)
+    }
+
+    func testInsecureAbsoluteWebURLIsRejected() async {
+        let stub = MCPStubTransport()
+        let resolved = await source(stub).absoluteWebURL("http://example.atlassian.net/wiki/x")
+        XCTAssertNil(resolved)
     }
 
     func testContentDiscoversToolAndSendsAbsoluteURL() async throws {
