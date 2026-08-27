@@ -157,7 +157,7 @@ struct MountEditorView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .help("Fetch the server-rendered view so dynamic macros (e.g. Table of Contents) are expanded. On by default.")
                             }
-                            fieldRow("Whiteboards (Rovo)") {
+                            fieldRow("Whiteboards") {
                                 Toggle("", isOn: $rovoWhiteboards)
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
