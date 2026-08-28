@@ -42,6 +42,15 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     case whiteboardDir(spaceKey: String, whiteboardId: String)  // .../{Title}/
     /// `.metadata.json` inside a whiteboard directory.
     case whiteboardMeta(spaceKey: String, whiteboardId: String)
+    /// `whiteboard.md` inside a whiteboard directory — the canvas rendered to
+    /// text via Rovo MCP. Only present when the mount opts into Rovo.
+    case whiteboardBody(spaceKey: String, whiteboardId: String)
+    /// `whiteboard.json` inside a whiteboard directory — the unmodified Rovo MCP
+    /// response. Only present when the mount opts into Rovo.
+    case whiteboardRaw(spaceKey: String, whiteboardId: String)
+    /// `whiteboard.svg` inside a whiteboard directory — the canvas drawn from its
+    /// stored geometry. Only present when the mount opts into Rovo.
+    case whiteboardSVG(spaceKey: String, whiteboardId: String)
 
     public var isDirectory: Bool {
         switch self {
@@ -92,6 +101,12 @@ extension ConfluenceNodeKind: CustomStringConvertible {
             return "whiteboardDir(\(spaceKey),\(whiteboardId))"
         case .whiteboardMeta(let spaceKey, let whiteboardId):
             return "whiteboardMeta(\(spaceKey),\(whiteboardId))"
+        case .whiteboardBody(let spaceKey, let whiteboardId):
+            return "whiteboardBody(\(spaceKey),\(whiteboardId))"
+        case .whiteboardRaw(let spaceKey, let whiteboardId):
+            return "whiteboardRaw(\(spaceKey),\(whiteboardId))"
+        case .whiteboardSVG(let spaceKey, let whiteboardId):
+            return "whiteboardSVG(\(spaceKey),\(whiteboardId))"
         }
     }
 }
@@ -103,6 +118,16 @@ public enum ConfluencePathResolver {
         case body = "page.md"
         case metadata = ".metadata.json"
         case labels = ".labels.txt"
+    }
+
+    /// Files exposed inside a whiteboard directory. `body`, `raw` and `svg` are
+    /// opt-in (Rovo MCP) and are therefore appended by the volume rather than by
+    /// `childKinds`.
+    public enum WhiteboardFile: String, CaseIterable, Sendable {
+        case body = "whiteboard.md"
+        case raw = "whiteboard.json"
+        case svg = "whiteboard.svg"
+        case metadata = ".metadata.json"
     }
 
     /// Static children of a page directory (the dynamic child pages are resolved

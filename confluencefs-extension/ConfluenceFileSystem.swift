@@ -22,7 +22,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             self.containerStatus = .ready
             let mountID = ConfluenceFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
-            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived, includeRestricted, renderMacros) =
+            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived, includeRestricted, renderMacros, rovoWhiteboards) =
                 try ConfluenceFileSystem.lookupInstance(mountID: mountID)
             let client = ConfluenceRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
@@ -54,7 +54,10 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                 allowedSpaceKeys: allowedSpaceKeys,
                 includeArchived: includeArchived,
                 includeRestricted: includeRestricted,
-                renderMacros: renderMacros
+                renderMacros: renderMacros,
+                rovoWhiteboards: ConfluenceFileSystem.makeRovoWhiteboardSource(
+                    enabled: rovoWhiteboards, config: config, auth: auth, logger: logger
+                )
             )
             let volume = ConfluenceVolume(name: volumeName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
             logger.info("loaded volume for \(volumeName, privacy: .public)")
@@ -121,7 +124,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     /// Resolve the mount matching `mountID` (falls back to the first entry).
     static func lookupInstance(mountID: String?) throws
         -> (String, String, ConfluenceInstanceConfig, AuthProvider, [String]?,
-            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool, Bool, Bool)
+            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool, Bool, Bool, Bool)
     {
         let configURL = ConfluenceFileSystem.configURL()
         let config = (try? ConfluenceConfiguration.load(from: configURL)) ?? ConfluenceConfiguration()
@@ -133,10 +136,11 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         }
         guard let entry else { throw AtlassianError.missingCredentials }
         let keychain = KeychainManager()
-        let cfg = ConfluenceInstanceConfig(name: entry.name, baseURL: entry.url, edition: entry.type)
+        let cfg = ConfluenceInstanceConfig(name: entry.name, baseURL: entry.url, edition: entry.type,
+                                           scopedToken: entry.auth.method == .apiTokenScoped)
         let auth: AuthProvider
         switch entry.auth.method {
-        case .apiToken:
+        case .apiToken, .apiTokenScoped:
             let email = entry.auth.email ?? ""
             let account = email.isEmpty ? "api_token" : email
             let token = try keychain.serverPassword(serverID: entry.serverID, account: account)
@@ -148,7 +152,30 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             auth = NoneAuth()
         }
         return (entry.name, entry.mountID, cfg, auth, entry.allowedSpaceKeys,
-                config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived, entry.includeRestricted, entry.renderMacros)
+                config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived, entry.includeRestricted, entry.renderMacros,
+                entry.rovoWhiteboards)
+    }
+
+    /// Builds the Rovo MCP whiteboard source, or `nil` when the mount is not
+    /// eligible. Rovo MCP is Cloud-only and, for the credentials jirafs stores,
+    /// only supports Atlassian API-token (Basic) authentication.
+    static func makeRovoWhiteboardSource(
+        enabled: Bool,
+        config: ConfluenceInstanceConfig,
+        auth: AuthProvider,
+        logger: Logger
+    ) -> RovoWhiteboardSource? {
+        guard enabled else { return nil }
+        guard config.edition.isCloud else {
+            logger.error("rovo whiteboards requested but instance is not Cloud; disabling")
+            return nil
+        }
+        guard config.scopedToken, auth is APITokenAuth else {
+            logger.error("rovo whiteboards requires a scoped API token; disabling")
+            return nil
+        }
+        let mcp = MCPClient(endpoint: RovoWhiteboardSource.defaultEndpoint, auth: auth)
+        return RovoWhiteboardSource(mcp: mcp, siteBaseURL: config.baseURL)
     }
 
     static func configURL() -> URL {

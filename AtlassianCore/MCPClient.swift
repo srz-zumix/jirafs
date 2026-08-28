@@ -1,0 +1,379 @@
+import Foundation
+
+/// Errors specific to the MCP (Model Context Protocol) transport, kept separate
+/// from `AtlassianError` so callers can distinguish "the server has no such
+/// tool" from a genuine HTTP/auth failure and fall back accordingly.
+public enum MCPError: Error, Sendable, Equatable {
+    /// The server replied with something that is not a valid JSON-RPC message.
+    case protocolFailure(String)
+    /// A JSON-RPC error object was returned (`-32601` = method not found).
+    case rpc(code: Int, message: String)
+    /// `tools/call` succeeded at the protocol level but reported `isError: true`.
+    case toolFailed(String)
+    /// The tool refused the caller's credentials (e.g. the organization has not
+    /// enabled API-token access to the MCP server).
+    case accessDenied(String)
+    /// None of the tools this client needs are exposed by the server.
+    case noUsableTool
+}
+
+/// Minimal MCP client speaking JSON-RPC 2.0 over the Streamable HTTP transport.
+///
+/// Only the subset needed to invoke a remote tool is implemented: `initialize`
+/// (plus the `notifications/initialized` acknowledgement), `tools/list` and
+/// `tools/call`. Responses may arrive either as a plain JSON object or as an
+/// SSE stream carrying one, so both encodings are decoded.
+///
+/// Authorization is delegated to `AuthProvider`, so the same credentials used
+/// for the REST APIs (Atlassian API token → HTTP Basic) authenticate the MCP
+/// session.
+public actor MCPClient {
+    public struct Tool: Sendable, Equatable {
+        public let name: String
+        public let description: String?
+        public let inputSchema: JSONValue
+    }
+
+    public struct ToolResult: Sendable, Equatable {
+        public let text: String
+        public let isError: Bool
+    }
+
+    /// MCP revision advertised during `initialize` and in `MCP-Protocol-Version`.
+    public static let protocolVersion = "2025-06-18"
+
+    /// Upper bound on a single response body that this client will *accept and
+    /// parse*. Note this is a protocol acceptance limit, not a memory bound:
+    /// `HTTPTransport.data(for:)` fully materialises the response before this
+    /// check runs, so it caps how large a document we attempt to decode rather
+    /// than how many bytes `URLSession` may buffer. Enforcing a true streaming
+    /// byte limit would require a bounded-reader transport abstraction.
+    public static let maxResponseBytes = 8 * 1024 * 1024
+
+    /// Upper bound on `tools/list` pages followed via `nextCursor`.
+    public static let maxToolPages = 20
+
+    /// Bounded, cancellation-aware retry budget for HTTP 429 responses. Retries
+    /// re-send the *same* logical request while honouring a capped `Retry-After`;
+    /// this is orthogonal to any higher-level fan-out abort, which decides
+    /// whether to keep probing *other* tools after a request ultimately fails.
+    static let maxRateLimitRetries = 2
+    /// Ceiling applied to a server-provided `Retry-After` (or the synthetic
+    /// backoff) so a hostile/broken header cannot park a mount for minutes.
+    static let maxRateLimitBackoff: TimeInterval = 5
+
+    public let endpoint: URL
+    private let auth: AuthProvider
+    private let transport: HTTPTransport
+    private let clientName: String
+    private let clientVersion: String
+    private let logger = AtlassianLog.logger("mcp")
+
+    private var sessionID: String?
+    /// Bumped every time the session is (re)established or invalidated. A 404
+    /// recovery captures the generation it observed and only tears the session
+    /// down if no other concurrent recovery has already advanced it, so an older
+    /// task cannot clobber a newer session on this reentrant actor.
+    private var sessionGeneration = 0
+    /// Protocol revision the server selected in its `initialize` response. MCP
+    /// version negotiation may downgrade to an older supported revision, and
+    /// later requests must advertise the negotiated value rather than the
+    /// client's preferred one.
+    private var negotiatedProtocolVersion: String?
+    /// The in-flight (or completed) handshake plus a monotonic token identifying
+    /// it. `Task` is a value type with no usable identity, so the token lets a
+    /// waiter detect that the handshake it awaited was replaced by a newer one
+    /// (e.g. after a 404 recovery) and re-join the current handshake instead of
+    /// returning from — or clearing — an obsolete one on this reentrant actor.
+    private var handshake: (token: Int, task: Task<Void, Error>)?
+    private var handshakeCounter = 0
+    private var nextID = 1
+
+    public init(
+        endpoint: URL,
+        auth: AuthProvider,
+        transport: HTTPTransport = URLSessionTransport(),
+        clientName: String = "jirafs",
+        clientVersion: String = "1.0"
+    ) {
+        self.endpoint = endpoint
+        self.auth = auth
+        self.transport = transport
+        self.clientName = clientName
+        self.clientVersion = clientVersion
+    }
+
+    // MARK: - Tools
+
+    public func listTools() async throws -> [Tool] {
+        var tools: [Tool] = []
+        var cursor: String?
+        // Servers may paginate; bail out rather than follow a cursor loop forever.
+        for _ in 0..<Self.maxToolPages {
+            let params: JSONValue = cursor.map { .object(["cursor": .string($0)]) } ?? .object([:])
+            let result = try await call(method: "tools/list", params: params)
+            let raw = result.objectValue?["tools"]?.arrayValue ?? []
+            tools += raw.compactMap { item in
+                guard let obj = item.objectValue, let name = obj["name"]?.stringValue else { return nil }
+                return Tool(
+                    name: name,
+                    description: obj["description"]?.stringValue,
+                    inputSchema: obj["inputSchema"] ?? .null
+                )
+            }
+            guard let next = result.objectValue?["nextCursor"]?.stringValue, !next.isEmpty else { break }
+            cursor = next
+        }
+        return tools
+    }
+
+    public func callTool(name: String, arguments: [String: JSONValue]) async throws -> ToolResult {
+        let result = try await call(method: "tools/call", params: .object([
+            "name": .string(name),
+            "arguments": .object(arguments),
+        ]))
+        let obj = result.objectValue ?? [:]
+        let blocks = obj["content"]?.arrayValue ?? []
+        let text = blocks
+            .compactMap { $0.objectValue?["text"]?.stringValue }
+            .joined(separator: "\n")
+        return ToolResult(text: text, isError: obj["isError"]?.boolValue ?? false)
+    }
+
+    // MARK: - JSON-RPC plumbing
+
+    /// Sends a request, performing the `initialize` handshake first. A dropped
+    /// server-side session (HTTP 404 for a session we believed was live) is
+    /// retried once with a fresh handshake, and HTTP 429 is retried a bounded
+    /// number of times honouring a capped `Retry-After`.
+    private func call(method: String, params: JSONValue) async throws -> JSONValue {
+        var recovered = false
+        var rateLimitAttempts = 0
+        while true {
+            try await ensureHandshake()
+            // Snapshot the session identity *for this attempt*. `sessionID` may be
+            // cleared by a concurrent recovery while this request is suspended, so
+            // the recovery decision must use the value observed when the attempt
+            // began — not the live property — and only the caller that still sees
+            // this generation performs the teardown.
+            let hadSession = sessionID != nil
+            let attemptGeneration = sessionGeneration
+            do {
+                return try await send(method: method, params: params)
+            } catch AtlassianError.notFound where hadSession && !recovered {
+                recovered = true
+                logger.debug("mcp session expired; re-initializing")
+                if sessionGeneration == attemptGeneration {
+                    sessionGeneration += 1
+                    handshake = nil
+                    sessionID = nil
+                    negotiatedProtocolVersion = nil
+                }
+                continue
+            } catch AtlassianError.rateLimited(let retryAfter) where rateLimitAttempts < Self.maxRateLimitRetries {
+                rateLimitAttempts += 1
+                let backoff = min(retryAfter ?? Double(rateLimitAttempts), Self.maxRateLimitBackoff)
+                if backoff > 0 {
+                    // Cancellation-aware: a cancelled read aborts the wait promptly.
+                    try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                }
+                continue
+            }
+        }
+    }
+
+    private func ensureHandshake() async throws {
+        while true {
+            if let current = handshake {
+                do {
+                    try await current.task.value
+                } catch {
+                    // Clear only if this handshake is still current; a concurrent
+                    // recovery may already have installed a replacement.
+                    if handshake?.token == current.token { handshake = nil }
+                    // No replacement installed => surface the failure. Otherwise a
+                    // newer handshake exists, so loop to join it instead.
+                    if handshake == nil { throw error }
+                    continue
+                }
+                // Completed successfully. If it was replaced while we awaited, the
+                // session it established is obsolete: join the replacement.
+                if handshake?.token == current.token { return }
+                continue
+            }
+            handshakeCounter += 1
+            let token = handshakeCounter
+            let generation = sessionGeneration
+            let task = Task { try await self.performHandshake(generation: generation) }
+            handshake = (token, task)
+            do {
+                try await task.value
+                if handshake?.token == token { return }
+                continue
+            } catch {
+                if handshake?.token == token {
+                    handshake = nil
+                    if sessionGeneration == generation {
+                        sessionID = nil
+                        negotiatedProtocolVersion = nil
+                    }
+                }
+                throw error
+            }
+        }
+    }
+
+    private func performHandshake(generation: Int) async throws {
+        let result = try await send(method: "initialize", params: .object([
+            "protocolVersion": .string(Self.protocolVersion),
+            "capabilities": .object([:]),
+            "clientInfo": .object([
+                "name": .string(clientName),
+                "version": .string(clientVersion),
+            ]),
+        ]))
+        // The server must echo the negotiated revision; pin it for later requests
+        // so `tools/list` / `tools/call` advertise the active session's version.
+        guard let version = result.objectValue?["protocolVersion"]?.stringValue, !version.isEmpty else {
+            throw MCPError.protocolFailure("initialize response missing protocolVersion")
+        }
+        // A concurrent recovery may have advanced the generation while `initialize`
+        // was in flight; if so this handshake is obsolete. Do not commit its
+        // protocol version or emit `notifications/initialized` for a session the
+        // client no longer owns.
+        guard sessionGeneration == generation else {
+            throw MCPError.protocolFailure("handshake superseded")
+        }
+        negotiatedProtocolVersion = version
+        try await notify(method: "notifications/initialized")
+    }
+
+    private func send(method: String, params: JSONValue) async throws -> JSONValue {
+        let id = nextID
+        nextID += 1
+        let body = try JSONEncoder().encode(RPCRequest(id: id, method: method, params: params))
+        // Capture the session epoch before suspending. A late response from an
+        // obsolete session (whose generation was superseded while we awaited) must
+        // not resurrect its `Mcp-Session-Id` over the current session's header.
+        let generation = sessionGeneration
+        let (data, http) = try await perform(body: body)
+        if let session = http.value(forHTTPHeaderField: "Mcp-Session-Id"), !session.isEmpty,
+           sessionGeneration == generation {
+            sessionID = session
+        }
+        try validate(http: http, data: data, method: method)
+        return try decodeResult(from: data, http: http)
+    }
+
+    private func notify(method: String) async throws {
+        let body = try JSONEncoder().encode(RPCRequest(id: nil, method: method, params: nil))
+        let (data, http) = try await perform(body: body)
+        try validate(http: http, data: data, method: method)
+    }
+
+    private func perform(body: Data) async throws -> (Data, HTTPURLResponse) {
+        // The endpoint carries the API-token credentials, so refuse to authorize
+        // an insecure transport or a URL that smuggles credentials via user-info
+        // (mirrors the HTTPS enforcement the REST clients apply before signing).
+        guard endpoint.scheme?.lowercased() == "https",
+              endpoint.user == nil, endpoint.password == nil else {
+            throw AtlassianError.invalidURL
+        }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue(negotiatedProtocolVersion ?? Self.protocolVersion,
+                         forHTTPHeaderField: "MCP-Protocol-Version")
+        if let sessionID {
+            request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
+        }
+        try await auth.authorize(&request)
+        let (data, http) = try await transport.data(for: request)
+        guard data.count <= Self.maxResponseBytes else {
+            throw MCPError.protocolFailure("response larger than \(Self.maxResponseBytes) bytes")
+        }
+        return (data, http)
+    }
+
+    private func validate(http: HTTPURLResponse, data: Data, method: String) throws {
+        guard !(200..<300).contains(http.statusCode) else { return }
+        let snippet = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
+        logger.error("""
+            mcp HTTP \(http.statusCode, privacy: .public) \
+            \(method, privacy: .public) \(self.endpoint.absoluteString, privacy: .public): \
+            \(snippet, privacy: .private)
+            """)
+        switch http.statusCode {
+        case 401: throw AtlassianError.unauthorized
+        case 403: throw AtlassianError.forbidden
+        case 404: throw AtlassianError.notFound
+        case 429:
+            let retry = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+            throw AtlassianError.rateLimited(retryAfter: retry)
+        case 500...599: throw AtlassianError.serverError(status: http.statusCode)
+        default: throw AtlassianError.transport("mcp HTTP \(http.statusCode)")
+        }
+    }
+
+    private func decodeResult(from data: Data, http: HTTPURLResponse) throws -> JSONValue {
+        let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+        let payloads = contentType.contains("text/event-stream")
+            ? MCPClient.sseDataPayloads(data)
+            : [data]
+        let decoder = JSONDecoder()
+        for payload in payloads {
+            guard let envelope = try? decoder.decode(RPCResponse.self, from: payload) else { continue }
+            if let error = envelope.error {
+                throw MCPError.rpc(code: error.code, message: error.message)
+            }
+            if let result = envelope.result {
+                return result
+            }
+        }
+        throw MCPError.protocolFailure("no JSON-RPC result in response")
+    }
+
+    /// Extracts the `data:` payload of every SSE event in `data`. Multi-line
+    /// `data:` fields are re-joined with newlines as the SSE spec requires.
+    static func sseDataPayloads(_ data: Data) -> [Data] {
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        var payloads: [Data] = []
+        var lines: [String] = []
+        func flush() {
+            guard !lines.isEmpty else { return }
+            payloads.append(Data(lines.joined(separator: "\n").utf8))
+            lines.removeAll()
+        }
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : String(raw)
+            if line.isEmpty {
+                flush()
+                continue
+            }
+            guard line.hasPrefix("data:") else { continue }
+            var value = String(line.dropFirst("data:".count))
+            if value.hasPrefix(" ") { value.removeFirst() }
+            lines.append(value)
+        }
+        flush()
+        return payloads
+    }
+
+    private struct RPCRequest: Encodable {
+        let jsonrpc = "2.0"
+        let id: Int?
+        let method: String
+        let params: JSONValue?
+    }
+
+    private struct RPCResponse: Decodable {
+        struct Failure: Decodable {
+            let code: Int
+            let message: String
+        }
+        let result: JSONValue?
+        let error: Failure?
+    }
+}

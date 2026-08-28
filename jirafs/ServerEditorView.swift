@@ -133,13 +133,14 @@ struct ServerEditorView: View {
                         fieldRow("Method") {
                             Picker("", selection: $method) {
                                 Text("API Token").tag(ServerAuthMethod.apiToken)
+                                Text("API Token (scoped)").tag(ServerAuthMethod.scopedApiToken)
                                 Text("PAT").tag(ServerAuthMethod.pat)
                                 Text("Anonymous").tag(ServerAuthMethod.anonymous)
                             }
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        if method == .apiToken {
+                        if method.usesEmail {
                             fieldRow("Email") { TextField("user@example.com", text: $email) }
                         }
                         if method != .anonymous {
@@ -159,7 +160,7 @@ struct ServerEditorView: View {
 
             Divider()
 
-            if let warning = httpsWarning {
+            if let warning = httpsWarning ?? scopedTokenWarning {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                     Text(warning).foregroundStyle(.primary)
@@ -264,7 +265,7 @@ struct ServerEditorView: View {
     private var keychainKeyChanged: Bool {
         guard !isNew, let origMethod = originalMethod else { return false }
         if method != origMethod { return true }
-        if method == .apiToken {
+        if method.usesEmail {
             let origAcc = (originalEmail ?? "").isEmpty ? "api_token" : (originalEmail ?? "")
             let newAcc = email.isEmpty ? "api_token" : email
             if newAcc != origAcc { return true }
@@ -331,6 +332,16 @@ struct ServerEditorView: View {
         return nil
     }
 
+    /// Non-nil when a scoped API token is paired with a JIRA connection. Scoped
+    /// tokens must be sent to `api.atlassian.com`, which is only wired up for
+    /// Confluence.
+    private var scopedTokenWarning: String? {
+        guard method == .scopedApiToken else { return nil }
+        if enableJira { return "API Token (scoped) is not supported for JIRA" }
+        if !isCloud { return "API Token (scoped) requires an Atlassian Cloud site" }
+        return nil
+    }
+
     private var tokenAvailable: Bool {
         // Anonymous access needs no credential.
         if method == .anonymous { return true }
@@ -338,11 +349,12 @@ struct ServerEditorView: View {
     }
 
     private var isValid: Bool {
-        !name.isEmpty && hasProduct && urlsValid && httpsWarning == nil && tokenAvailable
+        !name.isEmpty && hasProduct && urlsValid
+            && httpsWarning == nil && scopedTokenWarning == nil && tokenAvailable
     }
 
     private var canVerify: Bool {
-        hasProduct && urlsValid && httpsWarning == nil && tokenAvailable
+        hasProduct && urlsValid && httpsWarning == nil && scopedTokenWarning == nil && tokenAvailable
     }
 
     private var account: String { method.keychainAccount(email: email) }
@@ -366,7 +378,7 @@ struct ServerEditorView: View {
                     throw AtlassianError.missingCredentials
                 }
 
-                auth = method == .apiToken
+                auth = method.usesEmail
                     ? APITokenAuth(email: email, token: resolvedToken)
                     : PATAuth(token: resolvedToken)
             }
@@ -384,7 +396,8 @@ struct ServerEditorView: View {
 
             if enableConfluence, let url = effectiveConfluenceURL {
                 let cfg = ConfluenceInstanceConfig(name: name.isEmpty ? "verify" : name,
-                                                   baseURL: url, edition: confluenceEdition)
+                                                   baseURL: url, edition: confluenceEdition,
+                                                   scopedToken: method == .scopedApiToken)
                 let client = ConfluenceRESTClient(config: cfg, auth: auth)
                 let spaces = try await client.listSpaces(cursor: nil, limit: 250).items
                 summaries.append("Confluence · \(spaces.count) space\(spaces.count == 1 ? "" : "s")")
@@ -477,10 +490,14 @@ struct ServerEditorView: View {
             // credential is already saved) but must not be silently discarded.
             if keychainKeyChanged, let origMethod = originalMethod {
                 let origAccount = origMethod.keychainAccount(email: originalEmail)
-                do {
-                    try KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
-                } catch {
-                    serverEditorLogger.error("Failed to delete orphaned Keychain entry (serverID=\(serverID, privacy: .public), account=\(origAccount, privacy: .private)): \(error.localizedDescription, privacy: .public)")
+                // API Token and scoped API Token share the account name (the
+                // email), so deleting it here would drop what was just written.
+                if origAccount != account {
+                    do {
+                        try KeychainManager().deleteServerPassword(serverID: serverID, account: origAccount)
+                    } catch {
+                        serverEditorLogger.error("Failed to delete orphaned Keychain entry (serverID=\(serverID, privacy: .public), account=\(origAccount, privacy: .private)): \(error.localizedDescription, privacy: .public)")
+                    }
                 }
             }
         }
@@ -497,7 +514,7 @@ struct ServerEditorView: View {
             name: name,
             jira: jiraConn,
             confluence: confluenceConn,
-            auth: Server.Auth(method: method, email: method == .apiToken ? email : nil)
+            auth: Server.Auth(method: method, email: method.usesEmail ? email : nil)
         )
         onSave(server)
     }

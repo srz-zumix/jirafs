@@ -10,6 +10,14 @@ enum FSKitError {
         if let api = error as? AtlassianError {
             return mapAPIError(api)
         }
+        if let mcp = error as? MCPError {
+            switch mcp {
+            case .noUsableTool: return notSupported
+            case .accessDenied:
+                return NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXError.EACCES.rawValue))
+            default: break
+            }
+        }
         return NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXError.EIO.rawValue))
     }
 

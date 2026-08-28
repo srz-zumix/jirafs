@@ -74,3 +74,4 @@ tmp/
 doing/
 
 .env
+.envrc

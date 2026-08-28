@@ -16,6 +16,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Read-only mount
 - Credentials stored securely in macOS Keychain (shared Access Group)
 - **Anonymous access** — mount public JIRA/Confluence sites without credentials
+- **Whiteboard canvases (experimental)** — Confluence whiteboards can expose `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` via the Atlassian Rovo MCP server (Confluence Cloud with an *API Token (scoped)* only; off by default)
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
 - Background auto-refresh — newly created issues/pages appear while a folder stays open (configurable interval, can be turned off)
 - Optional `issue.html` / `{Title}.html` formatted view
@@ -25,6 +26,34 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - macOS 15.4+ (Sequoia)
 - Xcode 16.4+
 - Swift 6.0
+
+## API Token Scopes (Confluence Cloud)
+
+When using *API Token (scoped)* authentication, grant only these scopes. The Confluence REST access is read-only and issues nothing but `GET` and `HEAD`, so **no `write:` or `delete:` scope is ever needed**. (The optional Rovo MCP whiteboard integration issues read-only JSON-RPC `POST` requests to Atlassian's MCP endpoint, but these are not governed by Confluence scopes — see the notes below.)
+
+| Scope | Needed for |
+| --- | --- |
+| `read:attachment:confluence` | `.attachments/` listing and downloads |
+| `read:comment:confluence` | `.comments/` |
+| `read:folder:confluence` | Folders under a page |
+| `read:hierarchical-content:confluence` | Walking the page tree (`direct-children`) |
+| `read:label:confluence` | `.labels.txt` |
+| `read:page:confluence` | Page bodies and per-space page lists |
+| `read:space:confluence` | Listing spaces (`/spaces`) |
+| `read:whiteboard:confluence` | Whiteboard metadata and its children |
+
+Add these only if the matching option is enabled:
+
+| Scope | Needed for |
+| --- | --- |
+| `read:content-details:confluence`, `read:content.restriction:confluence` | Hiding view-restricted pages (the default `includeRestricted = off`, which reads restrictions through the v1 content API) |
+| `readonly:content.attachment:confluence` | Only if attachment downloads return 401; the legacy `/wiki/download/...` path is routed by this classic scope |
+
+Notes:
+
+- Scoped tokens are supported for Confluence only. JIRA mounts require a regular API token or a PAT.
+- The experimental Rovo MCP whiteboard integration needs a scoped token, but access is governed by your organisation's "connect via API token" setting rather than by a Confluence scope.
+- Whiteboard **images** cannot be downloaded by any token. They live in Atlassian Media Services, which no Confluence OAuth scope covers, so they are drawn as labelled placeholders in `whiteboard.svg`.
 
 ## Filesystem Layout
 
@@ -59,6 +88,11 @@ Each Confluence instance is mounted at its own path (default `~/confluencefs/<na
                 ├── .labels.txt         # Labels
                 ├── .comments/          # Comment files
                 ├── .attachments/       # Attached files
+                ├── My Whiteboard/      # Whiteboard (Cloud only)
+                │   ├── .metadata.json  # Whiteboard metadata (includes webURL)
+                │   ├── whiteboard.md   # Canvas text      ┐
+                │   ├── whiteboard.json # Raw MCP response │ experimental, off by default
+                │   └── whiteboard.svg  # Canvas drawing   ┘
                 └── Child Page/         # Child pages nested recursively
                     └── page.md
 ```

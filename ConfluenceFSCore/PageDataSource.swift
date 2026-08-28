@@ -112,6 +112,9 @@ public actor PageDataSource {
     /// representation so dynamic macros (e.g. Table of Contents) arrive already
     /// expanded. Defaults to `true` (raw storage format when disabled).
     public let renderMacros: Bool
+    /// Rovo MCP source for whiteboard canvases. `nil` (default) disables the
+    /// feature and hides `whiteboard.md` / `whiteboard.json` / `whiteboard.svg`.
+    public let rovoWhiteboards: RovoWhiteboardSource?
     private let limiter: RateLimiter
     private let logger = AtlassianLog.logger("confluence-datasource")
 
@@ -125,7 +128,17 @@ public actor PageDataSource {
     /// concurrent tasks from each initiating the same directory-scoped
     /// restricted-ID fetch (root pages of a space, or one parent's children)
     /// when the background pre-caching fills child-page entries in parallel.
-    private var pendingRestrictedIDsFetch: [String: Task<Set<String>, Error>] = [:]
+    private var pendingRestrictedIDsFetch: [String: (generation: UInt64, task: Task<Set<String>, Error>)] = [:]
+    /// Single-flight guard for Rovo MCP whiteboard-canvas fetches, keyed by
+    /// whiteboard ID. `whiteboard.md`, `.json` and `.svg` all resolve to the same
+    /// canvas, so concurrent opens would otherwise each miss the cache and issue
+    /// a separate (rate-limited, credit-billed) MCP call.
+    private var pendingWhiteboardContentFetch: [String: (generation: UInt64, task: Task<String, Error>)] = [:]
+    /// Monotonic tag for single-flight entries. A leader clears its pending entry
+    /// only when the stored generation still matches its own, so a leader that
+    /// was cancelled/removed by `cancelBackgroundRefreshes()` cannot wipe a newer
+    /// task a later caller installed under the same key.
+    private var singleFlightGeneration: UInt64 = 0
 
     /// Shared attachment byte cache: serves bounded windows of attachment bodies
     /// (streaming large files via HTTP `Range`, caching small bodies in memory).
@@ -228,6 +241,7 @@ public actor PageDataSource {
         includeArchived: Bool = false,
         includeRestricted: Bool = false,
         renderMacros: Bool = true,
+        rovoWhiteboards: RovoWhiteboardSource? = nil,
         maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
@@ -238,6 +252,7 @@ public actor PageDataSource {
         self.includeArchived = includeArchived
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
+        self.rovoWhiteboards = rovoWhiteboards
         let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
         self.attachmentBytes = AttachmentByteCache(maxInlineBytes: normalizedMaxInlineAttachmentBytes)
@@ -518,15 +533,85 @@ public actor PageDataSource {
         }
     }
 
-    private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
-        let rawPages = children.compactMap { child -> ConfluencePage? in
-            guard child.contentType == .page else { return nil }
-            return ConfluencePage(
-                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
-                version: child.version, authorId: child.authorId,
-                createdAt: child.createdAt, webURL: child.webURL
-            )
+    /// `true` when this mount can serve whiteboard canvases via Rovo MCP.
+    public var whiteboardContentEnabled: Bool { rovoWhiteboards != nil }
+
+    /// Floor for the whiteboard-canvas cache TTL. Rovo MCP is rate limited per
+    /// site (and billed in Rovo credits), so a canvas is held far longer than
+    /// ordinary REST detail responses.
+    public static let whiteboardContentMinimumTTL: TimeInterval = 3600
+
+    /// Whiteboard canvas rendered to text via Rovo MCP (Cloud only, opt-in).
+    public func whiteboardContent(id: String) async throws -> String {
+        guard let rovoWhiteboards else { throw AtlassianError.unsupported }
+        // Whiteboard canvases are ALWAYS cached in memory for at least
+        // `whiteboardContentMinimumTTL`, regardless of `ttl.pageDetail`. Disabling
+        // detail caching (`pageDetail <= 0`) suppresses caching of ordinary REST
+        // detail responses, but it does NOT disable this cache: a Rovo MCP fetch
+        // is rate-limited per site and billed in Rovo credits, and `cached()`
+        // serves the *stale* entry (scheduling a background refresh) once expired,
+        // so a short/zero TTL would re-issue the billable call for every one of
+        // the three sibling files. The floor keeps the in-memory entry fresh for
+        // an hour; disk persistence remains governed by the separate diskCache
+        // flag, so this never forces a disk write.
+        let contentTTL = max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
+        // Single-flight the whole board→canvas resolution: the three whiteboard
+        // files share one MCP fetch. Joiners share the leader's result via a
+        // cancellation-aware wait (`joinShared`): cancelling one waiter fails only
+        // that waiter with `CancellationError` and leaves the shared task — and
+        // the other waiters — running. Unmount cancellation is handled by
+        // `cancelBackgroundRefreshes()`.
+        if let pending = pendingWhiteboardContentFetch[id] {
+            return try await Self.joinShared(pending.task)
         }
+        singleFlightGeneration += 1
+        let generation = singleFlightGeneration
+        let task = Task<String, Error> {
+            // Fetch the board metadata only when the canvas actually needs to be
+            // (re)computed — i.e. inside the content-cache closure. Fetching it
+            // eagerly would issue a `getWhiteboard` REST call (or, once the
+            // shorter `pageDetail` metadata TTL expires, a stale-serve + background
+            // refresh) on every open of the three sibling files even while the
+            // longer-lived canvas string is still cached.
+            try await self.cached("whiteboardcontent/\(id)", ttl: contentTTL) {
+                let board = try await self.whiteboard(id: id)
+                return try await rovoWhiteboards.content(for: board)
+            }
+        }
+        pendingWhiteboardContentFetch[id] = (generation, task)
+        defer {
+            if pendingWhiteboardContentFetch[id]?.generation == generation {
+                pendingWhiteboardContentFetch[id] = nil
+            }
+        }
+        // The leader also waits cancellably: if this read is aborted the shared
+        // task keeps running to completion (populating the cache for later reads
+        // and any concurrent joiners) instead of hanging on a non-cancellable
+        // `task.value`.
+        return try await Self.joinShared(task)
+    }
+
+    private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
+        // Page children of a folder/whiteboard cannot be restriction-filtered: a
+        // v2 container is not a v1 "content" object, so the directory-scoped
+        // restricted-ID API used for page children (`restrictedChildPageIDs`)
+        // does not apply to it, and the v2 `direct-children` payload carries no
+        // restriction data. When restricted pages must stay hidden
+        // (`includeRestricted == false`, the default) we cannot tell which of
+        // these children are restricted, so — preferring a false negative over a
+        // privacy leak — hide ALL page children here. Sub-folders and whiteboards
+        // are still listed. (`includeRestricted` is part of the folder/whiteboard
+        // cache key via `pageListVariant`, so toggling the flag re-reads.)
+        let rawPages: [ConfluencePage] = includeRestricted
+            ? children.compactMap { child -> ConfluencePage? in
+                guard child.contentType == .page else { return nil }
+                return ConfluencePage(
+                    id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                    version: child.version, authorId: child.authorId,
+                    createdAt: child.createdAt, webURL: child.webURL
+                )
+            }
+            : []
         return ConfluenceFolderChildrenResult(
             pages: makeEntries(rawPages),
             folders: makeFolderEntries(folders(in: children)),
@@ -699,19 +784,26 @@ public actor PageDataSource {
         // leader's result and must never cancel it: it is a single-flight task
         // that other callers depend on, and the leader owns caching + cleanup.
         if let pending = pendingRestrictedIDsFetch[cacheKey] {
-            return try await pending.value
+            return try await pending.task.value
         }
         // Start a new fetch and register it so other concurrent callers can join.
+        singleFlightGeneration += 1
+        let generation = singleFlightGeneration
         let task = Task<Set<String>, Error>(operation: fetch)
-        pendingRestrictedIDsFetch[cacheKey] = task
+        pendingRestrictedIDsFetch[cacheKey] = (generation, task)
         // Clear the pending entry on every exit path. `defer` runs after the
         // `return ids` value (and therefore after `cache.set`) is evaluated, so
         // the entry stays registered until the cache is populated — a concurrent
         // caller arriving during `cache.set` still joins this fetch instead of
         // starting a duplicate one (single-flight guarantee). The shared task is
         // never cancelled here; unmount cancellation is handled separately by
-        // `cancelBackgroundRefreshes()`.
-        defer { pendingRestrictedIDsFetch[cacheKey] = nil }
+        // `cancelBackgroundRefreshes()`. Only clear when the generation still
+        // matches, so a cancelled leader cannot wipe a newer caller's entry.
+        defer {
+            if pendingRestrictedIDsFetch[cacheKey]?.generation == generation {
+                pendingRestrictedIDsFetch[cacheKey] = nil
+            }
+        }
         let ids = try await task.value
         await cache.set(cacheKey, value: ids, ttl: ttl.pages)
         return ids
@@ -768,8 +860,10 @@ public actor PageDataSource {
         for task in refreshTasks.values { task.cancel() }
         refreshTasks.removeAll()
         refreshing.removeAll()
-        for task in pendingRestrictedIDsFetch.values { task.cancel() }
+        for entry in pendingRestrictedIDsFetch.values { entry.task.cancel() }
         pendingRestrictedIDsFetch.removeAll()
+        for entry in pendingWhiteboardContentFetch.values { entry.task.cancel() }
+        pendingWhiteboardContentFetch.removeAll()
         // Await so any in-flight attachment download is cancelled and the
         // in-memory attachment cache is cleared before unmount reports completion.
         await attachmentBytes.clear()
@@ -793,5 +887,82 @@ public actor PageDataSource {
             logger.warning("fetchAll: pagination guard limit (1000 pages) reached; \(items.count) items collected so far. Some items may be missing.")
         }
         return items
+    }
+
+    /// Awaits a shared single-flight `Task` without ever cancelling it. The wait
+    /// itself is cancellation-aware: if the *current* caller's task is cancelled
+    /// this returns `CancellationError` promptly while the shared task keeps
+    /// running for its other waiters (and to populate the cache). `Task.value` is
+    /// not cancellation-aware, so awaiting it directly would pin an aborted read
+    /// until the shared fetch finished.
+    static func joinShared<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
+        let waiter = SingleResume<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiter.begin(continuation: continuation, awaiting: task)
+            }
+        } onCancel: {
+            waiter.cancel()
+        }
+    }
+}
+
+/// One-shot resume coordinator shared between a continuation, an observer of the
+/// shared task, and a cancellation handler. Exactly one of "the shared task
+/// finished" or "this waiter was cancelled" resumes the continuation; the other
+/// becomes a no-op. Cancelling a waiter never cancels the shared task.
+private final class SingleResume<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    private var observer: Task<Void, Never>?
+    private var finished = false
+    private var cancelledEarly = false
+
+    func begin(continuation: CheckedContinuation<T, Error>, awaiting task: Task<T, Error>) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        if cancelledEarly {
+            // Cancellation arrived before the continuation was installed.
+            finished = true
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        self.continuation = continuation
+        observer = Task { [weak self] in
+            let result = await task.result
+            self?.finish(with: result)
+        }
+        lock.unlock()
+    }
+
+    private func finish(with result: Result<T, Error>) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        finished = true
+        let continuation = self.continuation
+        self.continuation = nil
+        observer = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+
+    func cancel() {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        guard let continuation else {
+            // Continuation not installed yet: record so `begin` resumes it.
+            cancelledEarly = true
+            lock.unlock()
+            return
+        }
+        finished = true
+        self.continuation = nil
+        let observer = self.observer
+        self.observer = nil
+        lock.unlock()
+        // Stop observing (does not cancel the shared task) and fail this waiter.
+        observer?.cancel()
+        continuation.resume(throwing: CancellationError())
     }
 }

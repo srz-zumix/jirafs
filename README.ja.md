@@ -14,6 +14,7 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 - read-only マウント
 - macOS Keychain (Access Group 共有) による安全な認証情報管理
 - **匿名アクセス** — 公開された JIRA/Confluence サイトを認証なしでマウント
+- **ホワイトボードのキャンバス取得（実験的）** — Atlassian Rovo MCP サーバ経由で `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` を生成（Confluence Cloud + *API Token (scoped)* 認証のみ。デフォルトはオフ）
 - TTL ベースの In-Memory キャッシュ + オプションで AES-GCM 暗号化ディスクキャッシュ
 - バックグラウンド自動更新—フォルダを開いたまま待つだけで新規 issue / page が表示される（間隔は設定可能、オフにもできる）
 - `issue.html` / `{タイトル}.html` フォーマットビュー（オプション）
@@ -23,6 +24,34 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 - macOS 15.4+ (Sequoia)
 - Xcode 16.4+
 - Swift 6.0
+
+## API トークンのスコープ（Confluence Cloud）
+
+*API Token (scoped)* 認証を使う場合、必要なのは以下のスコープだけです。Confluence REST アクセスは読み取り専用で `GET` / `HEAD` しか発行しないため、**`write:` / `delete:` 系は一切不要**です。（オプションの Rovo MCP ホワイトボード連携は Atlassian の MCP エンドポイントへ読み取り専用の JSON-RPC `POST` を発行しますが、これは Confluence スコープではなく後述の設定で制御されます。）
+
+| スコープ | 用途 |
+| --- | --- |
+| `read:attachment:confluence` | `.attachments/` の一覧とダウンロード |
+| `read:comment:confluence` | `.comments/` |
+| `read:folder:confluence` | ページ配下のフォルダ |
+| `read:hierarchical-content:confluence` | ページツリーの探索 (`direct-children`) |
+| `read:label:confluence` | `.labels.txt` |
+| `read:page:confluence` | ページ本文・スペース配下のページ一覧 |
+| `read:space:confluence` | スペース一覧 (`/spaces`) |
+| `read:whiteboard:confluence` | ホワイトボードのメタデータと子要素 |
+
+対応するオプションを有効にしている場合のみ追加します。
+
+| スコープ | 用途 |
+| --- | --- |
+| `read:content-details:confluence`, `read:content.restriction:confluence` | 閲覧制限ページの除外（デフォルトの `includeRestricted = off`。制限情報を v1 content API から取得するため） |
+| `readonly:content.attachment:confluence` | 添付のダウンロードが 401 になる場合のみ。レガシーな `/wiki/download/...` パスはこのクラシックスコープでルーティングされます |
+
+補足:
+
+- scoped トークンは Confluence のみ対応です。JIRA のマウントには通常の API トークンか PAT を使ってください
+- 実験的な Rovo MCP ホワイトボード連携は scoped トークンが必須ですが、可否は Confluence のスコープではなく組織の「API トークンでの接続を許可する」設定で決まります
+- ホワイトボードの**画像**はどのトークンでも取得できません。実体が Atlassian Media Services にあり、対応する Confluence の OAuth スコープが存在しないためです。`whiteboard.svg` ではラベル付きのプレースホルダとして描画されます
 
 ## ファイルシステムレイアウト
 
@@ -57,6 +86,11 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
                 ├── .labels.txt         # ラベル
                 ├── .comments/          # コメントファイル群
                 ├── .attachments/       # 添付ファイル
+                ├── My Whiteboard/      # ホワイトボード (Cloud のみ)
+                │   ├── .metadata.json  # ホワイトボードのメタデータ (webURL を含む)
+                │   ├── whiteboard.md   # キャンバスのテキスト   ┐
+                │   ├── whiteboard.json # MCP レスポンス生データ │ 実験的、デフォルトはオフ
+                │   └── whiteboard.svg  # キャンバスの描画       ┘
                 └── Child Page/         # 子ページ（再帰的にネスト）
                     └── page.md
 ```

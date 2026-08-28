@@ -22,6 +22,7 @@ struct MountEditorView: View {
     @State private var includeArchived: Bool
     @State private var includeRestricted: Bool
     @State private var renderMacros: Bool
+    @State private var rovoWhiteboards: Bool
     @State private var autoMount: Bool
     @State private var saveError: String?
 
@@ -60,6 +61,7 @@ struct MountEditorView: View {
         // Default-on for new/legacy configs (missing field decodes to `true`);
         // otherwise preserve the stored value to honor explicit user intent.
         _renderMacros = State(initialValue: initial?.renderMacros ?? true)
+        _rovoWhiteboards = State(initialValue: initial?.rovoWhiteboards ?? false)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -67,6 +69,14 @@ struct MountEditorView: View {
     }
 
     private var selectedServer: Server? { servers.first { $0.id == serverID } }
+
+    /// The Rovo MCP whiteboard integration only works against a Confluence Cloud
+    /// site authenticated with a scoped API token (the Teamwork Graph tools
+    /// reject legacy tokens), so the toggle is disabled otherwise.
+    private var rovoWhiteboardsAvailable: Bool {
+        guard let server = selectedServer else { return false }
+        return server.confluence?.edition == .cloud && server.auth.method == .scopedApiToken
+    }
 
     private var availableProducts: [MountProduct] {
         guard let server = selectedServer else { return [] }
@@ -146,6 +156,18 @@ struct MountEditorView: View {
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .help("Fetch the server-rendered view so dynamic macros (e.g. Table of Contents) are expanded. On by default.")
+                            }
+                            fieldRow("Whiteboards") {
+                                Toggle("", isOn: $rovoWhiteboards)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .disabled(!rovoWhiteboardsAvailable)
+                                    .help(rovoWhiteboardsAvailable
+                                        ? "Experimental: expose whiteboard canvases as whiteboard.md / whiteboard.json / whiteboard.svg via the Atlassian Rovo MCP server. Rate limited and billed in Rovo credits. Off by default."
+                                        : "Requires a Confluence Cloud site authenticated with a scoped API token.")
+                                    .onChange(of: rovoWhiteboardsAvailable) { _, available in
+                                        if !available { rovoWhiteboards = false }
+                                    }
                             }
                         }
                         fieldRow("Auto-mount") {
@@ -289,6 +311,7 @@ struct MountEditorView: View {
             includeArchived: product == .confluence ? includeArchived : false,
             includeRestricted: product == .confluence ? includeRestricted : false,
             renderMacros: renderMacros,
+            rovoWhiteboards: product == .confluence && rovoWhiteboardsAvailable ? rovoWhiteboards : false,
             autoMount: autoMount
         )
         onSave(mount)
