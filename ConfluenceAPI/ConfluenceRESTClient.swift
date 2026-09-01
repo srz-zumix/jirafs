@@ -269,6 +269,21 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return whiteboard.domain
     }
 
+    public func listDatabaseChildren(databaseId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
+        guard config.edition.isCloud else { return ConfluencePageList(items: [], nextCursor: nil) }
+        let page: CloudList<CloudFolderChild> = try await cloudGet(
+            "databases/\(databaseId)/direct-children", cursor: cursor, limit: limit
+        )
+        return ConfluencePageList(items: page.results.map { $0.domain }, nextCursor: page.cursor)
+    }
+
+    public func getDatabase(id: String) async throws -> ConfluenceDatabase {
+        // Databases are a Cloud-only concept; DC has no equivalent resource.
+        guard config.edition.isCloud else { throw AtlassianError.notFound }
+        let database: CloudDatabase = try await sendDecoding(url: try await cloudURL("databases/\(id)", query: []))
+        return database.domain
+    }
+
     /// Paginates a Cloud v1 API endpoint with `start`/`limit` and collects the
     /// IDs of items where `restrictions.hasAny == true`. Each page request is
     /// routed through `limiter` so 429 / server-error retries and backoff are

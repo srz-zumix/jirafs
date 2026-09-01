@@ -86,6 +86,9 @@ struct Server: Codable, Sendable, Equatable, Identifiable {
     struct Auth: Codable, Sendable, Equatable {
         var method: ServerAuthMethod
         var email: String?
+        /// Email paired with the separate Rovo MCP token stored under the
+        /// `rovo_mcp` Keychain account. `nil` when no MCP credential is stored.
+        var mcpEmail: String?
     }
 
     init(id: String = UUID().uuidString, name: String,
@@ -139,13 +142,20 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     /// Graph tools reject legacy tokens; the UI disables this otherwise). Ignored
     /// for JIRA. Defaults to `false`.
     var rovoWhiteboards: Bool
+    /// Confluence-only, experimental: expose database rows as `database.md` /
+    /// `database.csv` / `database.json` via the Atlassian Rovo MCP server. Same
+    /// Cloud + **scoped** API-token requirement as `rovoWhiteboards`, plus the
+    /// `read:confluence:agent-interface` token scope. Ignored for JIRA.
+    /// Defaults to `false`.
+    var rovoDatabases: Bool
     var autoMount: Bool
 
     init(id: String = UUID().uuidString, serverID: String, product: MountProduct,
          name: String, mountPath: String? = nil, allowedKeys: [String]? = nil,
          diskCache: Bool = true, htmlView: Bool = false,
          includeArchived: Bool = false, includeRestricted: Bool = false,
-         renderMacros: Bool = true, rovoWhiteboards: Bool = false, autoMount: Bool = false) {
+         renderMacros: Bool = true, rovoWhiteboards: Bool = false,
+         rovoDatabases: Bool = false, autoMount: Bool = false) {
         self.id = id
         self.serverID = serverID
         self.product = product
@@ -158,6 +168,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
         self.rovoWhiteboards = rovoWhiteboards
+        self.rovoDatabases = rovoDatabases
         self.autoMount = autoMount
     }
 
@@ -175,6 +186,7 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
         includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
         renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
         rovoWhiteboards = try c.decodeIfPresent(Bool.self, forKey: .rovoWhiteboards) ?? false
+        rovoDatabases   = try c.decodeIfPresent(Bool.self, forKey: .rovoDatabases) ?? false
         autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
     }
 

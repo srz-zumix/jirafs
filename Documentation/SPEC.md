@@ -751,7 +751,13 @@ Confluence スペース / ページを認証なしでマウントできる。HTT
         │   ├── whiteboard.md      # rovoWhiteboards:true のときのみ。キャンバスのテキスト化
         │   ├── whiteboard.json    # rovoWhiteboards:true のときのみ。MCP レスポンス生データ
         │   ├── whiteboard.svg     # rovoWhiteboards:true のときのみ。キャンバスの近似描画
-        │   └── ...                # 配下のページ / フォルダ / ホワイトボード (再帰)
+        │   └── ...                # 配下のページ / フォルダ / ホワイトボード / データベース (再帰)
+        ├── {Database Title}/      # Cloud のみ。データベース
+        │   ├── .metadata.json     # データベースのメタデータ (version / ownerId / webURL 含む)
+        │   ├── database.md        # rovoDatabases:true のときのみ。行を Markdown テーブル化
+        │   ├── database.csv       # rovoDatabases:true のときのみ。MCP が返す CSV そのもの
+        │   ├── database.json      # rovoDatabases:true のときのみ。MCP レスポンス生データ
+        │   └── ...                # 配下のページ / フォルダ / ホワイトボード / データベース (再帰)
         ├── {Child Page Title}.html
         └── {Child Page Title}/    # 子ページ (再帰)
             └── ...
@@ -760,17 +766,25 @@ Confluence スペース / ページを認証なしでマウントできる。HTT
 ルート直下には `spaces/` のほか、`AGENTS.md` (エージェント向けガイド)、
 `.confluencefs/config.json`、`.metadata_never_index` を配置する。
 
-#### フォルダ / ホワイトボード (Cloud のみ)
+#### フォルダ / ホワイトボード / データベース (Cloud のみ)
 
 Cloud の v2 `direct-children` API (`pages/{id}` / `folders/{id}` /
-`whiteboards/{id}`) で取得したフォルダ・ホワイトボードを、ページと同じ階層に
-ディレクトリとして表示する。ホワイトボードのキャンバス内容は REST API で取得
-できないため、`.metadata.json` (id / title / spaceId / parentId / authorId /
-createdAt / webURL) のみを公開し、実体は `webURL` からブラウザで開く。
-ホワイトボードもフォルダと同様にページ・フォルダ・ホワイトボードを内包できる。
-名前が衝突する場合は同一ディレクトリ内でページ → フォルダ → ホワイトボードの
-順に重複解決 (`FileNameSanitizer.deduplicate`) する。Data Center には
-フォルダ / ホワイトボードの概念がないため常に空。
+`whiteboards/{id}` / `databases/{id}`) で取得したフォルダ・ホワイトボード・
+データベースを、ページと同じ階層にディレクトリとして表示する。
+ホワイトボードのキャンバス内容は REST API で取得できないため、`.metadata.json`
+(id / title / spaceId / parentId / authorId / createdAt / webURL) のみを公開し、
+実体は `webURL` からブラウザで開く。
+データベースも同様に行 (row) / フィールドを公開する REST API が存在しないため、
+`.metadata.json` (id / title / type / spaceId / parentId / version / authorId /
+ownerId / createdAt / webURL) のみを公開する。行の取得は Rovo MCP 経由のオプトインで、
+[データベースの行取得](#データベースの行取得-rovo-mcp--実験的) を参照。ホワイトボードと違い
+データベースは `version` を持つため、これを fileID の salt と mtime
+(`createdAt + version` 秒) に反映し、Finder が更新を検知できるようにする。
+フォルダ / ホワイトボード / データベースはいずれもページ・フォルダ・
+ホワイトボード・データベースを内包できる。名前が衝突する場合は同一ディレクトリ内で
+ページ → フォルダ → ホワイトボード → データベースの順に重複解決
+(`FileNameSanitizer.deduplicate`) する。Data Center にはフォルダ /
+ホワイトボード / データベースの概念がないため常に空。
 
 #### ホワイトボードのキャンバス取得 (Rovo MCP / 実験的)
 
@@ -858,6 +872,82 @@ createdAt / webURL) のみを公開し、実体は `webURL` からブラウザ�
   - 色トークン `palette.{light|dark}.{hue}.{shade}` は公開値が無いため HSL で
     近似する (厳密な一致ではない)
   - 描画できない形のときは `nil` を返し、タイトルのみのプレースホルダ SVG を出力する
+
+#### データベースの行取得 (Rovo MCP / 実験的)
+
+`rovoDatabases: true` のマウントに限り、データベースディレクトリに
+`database.md` (Markdown テーブル) / `database.csv` (CSV そのまま) /
+`database.json` (レスポンス生データ) を追加する。3 ファイルは同一のキャッシュ
+エントリを共有するため API 呼び出しは 1 回で、TTL 下限もホワイトボードと同じ
+`whiteboardContentMinimumTTL` (3600 秒) を適用する。
+
+行データを返す REST API は**存在しない** (2026-08 実測):
+
+| 試したもの | 結果 |
+| --- | --- |
+| v1 `content/{id}?expand=body.storage,body.atlas_doc_format` | 200 だが `storage.value` は空文字、ADF は空段落のみ |
+| v1 `content/{id}/property` / `content/{id}/child?expand=all` | 空 |
+| v2 `databases/{id}/entries` | 404 `NOT_FOUND` |
+| v2 `databases/{id}/rows` / `content-properties` / `attachments` | ルート自体が無い |
+| v2 `databases/{id}/direct-children` | `{"results":[]}` (子コンテンツのみ。行は含まない) |
+| v2 `custom-content` | team-calendar 系のみ |
+
+唯一の経路が MCP v2 (`https://mcp.atlassian.com/v2/mcp`) の
+`getConfluenceContent` で、`content_format` の enum 説明に
+「**Databases: csv**」と明記されている。
+
+```
+tools/call getConfluenceContent
+  { cloudId, content_id: <databaseId>, content_format: "csv", include_metadata: true }
+```
+
+- **必要スコープは `read:confluence:agent-interface`**。不足すると
+  `isError: true` + `{"error":true,"message":"Insufficient scopes for
+  \"getConfluenceContent\". Required: [read:confluence:agent-interface]."}` が返る。
+  `read:confluence:mcp` は Teamwork Graph 系ツールの要求であり、これとは別物
+- **このスコープは Confluence 用の scoped トークンには付与できない**。Atlassian の
+  トークン作成 UI では Confluence アプリと Rovo MCP アプリを同時に選択できないため、
+  Rovo MCP 専用の 2 つ目のトークンを作る必要がある。jirafs はこれを Keychain の
+  `rovo_mcp` アカウント (service は REST トークンと同じ `….server.{serverID}`) に保存し、
+  `mcp.atlassian.com` 向けにだけ使う。config.json には `auth.mcpEmail` として
+  ペアになるメールアドレスを保存する (未設定なら `null`)
+- 専用トークンが無いときは従来通り scoped の Confluence トークンにフォールバックする
+  (`ConfluenceFileSystem.resolveMCPAuth`)。ホワイトボードはこのフォールバックで動くが、
+  データベースはスコープ不足で失敗する
+- 組織側で「API トークン経由の接続」を許可している必要もある
+  (許可されていないと `"You don't have permission to connect via API token."`)
+- どちらの拒否もマウント全体に対する恒久的な失敗なので、
+  `RovoDatabaseSource.isMountWideRejection` が検出して以後の呼び出しを止める
+  (課金対象かつレート制限があるため)
+- ホワイトボードと違いツール名・引数が安定して文書化されているので、
+  `tools/list` によるツール探索は行わず直接呼ぶ
+
+レスポンス envelope:
+
+```json
+{"data":{"id":"952078058","type":"database","title":"...","status":"current",
+ "spaceId":"223936540","snapshotToken":"v:1",
+ "body":{"format":"csv","value":"..."},
+ "metadata":{"authorId":"...","version":{"number":1,"createdAt":"...","message":""}}}}
+```
+
+`body.value` は **CRLF 区切り・空行区切りの 3 ブロック**からなる:
+
+```
+field_name,type,configuration          <- フィールド定義
+日付 フィールド,date,
+
+view_name,layout,filters,sorts,hidden_fields,is_default,is_current   <- ビュー定義
+すべてのエントリ,table,,,,true,true
+
+_id,日付 フィールド,テキスト フィールド    <- 行データ (先頭列は _id)
+1,2024/05/26,"カンマを含む値はクォート"
+```
+
+`ConfluenceFSCore.DatabaseCSVRenderer` がこれをブロックごとに分割して
+Markdown テーブル化する。**CRLF は Swift では 1 つの `Character`** になるため、
+CSV パーサは `Character` ではなく Unicode スカラー単位で走査すること
+(そうしないと改行がフィールドに取り込まれる)。
 
 #### 媒体取得が不可能な理由
 
@@ -968,6 +1058,7 @@ Confluence 用設定は JIRA とは別の config.json に保存する。
 | `includeArchived` | `Bool` | `false` | アーカイブ済みページをディレクトリ一覧に含める |
 | `includeRestricted` | `Bool` | `false` | ユーザー/グループ閲覧制限・編集制限があるページをディレクトリ一覧に含める。`false` (デフォルト) の場合、read または update 操作に 1 件以上のユーザー/グループ制限が設定されているページは非表示になる |
 | `rovoWhiteboards` | `Bool` | `false` | **実験的**。ホワイトボードディレクトリに `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` (Rovo MCP 経由のキャンバス取得) を追加する。Cloud + **scoped API Token** 認証のマウントでのみ有効 (Teamwork Graph ツールは従来のトークンを拒否するため、UI 上でも scoped 以外では無効化される) |
+| `rovoDatabases` | `Bool` | `false` | **実験的**。データベースディレクトリに `database.md` / `database.csv` / `database.json` (Rovo MCP 経由の行取得) を追加する。Cloud で、かつ `read:confluence:agent-interface` を含む **Rovo MCP 専用トークン** がサーバに登録されている場合のみ有効 |
 
 ### マウント
 
@@ -985,9 +1076,13 @@ diskutil unmount force ~/confluencefs/myinstance
 ### 既知の制約 (Confluence)
 
 - read-only のみ (ページ編集は未対応)
-- ルート直下 (親を持たない) のフォルダ / ホワイトボードを列挙する API が Cloud v2
-  に存在しないため、これらはページ / フォルダ / ホワイトボード配下にあるものだけを表示する
+- ルート直下 (親を持たない) のフォルダ / ホワイトボード / データベースを列挙する API が
+  Cloud v2 に存在しないため、これらはページ / フォルダ / ホワイトボード / データベース
+  配下にあるものだけを表示する
 - ホワイトボードの描画内容 (キャンバス) は REST API 非公開のため取得できない
+- データベースの行 (row) / フィールドを公開する REST API が存在しないため、
+  既定ではメタデータのみを表示する (実体は `webURL` からブラウザで開く)。
+  行が必要な場合は `rovoDatabases: true` で Rovo MCP から CSV を取得する
 - storage 形式 → Markdown 変換は主要タグのみ対応 (非対応タグは raw fallback)
 - 大規模スペース (数千ページ) ではページツリーの遅延読み込みに依存
 - `includeRestricted: false` (デフォルト) の Cloud での動作:

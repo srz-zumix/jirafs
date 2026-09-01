@@ -40,55 +40,77 @@ public struct ConfluenceWhiteboardEntry: Codable, Sendable, Equatable {
     }
 }
 
-/// Combined result of a container-children fetch: pages, sub-folders and
-/// whiteboards together. Cached as a unit so one network round-trip fills every
-/// listing type.
+/// A directory entry for a Confluence database: the sanitized on-disk directory
+/// name plus the database object. Cloud only; always empty on Data Center.
+public struct ConfluenceDatabaseEntry: Codable, Sendable, Equatable {
+    public let folderName: String
+    public let database: ConfluenceDatabase
+    public init(folderName: String, database: ConfluenceDatabase) {
+        self.folderName = folderName
+        self.database = database
+    }
+}
+
+/// Combined result of a container-children fetch: pages, sub-folders,
+/// whiteboards and databases together. Cached as a unit so one network
+/// round-trip fills every listing type.
 public struct ConfluenceFolderChildrenResult: Codable, Sendable, Equatable {
     public let pages: [ConfluencePageEntry]
     public let folders: [ConfluenceFolderEntry]
     public let whiteboards: [ConfluenceWhiteboardEntry]
+    public let databases: [ConfluenceDatabaseEntry]
     public init(
         pages: [ConfluencePageEntry],
         folders: [ConfluenceFolderEntry],
-        whiteboards: [ConfluenceWhiteboardEntry] = []
+        whiteboards: [ConfluenceWhiteboardEntry] = [],
+        databases: [ConfluenceDatabaseEntry] = []
     ) {
         self.pages = pages
         self.folders = folders
         self.whiteboards = whiteboards
+        self.databases = databases
     }
 
-    /// Decodes `whiteboards` leniently so entries written to the disk cache
-    /// before whiteboard support existed still decode (as an empty list) instead
-    /// of failing and dropping the whole cached listing.
+    /// Decodes `whiteboards` / `databases` leniently so entries written to the
+    /// disk cache before those types were supported still decode (as empty
+    /// lists) instead of failing and dropping the whole cached listing.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pages = try c.decode([ConfluencePageEntry].self, forKey: .pages)
         folders = try c.decode([ConfluenceFolderEntry].self, forKey: .folders)
         whiteboards = try c.decodeIfPresent([ConfluenceWhiteboardEntry].self, forKey: .whiteboards) ?? []
+        databases = try c.decodeIfPresent([ConfluenceDatabaseEntry].self, forKey: .databases) ?? []
     }
 
-    public static let empty = ConfluenceFolderChildrenResult(pages: [], folders: [], whiteboards: [])
+    public static let empty = ConfluenceFolderChildrenResult(pages: [], folders: [], whiteboards: [], databases: [])
 }
 
-/// Container children of a page: the folders and whiteboards nested directly
-/// under it. Child *pages* are listed separately (via the child-pages endpoint),
-/// so they are not part of this result.
+/// Container children of a page: the folders, whiteboards and databases nested
+/// directly under it. Child *pages* are listed separately (via the child-pages
+/// endpoint), so they are not part of this result.
 public struct ConfluenceContainerEntries: Codable, Sendable, Equatable {
     public let folders: [ConfluenceFolderEntry]
     public let whiteboards: [ConfluenceWhiteboardEntry]
-    public init(folders: [ConfluenceFolderEntry], whiteboards: [ConfluenceWhiteboardEntry] = []) {
+    public let databases: [ConfluenceDatabaseEntry]
+    public init(
+        folders: [ConfluenceFolderEntry],
+        whiteboards: [ConfluenceWhiteboardEntry] = [],
+        databases: [ConfluenceDatabaseEntry] = []
+    ) {
         self.folders = folders
         self.whiteboards = whiteboards
+        self.databases = databases
     }
 
-    /// Lenient decoding for cache entries written before whiteboard support.
+    /// Lenient decoding for cache entries written before whiteboard / database support.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         folders = try c.decode([ConfluenceFolderEntry].self, forKey: .folders)
         whiteboards = try c.decodeIfPresent([ConfluenceWhiteboardEntry].self, forKey: .whiteboards) ?? []
+        databases = try c.decodeIfPresent([ConfluenceDatabaseEntry].self, forKey: .databases) ?? []
     }
 
-    public static let empty = ConfluenceContainerEntries(folders: [], whiteboards: [])
+    public static let empty = ConfluenceContainerEntries(folders: [], whiteboards: [], databases: [])
 }
 
 /// High-level, cache-aware read-only data source backing the Confluence volume.
@@ -115,6 +137,9 @@ public actor PageDataSource {
     /// Rovo MCP source for whiteboard canvases. `nil` (default) disables the
     /// feature and hides `whiteboard.md` / `whiteboard.json` / `whiteboard.svg`.
     public let rovoWhiteboards: RovoWhiteboardSource?
+    /// Rovo MCP source for database rows. `nil` (default) disables the feature
+    /// and hides `database.md` / `database.csv` / `database.json`.
+    public let rovoDatabases: RovoDatabaseSource?
     private let limiter: RateLimiter
     private let logger = AtlassianLog.logger("confluence-datasource")
 
@@ -134,6 +159,9 @@ public actor PageDataSource {
     /// canvas, so concurrent opens would otherwise each miss the cache and issue
     /// a separate (rate-limited, credit-billed) MCP call.
     private var pendingWhiteboardContentFetch: [String: (generation: UInt64, task: Task<String, Error>)] = [:]
+    /// Single-flight guard for Rovo MCP database fetches, keyed by database ID.
+    /// `database.md`, `.csv` and `.json` all resolve to the same CSV payload.
+    private var pendingDatabaseContentFetch: [String: (generation: UInt64, task: Task<String, Error>)] = [:]
     /// Monotonic tag for single-flight entries. A leader clears its pending entry
     /// only when the stored generation still matches its own, so a leader that
     /// was cancelled/removed by `cancelBackgroundRefreshes()` cannot wipe a newer
@@ -224,7 +252,7 @@ public actor PageDataSource {
     public func markBrowsed(_ kind: ConfluenceNodeKind) {
         switch kind {
         case .pagesDir, .pageDir, .archivedRootPagesDir, .archivedChildPagesDir,
-             .folderDir, .whiteboardDir:
+             .folderDir, .whiteboardDir, .databaseDir:
             guard browsedListings.count < PageDataSource.maxBrowsedListings else { return }
             browsedListings.insert(kind)
         default:
@@ -242,6 +270,7 @@ public actor PageDataSource {
         includeRestricted: Bool = false,
         renderMacros: Bool = true,
         rovoWhiteboards: RovoWhiteboardSource? = nil,
+        rovoDatabases: RovoDatabaseSource? = nil,
         maxInlineAttachmentBytes: Int = PageDataSource.defaultMaxInlineAttachmentBytes,
         limiter: RateLimiter = RateLimiter()
     ) {
@@ -253,6 +282,7 @@ public actor PageDataSource {
         self.includeRestricted = includeRestricted
         self.renderMacros = renderMacros
         self.rovoWhiteboards = rovoWhiteboards
+        self.rovoDatabases = rovoDatabases
         let normalizedMaxInlineAttachmentBytes = max(0, maxInlineAttachmentBytes)
         self.maxInlineAttachmentBytes = normalizedMaxInlineAttachmentBytes
         self.attachmentBytes = AttachmentByteCache(maxInlineBytes: normalizedMaxInlineAttachmentBytes)
@@ -341,6 +371,10 @@ public actor PageDataSource {
                 let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
                 let result = try await fetchWhiteboardChildren(whiteboardId: whiteboardId, normalizedSpace: normalized)
                 await cache.set("whiteboardchildren/\(normalized)/\(whiteboardId)/\(pageListVariant)", value: result, ttl: ttl.pages)
+            case .databaseDir(let spaceKey, let databaseId):
+                let normalized = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+                let result = try await fetchDatabaseChildren(databaseId: databaseId, normalizedSpace: normalized)
+                await cache.set("databasechildren/\(normalized)/\(databaseId)/\(pageListVariant)", value: result, ttl: ttl.pages)
             default:
                 return
             }
@@ -463,13 +497,13 @@ public actor PageDataSource {
         return self.makeEntries(filtered)
     }
 
-    // MARK: - Folders / Whiteboards (Cloud only)
+    // MARK: - Folders / Whiteboards / Databases (Cloud only)
 
-    /// Sanitized, deduplicated folder and whiteboard entries that are **direct
-    /// children of a page** (Cloud only; DC returns `.empty`). Confluence Cloud
-    /// exposes both as page children via
-    /// `GET /wiki/api/v2/pages/{id}/direct-children`; this extracts the `folder`-
-    /// and `whiteboard`-typed entries from that mixed list.
+    /// Sanitized, deduplicated folder, whiteboard and database entries that are
+    /// **direct children of a page** (Cloud only; DC returns `.empty`). Confluence
+    /// Cloud exposes all of them as page children via
+    /// `GET /wiki/api/v2/pages/{id}/direct-children`; this extracts the `folder`-,
+    /// `whiteboard`- and `database`-typed entries from that mixed list.
     public func pageContainerEntries(pageId: String, spaceKey: String) async throws -> ConfluenceContainerEntries {
         guard client.config.edition.isCloud else { return .empty }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
@@ -484,14 +518,16 @@ public actor PageDataSource {
         }
         return ConfluenceContainerEntries(
             folders: makeFolderEntries(folders(in: children)),
-            whiteboards: makeWhiteboardEntries(whiteboards(in: children))
+            whiteboards: makeWhiteboardEntries(whiteboards(in: children)),
+            databases: makeDatabaseEntries(databases(in: children))
         )
     }
 
-    /// Combined children of a folder: pages, sub-folders and whiteboards (Cloud
-    /// only; DC returns `.empty`). Entries are deduplicated within their own type;
-    /// cross-type deduplication (ensuring no page name collides with a folder or
-    /// whiteboard name in the same listing) is the caller's responsibility.
+    /// Combined children of a folder: pages, sub-folders, whiteboards and
+    /// databases (Cloud only; DC returns `.empty`). Entries are deduplicated
+    /// within their own type; cross-type deduplication (ensuring no page name
+    /// collides with a folder, whiteboard or database name in the same listing)
+    /// is the caller's responsibility.
     public func folderChildren(folderId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
         guard client.config.edition.isCloud else { return .empty }
         let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
@@ -531,6 +567,62 @@ public actor PageDataSource {
         try await cached("whiteboard/\(id)", ttl: ttl.pageDetail) {
             try await self.client.getWhiteboard(id: id)
         }
+    }
+
+    /// Combined children of a database: pages, folders, whiteboards and
+    /// sub-databases (Cloud only; DC returns `.empty`). Databases can act as
+    /// containers in the Cloud content tree just like folders and whiteboards.
+    public func databaseChildren(databaseId: String, spaceKey: String) async throws -> ConfluenceFolderChildrenResult {
+        guard client.config.edition.isCloud else { return .empty }
+        let space = spaceKey.trimmingCharacters(in: .whitespaces).uppercased()
+        return try await cached("databasechildren/\(space)/\(databaseId)/\(pageListVariant)", ttl: ttl.pages) {
+            try await self.fetchDatabaseChildren(databaseId: databaseId, normalizedSpace: space)
+        }
+    }
+
+    private func fetchDatabaseChildren(databaseId: String, normalizedSpace space: String) async throws -> ConfluenceFolderChildrenResult {
+        let allChildren = try await fetchAll { cursor in
+            try await self.client.listDatabaseChildren(databaseId: databaseId, cursor: cursor, limit: self.limit)
+        }
+        return makeChildrenResult(allChildren)
+    }
+
+    /// Database metadata (Cloud only). The rows and fields themselves are not
+    /// exposed by the REST API, so only descriptive metadata is available.
+    public func database(id: String) async throws -> ConfluenceDatabase {
+        try await cached("database/\(id)", ttl: ttl.pageDetail) {
+            try await self.client.getDatabase(id: id)
+        }
+    }
+
+    /// `true` when this mount can serve database rows via Rovo MCP.
+    public var databaseContentEnabled: Bool { rovoDatabases != nil }
+
+    /// Verbatim Rovo MCP response carrying the database CSV (Cloud only, opt-in).
+    /// Cached and single-flighted exactly like the whiteboard canvas: the three
+    /// sibling files share one billable MCP call, and the entry is held for at
+    /// least `whiteboardContentMinimumTTL` regardless of `ttl.pageDetail`.
+    public func databaseContent(id: String) async throws -> String {
+        guard let rovoDatabases else { throw AtlassianError.unsupported }
+        let contentTTL = max(ttl.pageDetail, PageDataSource.whiteboardContentMinimumTTL)
+        if let pending = pendingDatabaseContentFetch[id] {
+            return try await Self.joinShared(pending.task)
+        }
+        singleFlightGeneration += 1
+        let generation = singleFlightGeneration
+        let task = Task<String, Error> {
+            try await self.cached("databasecontent/\(id)", ttl: contentTTL) {
+                let database = try await self.database(id: id)
+                return try await rovoDatabases.content(for: database)
+            }
+        }
+        pendingDatabaseContentFetch[id] = (generation, task)
+        defer {
+            if pendingDatabaseContentFetch[id]?.generation == generation {
+                pendingDatabaseContentFetch[id] = nil
+            }
+        }
+        return try await Self.joinShared(task)
     }
 
     /// `true` when this mount can serve whiteboard canvases via Rovo MCP.
@@ -599,9 +691,9 @@ public actor PageDataSource {
         // restriction data. When restricted pages must stay hidden
         // (`includeRestricted == false`, the default) we cannot tell which of
         // these children are restricted, so — preferring a false negative over a
-        // privacy leak — hide ALL page children here. Sub-folders and whiteboards
-        // are still listed. (`includeRestricted` is part of the folder/whiteboard
-        // cache key via `pageListVariant`, so toggling the flag re-reads.)
+        // privacy leak — hide ALL page children here. Sub-folders, whiteboards and
+        // databases are still listed. (`includeRestricted` is part of the
+        // container cache key via `pageListVariant`, so toggling the flag re-reads.)
         let rawPages: [ConfluencePage] = includeRestricted
             ? children.compactMap { child -> ConfluencePage? in
                 guard child.contentType == .page else { return nil }
@@ -615,7 +707,8 @@ public actor PageDataSource {
         return ConfluenceFolderChildrenResult(
             pages: makeEntries(rawPages),
             folders: makeFolderEntries(folders(in: children)),
-            whiteboards: makeWhiteboardEntries(whiteboards(in: children))
+            whiteboards: makeWhiteboardEntries(whiteboards(in: children)),
+            databases: makeDatabaseEntries(databases(in: children))
         )
     }
 
@@ -632,6 +725,17 @@ public actor PageDataSource {
             return ConfluenceWhiteboard(
                 id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
                 authorId: child.authorId, createdAt: child.createdAt, webURL: child.webURL
+            )
+        }
+    }
+
+    private nonisolated func databases(in children: [ConfluenceFolderChild]) -> [ConfluenceDatabase] {
+        children.compactMap { child in
+            guard child.contentType == .database else { return nil }
+            return ConfluenceDatabase(
+                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                authorId: child.authorId, createdAt: child.createdAt,
+                version: child.version, webURL: child.webURL
             )
         }
     }
@@ -735,6 +839,18 @@ public actor PageDataSource {
                 let sanitized = FileNameSanitizer.sanitize(whiteboard.title)
                 let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
                 return ConfluenceWhiteboardEntry(folderName: name, whiteboard: whiteboard)
+            }
+    }
+
+    /// Builds sanitized, deduplicated database entries sorted by title.
+    private nonisolated func makeDatabaseEntries(_ databases: [ConfluenceDatabase]) -> [ConfluenceDatabaseEntry] {
+        var taken = Set<String>()
+        return databases
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            .map { database in
+                let sanitized = FileNameSanitizer.sanitize(database.title)
+                let name = FileNameSanitizer.deduplicate(sanitized, taken: &taken)
+                return ConfluenceDatabaseEntry(folderName: name, database: database)
             }
     }
 
@@ -864,6 +980,8 @@ public actor PageDataSource {
         pendingRestrictedIDsFetch.removeAll()
         for entry in pendingWhiteboardContentFetch.values { entry.task.cancel() }
         pendingWhiteboardContentFetch.removeAll()
+        for entry in pendingDatabaseContentFetch.values { entry.task.cancel() }
+        pendingDatabaseContentFetch.removeAll()
         // Await so any in-flight attachment download is cancelled and the
         // in-memory attachment cache is cleared before unmount reports completion.
         await attachmentBytes.clear()

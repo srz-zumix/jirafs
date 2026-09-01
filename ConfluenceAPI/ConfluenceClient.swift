@@ -114,6 +114,15 @@ public protocol ConfluenceClient: Sendable {
     /// whiteboard is not exposed by the REST API.
     func getWhiteboard(id: String) async throws -> ConfluenceWhiteboard
 
+    /// Lists the direct children of a **database** via
+    /// `GET /wiki/api/v2/databases/{id}/direct-children` (Cloud only; DC always returns empty).
+    func listDatabaseChildren(databaseId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild>
+
+    /// Fetches a single database's metadata via `GET /wiki/api/v2/databases/{id}`
+    /// (Cloud only; DC throws ``AtlassianError/notFound``). The rows and fields of a
+    /// database are not exposed by the REST API.
+    func getDatabase(id: String) async throws -> ConfluenceDatabase
+
     /// Returns the IDs of **root** pages (depth=root) of a space that have any
     /// user/group restriction (read or update). Cloud uses v1 Space content API
     /// scoped to `depth=root`; Data Center always returns an empty set because

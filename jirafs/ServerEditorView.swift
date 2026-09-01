@@ -27,6 +27,9 @@ struct ServerEditorView: View {
     @State private var method: ServerAuthMethod
     @State private var email: String
     @State private var token: String
+    /// Whether the server keeps a dedicated Rovo MCP credential.
+    @State private var useMCPToken: Bool
+    @State private var mcpToken: String
 
     private enum VerifyState: Equatable {
         case idle, running
@@ -41,6 +44,8 @@ struct ServerEditorView: View {
     /// Original auth account, to detect when the Keychain key changes.
     private let originalMethod: ServerAuthMethod?
     private let originalEmail: String?
+    /// Whether a Rovo MCP credential was already stored when the editor opened.
+    private let hadMCPToken: Bool
 
     let onSave: (Server) -> Void
     let onCancel: () -> Void
@@ -54,6 +59,7 @@ struct ServerEditorView: View {
         self.isNew = initial == nil
         self.originalMethod = initial?.auth.method
         self.originalEmail = initial?.auth.email
+        self.hadMCPToken = initial?.auth.mcpEmail != nil
 
         let cloud = initial.map {
             ($0.jira?.edition == .cloud) || ($0.confluence?.edition == .cloud)
@@ -73,6 +79,8 @@ struct ServerEditorView: View {
         _method = State(initialValue: initial?.auth.method ?? .apiToken)
         _email = State(initialValue: initial?.auth.email ?? "")
         _token = State(initialValue: "")
+        _useMCPToken = State(initialValue: initial?.auth.mcpEmail != nil)
+        _mcpToken = State(initialValue: "")
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -151,6 +159,27 @@ struct ServerEditorView: View {
                                         : "required",
                                     text: $token
                                 )
+                            }
+                        }
+                    }
+
+                    if mcpTokenApplicable {
+                        formSection("Rovo MCP") {
+                            fieldRow("Separate token") {
+                                Toggle("", isOn: $useMCPToken)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .help("Atlassian's token picker cannot combine the Confluence and Rovo MCP apps, so the whiteboard / database integrations need their own API token created for the Rovo MCP app. Without it, only a scoped Confluence token is tried.")
+                            }
+                            if useMCPToken {
+                                fieldRow("Token") {
+                                    SecureField(
+                                        mcpToken.isEmpty && hadMCPToken
+                                            ? "leave blank to keep current"
+                                            : "required",
+                                        text: $mcpToken
+                                    )
+                                }
                             }
                         }
                     }
@@ -348,9 +377,21 @@ struct ServerEditorView: View {
         return !token.isEmpty || (!isNew && !keychainKeyChanged)
     }
 
+    /// The Rovo MCP endpoint authenticates with an email + API token pair
+    /// against a Cloud site, so the field only makes sense there.
+    private var mcpTokenApplicable: Bool {
+        isCloud && enableConfluence && method.usesEmail
+    }
+
+    private var mcpTokenAvailable: Bool {
+        guard mcpTokenApplicable, useMCPToken else { return true }
+        return !mcpToken.isEmpty || hadMCPToken
+    }
+
     private var isValid: Bool {
         !name.isEmpty && hasProduct && urlsValid
             && httpsWarning == nil && scopedTokenWarning == nil && tokenAvailable
+            && mcpTokenAvailable
     }
 
     private var canVerify: Bool {
@@ -509,12 +550,35 @@ struct ServerEditorView: View {
             ? effectiveConfluenceURL.map { Server.ConfluenceConnection(url: $0, edition: confluenceEdition) }
             : nil
 
+        let keepMCPToken = mcpTokenApplicable && useMCPToken
+        if keepMCPToken {
+            if !mcpToken.isEmpty {
+                do {
+                    try KeychainManager().setServerPassword(mcpToken, serverID: serverID,
+                                                            account: KeychainManager.rovoMCPAccount)
+                } catch {
+                    serverEditorLogger.error("Rovo MCP Keychain save failed: \(error.localizedDescription, privacy: .public)")
+                    saveError = "Could not save the Rovo MCP token to the Keychain. \(error.localizedDescription)"
+                    return
+                }
+            }
+        } else if hadMCPToken {
+            do {
+                try KeychainManager().deleteServerPassword(serverID: serverID,
+                                                           account: KeychainManager.rovoMCPAccount)
+            } catch {
+                serverEditorLogger.error("Failed to delete the Rovo MCP Keychain entry (serverID=\(serverID, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         let server = Server(
             id: serverID,
             name: name,
             jira: jiraConn,
             confluence: confluenceConn,
-            auth: Server.Auth(method: method, email: method.usesEmail ? email : nil)
+            auth: Server.Auth(method: method,
+                              email: method.usesEmail ? email : nil,
+                              mcpEmail: keepMCPToken ? email : nil)
         )
         onSave(server)
     }

@@ -157,6 +157,15 @@ final class ConfluenceFSItem: FSItem, @unchecked Sendable {
         case .whiteboardBody(let space, let id):      return "whiteboardBody:\(space):\(id)"
         case .whiteboardRaw(let space, let id):       return "whiteboardRaw:\(space):\(id)"
         case .whiteboardSVG(let space, let id):       return "whiteboardSVG:\(space):\(id)"
+        // Databases carry a version, so — unlike folders/whiteboards — both the
+        // display name and the version participate, as for pageDir.
+        case .databaseDir(let space, let id):
+            let base = "databaseDir:\(space):\(id)"
+            return (displayName == nil && salt == nil) ? base : "\(base):\(displayName ?? ""):\(salt ?? "")"
+        case .databaseMeta(let space, let id):        return "databaseMeta:\(space):\(id)"
+        case .databaseBody(let space, let id):        return "databaseBody:\(space):\(id)"
+        case .databaseCSV(let space, let id):         return "databaseCSV:\(space):\(id)"
+        case .databaseRaw(let space, let id):         return "databaseRaw:\(space):\(id)"
         }
     }
 }

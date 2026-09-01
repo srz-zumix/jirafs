@@ -55,6 +55,8 @@ final class AppStoreModel: ObservableObject {
         // Remove the shared credential. Account follows the configured method.
         let account = server.auth.method.keychainAccount(email: server.auth.email)
         try? KeychainManager().deleteServerPassword(serverID: server.id, account: account)
+        try? KeychainManager().deleteServerPassword(serverID: server.id,
+                                                    account: KeychainManager.rovoMCPAccount)
         persist()
     }
 

@@ -23,6 +23,7 @@ struct MountEditorView: View {
     @State private var includeRestricted: Bool
     @State private var renderMacros: Bool
     @State private var rovoWhiteboards: Bool
+    @State private var rovoDatabases: Bool
     @State private var autoMount: Bool
     @State private var saveError: String?
 
@@ -62,6 +63,7 @@ struct MountEditorView: View {
         // otherwise preserve the stored value to honor explicit user intent.
         _renderMacros = State(initialValue: initial?.renderMacros ?? true)
         _rovoWhiteboards = State(initialValue: initial?.rovoWhiteboards ?? false)
+        _rovoDatabases = State(initialValue: initial?.rovoDatabases ?? false)
         _autoMount = State(initialValue: initial?.autoMount ?? false)
 
         self.onSave = onSave
@@ -70,12 +72,13 @@ struct MountEditorView: View {
 
     private var selectedServer: Server? { servers.first { $0.id == serverID } }
 
-    /// The Rovo MCP whiteboard integration only works against a Confluence Cloud
-    /// site authenticated with a scoped API token (the Teamwork Graph tools
-    /// reject legacy tokens), so the toggle is disabled otherwise.
-    private var rovoWhiteboardsAvailable: Bool {
+    /// The Rovo MCP integrations only work against a Confluence Cloud site, and
+    /// only with a credential the MCP endpoint accepts: either a dedicated Rovo
+    /// MCP token or, failing that, a scoped API token.
+    private var rovoAvailable: Bool {
         guard let server = selectedServer else { return false }
-        return server.confluence?.edition == .cloud && server.auth.method == .scopedApiToken
+        guard server.confluence?.edition == .cloud else { return false }
+        return server.auth.mcpEmail != nil || server.auth.method == .scopedApiToken
     }
 
     private var availableProducts: [MountProduct] {
@@ -161,12 +164,24 @@ struct MountEditorView: View {
                                 Toggle("", isOn: $rovoWhiteboards)
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .disabled(!rovoWhiteboardsAvailable)
-                                    .help(rovoWhiteboardsAvailable
+                                    .disabled(!rovoAvailable)
+                                    .help(rovoAvailable
                                         ? "Experimental: expose whiteboard canvases as whiteboard.md / whiteboard.json / whiteboard.svg via the Atlassian Rovo MCP server. Rate limited and billed in Rovo credits. Off by default."
-                                        : "Requires a Confluence Cloud site authenticated with a scoped API token.")
-                                    .onChange(of: rovoWhiteboardsAvailable) { _, available in
+                                        : "Requires a Confluence Cloud site with a Rovo MCP token or a scoped API token.")
+                                    .onChange(of: rovoAvailable) { _, available in
                                         if !available { rovoWhiteboards = false }
+                                    }
+                            }
+                            fieldRow("Databases") {
+                                Toggle("", isOn: $rovoDatabases)
+                                    .labelsHidden().toggleStyle(.switch)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .disabled(!rovoAvailable)
+                                    .help(rovoAvailable
+                                        ? "Experimental: expose database rows as database.md / database.csv / database.json via the Atlassian Rovo MCP server. Needs a Rovo MCP token whose scopes include read:confluence:agent-interface. Rate limited and billed in Rovo credits. Off by default."
+                                        : "Requires a Confluence Cloud site with a Rovo MCP token or a scoped API token.")
+                                    .onChange(of: rovoAvailable) { _, available in
+                                        if !available { rovoDatabases = false }
                                     }
                             }
                         }
@@ -311,7 +326,8 @@ struct MountEditorView: View {
             includeArchived: product == .confluence ? includeArchived : false,
             includeRestricted: product == .confluence ? includeRestricted : false,
             renderMacros: renderMacros,
-            rovoWhiteboards: product == .confluence && rovoWhiteboardsAvailable ? rovoWhiteboards : false,
+            rovoWhiteboards: product == .confluence && rovoAvailable ? rovoWhiteboards : false,
+            rovoDatabases: product == .confluence && rovoAvailable ? rovoDatabases : false,
             autoMount: autoMount
         )
         onSave(mount)

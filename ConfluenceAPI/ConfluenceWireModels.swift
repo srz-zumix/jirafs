@@ -359,11 +359,11 @@ struct DCLabel: Decodable {
 /// Wire model for items returned by the v2 `direct-children` endpoints
 /// (`GET /wiki/api/v2/pages/{id}/direct-children` and
 /// `GET /wiki/api/v2/folders/{id}/direct-children`). Each item is tagged with a
-/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); `page`, `folder`
-/// and `whiteboard` are surfaced by the file system. Field availability is
-/// content-type dependent (sparse): `authorId`/`createdAt`/`version`/`_links` are
-/// populated only for `page` items, while `spaceId`/`parentId` may appear for any
-/// nested item. Fields absent from a given item decode to nil.
+/// `type` (`page`, `folder`, `whiteboard`, `database`, `embed`); all but `embed`
+/// are surfaced by the file system. Field availability is content-type dependent
+/// (sparse): `authorId`/`createdAt`/`version`/`_links` are populated only for
+/// `page` items, while `spaceId`/`parentId` may appear for any nested item.
+/// Fields absent from a given item decode to nil.
 struct CloudFolderChild: Decodable {
     let id: String
     let title: String
@@ -389,6 +389,7 @@ struct CloudFolderChild: Decodable {
         case "page": ct = .page
         case "folder": ct = .folder
         case "whiteboard": ct = .whiteboard
+        case "database": ct = .database
         default: ct = .other
         }
         return ConfluenceFolderChild(
@@ -447,6 +448,63 @@ struct CloudWhiteboard: Decodable {
         ConfluenceWhiteboard(
             id: id, title: title, spaceId: spaceId, parentId: parentId,
             authorId: authorId, createdAt: createdAt, webURL: links?.webui
+        )
+    }
+}
+
+// MARK: - Cloud Database (REST v2)
+
+/// Wire model for `GET /wiki/api/v2/databases/{id}` (Cloud only). The database
+/// rows and fields are not exposed by the REST API, so only descriptive metadata
+/// is available. Unlike whiteboards, databases carry a `version`.
+struct CloudDatabase: Decodable {
+    let id: String
+    let title: String
+    let spaceId: String?
+    let parentId: String?
+    let authorId: String?
+    let ownerId: String?
+    let createdAt: String?
+    private let version: CloudVersion?
+    private let links: CloudLinks?
+
+    struct CloudVersion: Decodable { let number: Int? }
+    struct CloudLinks: Decodable { let webui: String? }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, spaceId, parentId, authorId, ownerId, createdAt, version
+        case links = "_links"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        spaceId = try c.decodeIfPresent(String.self, forKey: .spaceId)
+        parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+        authorId = try c.decodeIfPresent(String.self, forKey: .authorId)
+        ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId)
+        // As with whiteboards, `createdAt` may be epoch milliseconds rather than
+        // an ISO 8601 string; accept either and normalize to ISO.
+        if let iso = try? c.decodeIfPresent(String.self, forKey: .createdAt) {
+            createdAt = iso
+        } else if let millis = try? c.decodeIfPresent(Int64.self, forKey: .createdAt) {
+            let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            createdAt = formatter.string(from: date)
+        } else {
+            createdAt = nil
+        }
+        version = try c.decodeIfPresent(CloudVersion.self, forKey: .version)
+        links = try c.decodeIfPresent(CloudLinks.self, forKey: .links)
+    }
+
+    var domain: ConfluenceDatabase {
+        ConfluenceDatabase(
+            id: id, title: title, spaceId: spaceId, parentId: parentId,
+            authorId: authorId, ownerId: ownerId, createdAt: createdAt,
+            version: version?.number, webURL: links?.webui
         )
     }
 }

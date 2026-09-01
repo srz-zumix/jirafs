@@ -190,13 +190,52 @@ public struct ConfluenceWhiteboard: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-// MARK: - Folder Child (Cloud only)
+// MARK: - Database (Cloud only)
+
+/// A Confluence database — a structured table of records that can also act as a
+/// container for pages, folders, whiteboards and other databases. Databases are
+/// a Cloud-only concept; Data Center does not support them. Their rows and
+/// fields are not exposed by the REST API, so only metadata (and children) is
+/// surfaced.
+public struct ConfluenceDatabase: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let spaceId: String?
+    public let parentId: String?
+    public let authorId: String?
+    public let ownerId: String?
+    public let createdAt: String?
+    public let version: Int?
+    public let webURL: String?
+
+    public init(
+        id: String,
+        title: String,
+        spaceId: String? = nil,
+        parentId: String? = nil,
+        authorId: String? = nil,
+        ownerId: String? = nil,
+        createdAt: String? = nil,
+        version: Int? = nil,
+        webURL: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.spaceId = spaceId
+        self.parentId = parentId
+        self.authorId = authorId
+        self.ownerId = ownerId
+        self.createdAt = createdAt
+        self.version = version
+        self.webURL = webURL
+    }
+}
 
 /// A single item returned by the folder-children endpoint.
-/// Cloud returns a mixed list of pages, sub-folders and whiteboards tagged with
-/// `contentType`.
+/// Cloud returns a mixed list of pages, sub-folders, whiteboards and databases
+/// tagged with `contentType`.
 public struct ConfluenceFolderChild: Sendable {
-    public enum ContentType: String, Sendable { case page, folder, whiteboard, other }
+    public enum ContentType: String, Sendable { case page, folder, whiteboard, database, other }
 
     public let contentType: ContentType
     public let id: String

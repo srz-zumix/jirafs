@@ -15,6 +15,7 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 - macOS Keychain (Access Group 共有) による安全な認証情報管理
 - **匿名アクセス** — 公開された JIRA/Confluence サイトを認証なしでマウント
 - **ホワイトボードのキャンバス取得（実験的）** — Atlassian Rovo MCP サーバ経由で `whiteboard.md` / `whiteboard.json` / `whiteboard.svg` を生成（Confluence Cloud + *API Token (scoped)* 認証のみ。デフォルトはオフ）
+- **データベースの行取得（実験的）** — Atlassian Rovo MCP サーバ経由で `database.md` / `database.csv` / `database.json` を生成（Confluence Cloud + `read:confluence:agent-interface` を含む Rovo MCP 専用トークンが必要。デフォルトはオフ）
 - TTL ベースの In-Memory キャッシュ + オプションで AES-GCM 暗号化ディスクキャッシュ
 - バックグラウンド自動更新—フォルダを開いたまま待つだけで新規 issue / page が表示される（間隔は設定可能、オフにもできる）
 - `issue.html` / `{タイトル}.html` フォーマットビュー（オプション）
@@ -33,6 +34,7 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 | --- | --- |
 | `read:attachment:confluence` | `.attachments/` の一覧とダウンロード |
 | `read:comment:confluence` | `.comments/` |
+| `read:database:confluence` | データベースのメタデータと子要素 |
 | `read:folder:confluence` | ページ配下のフォルダ |
 | `read:hierarchical-content:confluence` | ページツリーの探索 (`direct-children`) |
 | `read:label:confluence` | `.labels.txt` |
@@ -47,10 +49,12 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
 | `read:content-details:confluence`, `read:content.restriction:confluence` | 閲覧制限ページの除外（デフォルトの `includeRestricted = off`。制限情報を v1 content API から取得するため） |
 | `readonly:content.attachment:confluence` | 添付のダウンロードが 401 になる場合のみ。レガシーな `/wiki/download/...` パスはこのクラシックスコープでルーティングされます |
 
+Rovo MCP 連携（`rovoWhiteboards` / `rovoDatabases`）には別の API トークンが必要です。Atlassian のトークン作成画面では Confluence アプリと Rovo MCP アプリを同時に選べないため、データベースの行取得に必要な `read:confluence:agent-interface` を Confluence 用トークンに含められません。Rovo MCP アプリ用に 2 つ目の scoped トークンを作成し、サーバ編集画面の **Rovo MCP → Separate token** に入力してください。REST 用クレデンシャルとは別に Keychain に保存され、`mcp.atlassian.com` に対してのみ使われます。
+
 補足:
 
 - scoped トークンは Confluence のみ対応です。JIRA のマウントには通常の API トークンか PAT を使ってください
-- 実験的な Rovo MCP ホワイトボード連携は scoped トークンが必須ですが、可否は Confluence のスコープではなく組織の「API トークンでの接続を許可する」設定で決まります
+- 実験的な Rovo MCP 連携は専用トークンが必要です（上記）。加えて組織の「API トークンでの接続を許可する」設定も必要です
 - ホワイトボードの**画像**はどのトークンでも取得できません。実体が Atlassian Media Services にあり、対応する Confluence の OAuth スコープが存在しないためです。`whiteboard.svg` ではラベル付きのプレースホルダとして描画されます
 
 ## ファイルシステムレイアウト
@@ -91,6 +95,11 @@ Apple [FSKit](https://developer.apple.com/documentation/FSKit) フレームワ�
                 │   ├── whiteboard.md   # キャンバスのテキスト   ┐
                 │   ├── whiteboard.json # MCP レスポンス生データ │ 実験的、デフォルトはオフ
                 │   └── whiteboard.svg  # キャンバスの描画       ┘
+                ├── My Database/        # データベース (Cloud のみ)
+                │   ├── .metadata.json  # データベースのメタデータ (version / webURL 含む)
+                │   ├── database.md     # 行を Markdown テーブル化 ┐
+                │   ├── database.csv    # 行の CSV               │ 実験的。デフォルトはオフ
+                │   └── database.json   # MCP レスポンス生データ   ┘
                 └── Child Page/         # 子ページ（再帰的にネスト）
                     └── page.md
 ```
