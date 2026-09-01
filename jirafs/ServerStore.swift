@@ -143,10 +143,12 @@ struct Mount: Codable, Sendable, Equatable, Identifiable {
     /// for JIRA. Defaults to `false`.
     var rovoWhiteboards: Bool
     /// Confluence-only, experimental: expose database rows as `database.md` /
-    /// `database.csv` / `database.json` via the Atlassian Rovo MCP server. Same
-    /// Cloud + **scoped** API-token requirement as `rovoWhiteboards`, plus the
-    /// `read:confluence:agent-interface` token scope. Ignored for JIRA.
-    /// Defaults to `false`.
+    /// `database.csv` / `database.json` via the Atlassian Rovo MCP server. Cloud
+    /// only, and — unlike `rovoWhiteboards` — requires a **dedicated** Rovo MCP
+    /// token: the database rows tool needs the `read:confluence:agent-interface`
+    /// scope, which cannot be added to a Confluence scoped token, so a scoped
+    /// REST credential is never a valid fallback (the UI disables this unless a
+    /// separate MCP token is configured). Ignored for JIRA. Defaults to `false`.
     var rovoDatabases: Bool
     var autoMount: Bool
 

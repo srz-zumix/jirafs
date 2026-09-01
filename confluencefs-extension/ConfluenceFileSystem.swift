@@ -59,7 +59,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                     enabled: rovoWhiteboards, config: config, auth: auth, mcpAuth: mcpAuth, logger: logger
                 ),
                 rovoDatabases: ConfluenceFileSystem.makeRovoDatabaseSource(
-                    enabled: rovoDatabases, config: config, auth: auth, mcpAuth: mcpAuth, logger: logger
+                    enabled: rovoDatabases, config: config, mcpAuth: mcpAuth, logger: logger
                 )
             )
             let volume = ConfluenceVolume(name: volumeName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
@@ -155,7 +155,9 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             auth = NoneAuth()
         }
         // A missing MCP credential must not break the mount: the Rovo sources
-        // are optional extras, so fall back to the REST token instead.
+        // are optional extras. Whiteboards fall back to a scoped REST token when
+        // no dedicated MCP token exists; databases require the dedicated token
+        // (see `makeRovoDatabaseSource`) and are simply disabled without it.
         var mcpAuth: AuthProvider?
         if let mcpEmail = entry.auth.mcpEmail {
             do {
@@ -197,13 +199,16 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
     }
 
     /// Builds the Rovo MCP database source, or `nil` when the mount is not
-    /// eligible. Same Cloud + API-token preconditions as whiteboards; the extra
-    /// `read:confluence:agent-interface` scope can only be checked by calling
-    /// the tool, so a missing scope surfaces at read time instead.
+    /// eligible. Cloud-only, and — unlike whiteboards — requires a **dedicated**
+    /// Rovo MCP token (`mcpAuth`): the database rows tool needs the
+    /// `read:confluence:agent-interface` scope, which Atlassian's token picker
+    /// cannot add to a Confluence scoped token, so the REST credential can never
+    /// authorize it and must not be used as a fallback here. Whether the token
+    /// actually carries that scope is only verifiable by calling the tool, so a
+    /// token missing it still surfaces (mount-wide) at read time.
     static func makeRovoDatabaseSource(
         enabled: Bool,
         config: ConfluenceInstanceConfig,
-        auth: AuthProvider,
         mcpAuth: AuthProvider?,
         logger: Logger
     ) -> RovoDatabaseSource? {
@@ -212,17 +217,19 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             logger.error("rovo databases requested but instance is not Cloud; disabling")
             return nil
         }
-        guard let resolved = resolveMCPAuth(config: config, auth: auth, mcpAuth: mcpAuth) else {
-            logger.error("rovo databases requires a Rovo MCP token or a scoped API token; disabling")
+        guard let resolved = mcpAuth else {
+            logger.error("rovo databases requires a dedicated Rovo MCP token (read:confluence:agent-interface); disabling")
             return nil
         }
         let mcp = MCPClient(endpoint: RovoDatabaseSource.defaultEndpoint, auth: resolved)
         return RovoDatabaseSource(mcp: mcp, siteBaseURL: config.baseURL)
     }
 
-    /// Credential the Rovo MCP endpoint should use, or `nil` when neither
-    /// credential can talk to it. Without a dedicated MCP token the REST token
-    /// only works if it is a scoped API token.
+    /// Credential the Rovo MCP endpoint should use for **whiteboards**, or `nil`
+    /// when neither credential can talk to it. Without a dedicated MCP token the
+    /// REST token only works if it is a scoped API token. Databases do not use
+    /// this fallback — they require a dedicated MCP token (see
+    /// `makeRovoDatabaseSource`).
     static func resolveMCPAuth(
         config: ConfluenceInstanceConfig,
         auth: AuthProvider,

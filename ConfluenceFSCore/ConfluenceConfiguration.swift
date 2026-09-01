@@ -63,8 +63,10 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public var rovoWhiteboards: Bool
         /// When `true`, database directories expose `database.md`, `database.csv`
         /// and `database.json`, built from a single Atlassian Rovo MCP fetch.
-        /// Cloud + **scoped** API-token auth only, and the token additionally
-        /// needs the `read:confluence:agent-interface` scope. Off by default for
+        /// Cloud only, and — unlike `rovoWhiteboards` — requires a **dedicated**
+        /// Rovo MCP token carrying the `read:confluence:agent-interface` scope:
+        /// that scope cannot be added to a Confluence scoped token, so the REST
+        /// credential is never a valid fallback for databases. Off by default for
         /// the same rate-limit / Rovo-credit reasons as `rovoWhiteboards`.
         public var rovoDatabases: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
@@ -136,8 +138,9 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         public var method: Method
         public var email: String?
         /// Email paired with the separate Rovo MCP token (Keychain account
-        /// `rovo_mcp`). `nil` when the mount has no MCP credential, in which
-        /// case the Rovo sources fall back to the REST token.
+        /// `rovo_mcp`). `nil` when the mount has no dedicated MCP credential, in
+        /// which case whiteboards fall back to the REST token but databases
+        /// (which need the `read:confluence:agent-interface` scope) are disabled.
         public var mcpEmail: String?
 
         public init(method: Method, email: String? = nil, mcpEmail: String? = nil) {

@@ -81,6 +81,17 @@ struct MountEditorView: View {
         return server.auth.mcpEmail != nil || server.auth.method == .scopedApiToken
     }
 
+    /// Databases additionally require a **dedicated** Rovo MCP token: the
+    /// `read:confluence:agent-interface` scope cannot be added to a Confluence
+    /// scoped token, so the REST credential (even when scoped) can never
+    /// authorize the database rows tool. A scoped-token-only server therefore
+    /// enables whiteboards but not databases.
+    private var rovoDatabaseAvailable: Bool {
+        guard let server = selectedServer else { return false }
+        guard server.confluence?.edition == .cloud else { return false }
+        return server.auth.mcpEmail != nil
+    }
+
     private var availableProducts: [MountProduct] {
         guard let server = selectedServer else { return [] }
         return MountProduct.allCases.filter { server.supports($0) }
@@ -176,11 +187,11 @@ struct MountEditorView: View {
                                 Toggle("", isOn: $rovoDatabases)
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .disabled(!rovoAvailable)
-                                    .help(rovoAvailable
+                                    .disabled(!rovoDatabaseAvailable)
+                                    .help(rovoDatabaseAvailable
                                         ? "Experimental: expose database rows as database.md / database.csv / database.json via the Atlassian Rovo MCP server. Needs a Rovo MCP token whose scopes include read:confluence:agent-interface. Rate limited and billed in Rovo credits. Off by default."
-                                        : "Requires a Confluence Cloud site with a Rovo MCP token or a scoped API token.")
-                                    .onChange(of: rovoAvailable) { _, available in
+                                        : "Requires a Confluence Cloud site with a separate Rovo MCP token whose scopes include read:confluence:agent-interface.")
+                                    .onChange(of: rovoDatabaseAvailable) { _, available in
                                         if !available { rovoDatabases = false }
                                     }
                             }
@@ -327,7 +338,7 @@ struct MountEditorView: View {
             includeRestricted: product == .confluence ? includeRestricted : false,
             renderMacros: renderMacros,
             rovoWhiteboards: product == .confluence && rovoAvailable ? rovoWhiteboards : false,
-            rovoDatabases: product == .confluence && rovoAvailable ? rovoDatabases : false,
+            rovoDatabases: product == .confluence && rovoDatabaseAvailable ? rovoDatabases : false,
             autoMount: autoMount
         )
         onSave(mount)

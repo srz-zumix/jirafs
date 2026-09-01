@@ -169,7 +169,7 @@ struct ServerEditorView: View {
                                 Toggle("", isOn: $useMCPToken)
                                     .labelsHidden().toggleStyle(.switch)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .help("Atlassian's token picker cannot combine the Confluence and Rovo MCP apps, so the whiteboard / database integrations need their own API token created for the Rovo MCP app. Without it, only a scoped Confluence token is tried.")
+                                    .help("Atlassian's token picker cannot combine the Confluence and Rovo MCP apps, so the whiteboard / database integrations need their own API token created for the Rovo MCP app. Databases require this token (their read:confluence:agent-interface scope cannot live on the Confluence token); without it, only whiteboards fall back to a scoped Confluence token.")
                             }
                             if useMCPToken {
                                 fieldRow("Token") {
