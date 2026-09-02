@@ -28,6 +28,11 @@ public struct KeychainManager: Sendable {
     }()
     public static let servicePrefix = "com.zumix.jirafs"
 
+    /// Keychain account holding the separate Rovo MCP API token. Atlassian's
+    /// token picker cannot combine the Confluence and Rovo MCP apps in one
+    /// scoped token, so MCP needs its own credential alongside the REST one.
+    public static let rovoMCPAccount = "rovo_mcp"
+
     public init() {}
 
     public func service(forInstance instanceName: String) -> String {

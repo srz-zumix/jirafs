@@ -727,7 +727,8 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertEqual(page.items[0].contentType, .page)
         XCTAssertEqual(page.items[1].contentType, .whiteboard)
         XCTAssertEqual(page.items[1].id, "w2")
-        XCTAssertEqual(page.items[2].contentType, .other)
+        XCTAssertEqual(page.items[2].contentType, .database)
+        XCTAssertEqual(page.items[2].id, "d1")
         let url = stub.requests.first?.url?.absoluteString ?? ""
         XCTAssertTrue(url.contains("/wiki/api/v2/whiteboards/w1/direct-children"), "URL was \(url)")
     }
@@ -784,6 +785,101 @@ final class ConfluenceRESTClientTests: XCTestCase {
         let client = dcClient(stub)
         do {
             _ = try await client.getWhiteboard(id: "w1")
+            XCTFail("expected notFound on Data Center")
+        } catch let error as AtlassianError {
+            XCTAssertEqual(error, .notFound)
+        }
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    // MARK: - Databases
+
+    func testCloudListDatabaseChildrenMixedTypes() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            {
+              "id": "p9", "title": "Notes", "type": "page",
+              "spaceId": "100", "parentId": "d1",
+              "version": {"number": 2},
+              "_links": {"webui": "/spaces/ENG/pages/p9"}
+            },
+            {"id": "d2", "title": "Sub Data", "type": "database",  "spaceId": "100", "parentId": "d1"},
+            {"id": "e1", "title": "Link",     "type": "embed",     "spaceId": "100"}
+          ],
+          "_links": {}
+        }
+        """
+        stub.responses["/wiki/api/v2/databases/d1/direct-children"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let page = try await client.listDatabaseChildren(databaseId: "d1", cursor: nil, limit: 25)
+        XCTAssertEqual(page.items.count, 3)
+        XCTAssertEqual(page.items[0].contentType, .page)
+        XCTAssertEqual(page.items[1].contentType, .database)
+        XCTAssertEqual(page.items[1].id, "d2")
+        XCTAssertEqual(page.items[2].contentType, .other)
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("/wiki/api/v2/databases/d1/direct-children"), "URL was \(url)")
+    }
+
+    func testDCListDatabaseChildrenAlwaysEmpty() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let page = try await client.listDatabaseChildren(databaseId: "d1", cursor: nil, limit: 25)
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty, "DC should make no API call for databases")
+    }
+
+    func testCloudGetDatabase() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "id": "d1", "title": "Bug Tracker", "spaceId": "100", "parentId": "p1",
+          "authorId": "acc-1", "ownerId": "acc-2",
+          "createdAt": "2024-05-06T07:08:09.000Z",
+          "version": {"number": 7},
+          "_links": {"webui": "/spaces/ENG/database/d1"}
+        }
+        """
+        stub.responses["/wiki/api/v2/databases/d1"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let database = try await client.getDatabase(id: "d1")
+        XCTAssertEqual(database.id, "d1")
+        XCTAssertEqual(database.title, "Bug Tracker")
+        XCTAssertEqual(database.spaceId, "100")
+        XCTAssertEqual(database.parentId, "p1")
+        XCTAssertEqual(database.authorId, "acc-1")
+        XCTAssertEqual(database.ownerId, "acc-2")
+        XCTAssertEqual(database.version, 7)
+        XCTAssertEqual(database.createdAt, "2024-05-06T07:08:09.000Z")
+        XCTAssertEqual(database.webURL, "/spaces/ENG/database/d1")
+    }
+
+    func testCloudGetDatabaseEpochMillisCreatedAt() async throws {
+        let stub = ConfluenceStubTransport()
+        // As with whiteboards, `createdAt` may come back as epoch milliseconds
+        // (a JSON number) instead of an ISO 8601 string.
+        let json = """
+        {
+          "id": "d1", "title": "Bug Tracker", "spaceId": "100",
+          "authorId": "acc-1", "createdAt": 1786800386358
+        }
+        """
+        stub.responses["/wiki/api/v2/databases/d1"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let database = try await client.getDatabase(id: "d1")
+        XCTAssertEqual(database.id, "d1")
+        XCTAssertEqual(database.createdAt, "2026-08-15T13:26:26.358Z")
+        XCTAssertNil(database.version)
+        XCTAssertNil(database.webURL)
+    }
+
+    func testDCGetDatabaseThrowsNotFound() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        do {
+            _ = try await client.getDatabase(id: "d1")
             XCTFail("expected notFound on Data Center")
         } catch let error as AtlassianError {
             XCTAssertEqual(error, .notFound)

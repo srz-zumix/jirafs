@@ -111,6 +111,25 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
                 node.cachedBirthTime = created
                 node.cachedMTime = created
             }
+        case .databaseMeta(_, let databaseId):
+            let database = try await dataSource.database(id: databaseId)
+            data = PageFileBuilder.databaseMeta(database)
+            applyDatabaseTimes(database, to: node)
+        case .databaseBody(_, let databaseId):
+            let database = try await dataSource.database(id: databaseId)
+            let content = try await dataSource.databaseContent(id: databaseId)
+            data = PageFileBuilder.databaseBody(database, content: content)
+            applyDatabaseTimes(database, to: node)
+        case .databaseCSV(_, let databaseId):
+            let database = try await dataSource.database(id: databaseId)
+            let content = try await dataSource.databaseContent(id: databaseId)
+            data = PageFileBuilder.databaseCSV(content: content)
+            applyDatabaseTimes(database, to: node)
+        case .databaseRaw(_, let databaseId):
+            let database = try await dataSource.database(id: databaseId)
+            let content = try await dataSource.databaseContent(id: databaseId)
+            data = PageFileBuilder.databaseRaw(content: content)
+            applyDatabaseTimes(database, to: node)
         case .labels(_, let pageId):
             let labels = try await dataSource.labels(pageId: pageId)
             data = PageFileBuilder.labels(labels)
@@ -203,5 +222,13 @@ extension ConfluenceVolume: FSVolume.OpenCloseOperations {
         // version is treated as the initial version.
         let versionOffset = TimeInterval(max(0, (page.version ?? 1) - 1))
         node.cachedMTime = created.addingTimeInterval(versionOffset)
+    }
+
+    /// Databases expose `createdAt` and a `version` but no modification time, so
+    /// the version is folded into `mtime` exactly as `applyPageTimes` does.
+    private func applyDatabaseTimes(_ database: ConfluenceDatabase, to node: ConfluenceFSItem) {
+        guard let created = parseConfluenceDate(database.createdAt) else { return }
+        node.cachedBirthTime = created
+        node.cachedMTime = created.addingTimeInterval(TimeInterval(max(0, (database.version ?? 1) - 1)))
     }
 }

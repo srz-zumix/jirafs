@@ -61,6 +61,14 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         /// default: the MCP tools are beta, rate limited per site, and billed in
         /// Rovo credits once out of beta.
         public var rovoWhiteboards: Bool
+        /// When `true`, database directories expose `database.md`, `database.csv`
+        /// and `database.json`, built from a single Atlassian Rovo MCP fetch.
+        /// Cloud only, and — unlike `rovoWhiteboards` — requires a **dedicated**
+        /// Rovo MCP token carrying the `read:confluence:agent-interface` scope:
+        /// that scope cannot be added to a Confluence scoped token, so the REST
+        /// credential is never a valid fallback for databases. Off by default for
+        /// the same rate-limit / Rovo-credit reasons as `rovoWhiteboards`.
+        public var rovoDatabases: Bool
         /// When `true`, this instance is automatically mounted when the app launches.
         /// Defaults to `false`.
         public var autoMount: Bool
@@ -77,7 +85,8 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
                     mountPath: String? = nil, allowedSpaceKeys: [String]? = nil,
                     diskCache: Bool = true, htmlView: Bool = false, includeArchived: Bool = false,
                     includeRestricted: Bool = false, renderMacros: Bool = true,
-                    rovoWhiteboards: Bool = false, autoMount: Bool = false) {
+                    rovoWhiteboards: Bool = false, rovoDatabases: Bool = false,
+                    autoMount: Bool = false) {
             self.mountID = mountID
             self.serverID = serverID
             self.name = name
@@ -92,6 +101,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             self.includeRestricted = includeRestricted
             self.renderMacros = renderMacros
             self.rovoWhiteboards = rovoWhiteboards
+            self.rovoDatabases = rovoDatabases
             self.autoMount = autoMount
         }
 
@@ -111,6 +121,7 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
             includeRestricted = try c.decodeIfPresent(Bool.self, forKey: .includeRestricted) ?? false
             renderMacros    = try c.decodeIfPresent(Bool.self, forKey: .renderMacros) ?? true
             rovoWhiteboards = try c.decodeIfPresent(Bool.self, forKey: .rovoWhiteboards) ?? false
+            rovoDatabases   = try c.decodeIfPresent(Bool.self, forKey: .rovoDatabases) ?? false
             autoMount       = try c.decodeIfPresent(Bool.self, forKey: .autoMount) ?? false
         }
     }
@@ -126,10 +137,16 @@ public struct ConfluenceConfiguration: Codable, Sendable, Equatable {
         }
         public var method: Method
         public var email: String?
+        /// Email paired with the separate Rovo MCP token (Keychain account
+        /// `rovo_mcp`). `nil` when the mount has no dedicated MCP credential, in
+        /// which case whiteboards fall back to the REST token but databases
+        /// (which need the `read:confluence:agent-interface` scope) are disabled.
+        public var mcpEmail: String?
 
-        public init(method: Method, email: String? = nil) {
+        public init(method: Method, email: String? = nil, mcpEmail: String? = nil) {
             self.method = method
             self.email = email
+            self.mcpEmail = mcpEmail
         }
     }
 

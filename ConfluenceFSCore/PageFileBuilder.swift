@@ -54,6 +54,51 @@ public enum PageFileBuilder {
         return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
     }
 
+    /// `.metadata.json` for a database — structured database metadata. Database
+    /// rows and fields are not exposed by the Confluence REST API, so `webURL` is
+    /// the way to open the database itself.
+    public static func databaseMeta(_ database: ConfluenceDatabase) -> Data {
+        let dict: [String: Any] = [
+            "id": database.id,
+            "title": database.title,
+            "type": "database",
+            "spaceId": jsonOrNull(database.spaceId),
+            "parentId": jsonOrNull(database.parentId),
+            "version": jsonOrNull(database.version),
+            "authorId": jsonOrNull(database.authorId),
+            "ownerId": jsonOrNull(database.ownerId),
+            "createdAt": jsonOrNull(database.createdAt),
+            "webURL": jsonOrNull(database.webURL),
+        ]
+        let opts: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys]
+        return (try? JSONSerialization.data(withJSONObject: dict, options: opts)) ?? Data()
+    }
+
+    /// `database.md` — the database rows as Markdown tables. `content` is the
+    /// verbatim Rovo MCP response; when its CSV body cannot be located the raw
+    /// payload is emitted so the file is never silently empty.
+    public static func databaseBody(_ database: ConfluenceDatabase, content: String) -> Data {
+        var out = "# \(database.title)\n\n"
+        out += "> Rendered from the database CSV served by the Atlassian Rovo MCP server.\n"
+        out += "> The Confluence REST API does not expose these rows.\n\n"
+        out += DatabaseCSVRenderer.render(RovoDatabaseSource.csvBody(in: content) ?? content)
+        if !out.hasSuffix("\n") { out += "\n" }
+        return Data(out.utf8)
+    }
+
+    /// `database.csv` — the CSV exactly as Rovo MCP returned it, so spreadsheet
+    /// tools can consume it directly.
+    public static func databaseCSV(content: String) -> Data {
+        let csv = RovoDatabaseSource.csvBody(in: content) ?? content
+        return Data((csv.hasSuffix("\n") ? csv : csv + "\n").utf8)
+    }
+
+    /// `database.json` — the Rovo MCP response verbatim when it is valid JSON.
+    /// Shares the whiteboard envelope fallback for non-JSON payloads.
+    public static func databaseRaw(content: String) -> Data {
+        whiteboardRaw(content: content)
+    }
+
     /// `whiteboard.md` — the whiteboard canvas as rendered by Rovo MCP. The
     /// rendering is produced by a beta API and may vary between calls, so the
     /// provenance note is part of the file.

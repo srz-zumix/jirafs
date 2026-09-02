@@ -22,7 +22,7 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             self.containerStatus = .ready
             let mountID = ConfluenceFileSystem.hostname(from: resource, taskOptions: options.taskOptions)
             logger.info("loadResource mountID=\(mountID ?? "<unknown>", privacy: .public)")
-            let (volumeName, cacheID, config, auth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived, includeRestricted, renderMacros, rovoWhiteboards) =
+            let (volumeName, cacheID, config, auth, mcpAuth, allowedSpaceKeys, ttl, pagination, diskCacheEnabled, htmlEnabled, includeArchived, includeRestricted, renderMacros, rovoWhiteboards, rovoDatabases) =
                 try ConfluenceFileSystem.lookupInstance(mountID: mountID)
             let client = ConfluenceRESTClient(config: config, auth: auth)
             let cachesDir: URL? = diskCacheEnabled
@@ -56,7 +56,10 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
                 includeRestricted: includeRestricted,
                 renderMacros: renderMacros,
                 rovoWhiteboards: ConfluenceFileSystem.makeRovoWhiteboardSource(
-                    enabled: rovoWhiteboards, config: config, auth: auth, logger: logger
+                    enabled: rovoWhiteboards, config: config, auth: auth, mcpAuth: mcpAuth, logger: logger
+                ),
+                rovoDatabases: ConfluenceFileSystem.makeRovoDatabaseSource(
+                    enabled: rovoDatabases, config: config, mcpAuth: mcpAuth, logger: logger
                 )
             )
             let volume = ConfluenceVolume(name: volumeName, dataSource: dataSource, isReadOnly: true, htmlEnabled: htmlEnabled)
@@ -123,8 +126,8 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
 
     /// Resolve the mount matching `mountID` (falls back to the first entry).
     static func lookupInstance(mountID: String?) throws
-        -> (String, String, ConfluenceInstanceConfig, AuthProvider, [String]?,
-            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool, Bool, Bool, Bool)
+        -> (String, String, ConfluenceInstanceConfig, AuthProvider, AuthProvider?, [String]?,
+            ConfluenceConfiguration.CacheTTLConfig, ConfluenceConfiguration.Pagination, Bool, Bool, Bool, Bool, Bool, Bool, Bool)
     {
         let configURL = ConfluenceFileSystem.configURL()
         let config = (try? ConfluenceConfiguration.load(from: configURL)) ?? ConfluenceConfiguration()
@@ -151,18 +154,35 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
         case .none:
             auth = NoneAuth()
         }
-        return (entry.name, entry.mountID, cfg, auth, entry.allowedSpaceKeys,
+        // A missing MCP credential must not break the mount: the Rovo sources
+        // are optional extras. Whiteboards fall back to a scoped REST token when
+        // no dedicated MCP token exists; databases require the dedicated token
+        // (see `makeRovoDatabaseSource`) and are simply disabled without it.
+        var mcpAuth: AuthProvider?
+        if let mcpEmail = entry.auth.mcpEmail {
+            do {
+                let token = try keychain.serverPassword(serverID: entry.serverID,
+                                                        account: KeychainManager.rovoMCPAccount)
+                mcpAuth = APITokenAuth(email: mcpEmail, token: token)
+            } catch {
+                AtlassianLog.logger("confluence-filesystem")
+                    .error("rovo mcp credential unavailable: \(String(describing: error), privacy: .public)")
+            }
+        }
+        return (entry.name, entry.mountID, cfg, auth, mcpAuth, entry.allowedSpaceKeys,
                 config.cache, config.pagination, entry.diskCache, entry.htmlView, entry.includeArchived, entry.includeRestricted, entry.renderMacros,
-                entry.rovoWhiteboards)
+                entry.rovoWhiteboards, entry.rovoDatabases)
     }
 
     /// Builds the Rovo MCP whiteboard source, or `nil` when the mount is not
     /// eligible. Rovo MCP is Cloud-only and, for the credentials jirafs stores,
-    /// only supports Atlassian API-token (Basic) authentication.
+    /// only supports Atlassian API-token (Basic) authentication. A dedicated
+    /// MCP token wins over the REST token when the server has one.
     static func makeRovoWhiteboardSource(
         enabled: Bool,
         config: ConfluenceInstanceConfig,
         auth: AuthProvider,
+        mcpAuth: AuthProvider?,
         logger: Logger
     ) -> RovoWhiteboardSource? {
         guard enabled else { return nil }
@@ -170,12 +190,54 @@ final class ConfluenceFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations
             logger.error("rovo whiteboards requested but instance is not Cloud; disabling")
             return nil
         }
-        guard config.scopedToken, auth is APITokenAuth else {
-            logger.error("rovo whiteboards requires a scoped API token; disabling")
+        guard let resolved = resolveMCPAuth(config: config, auth: auth, mcpAuth: mcpAuth) else {
+            logger.error("rovo whiteboards requires a Rovo MCP token or a scoped API token; disabling")
             return nil
         }
-        let mcp = MCPClient(endpoint: RovoWhiteboardSource.defaultEndpoint, auth: auth)
+        let mcp = MCPClient(endpoint: RovoWhiteboardSource.defaultEndpoint, auth: resolved)
         return RovoWhiteboardSource(mcp: mcp, siteBaseURL: config.baseURL)
+    }
+
+    /// Builds the Rovo MCP database source, or `nil` when the mount is not
+    /// eligible. Cloud-only, and — unlike whiteboards — requires a **dedicated**
+    /// Rovo MCP token (`mcpAuth`): the database rows tool needs the
+    /// `read:confluence:agent-interface` scope, which Atlassian's token picker
+    /// cannot add to a Confluence scoped token, so the REST credential can never
+    /// authorize it and must not be used as a fallback here. Whether the token
+    /// actually carries that scope is only verifiable by calling the tool, so a
+    /// token missing it still surfaces (mount-wide) at read time.
+    static func makeRovoDatabaseSource(
+        enabled: Bool,
+        config: ConfluenceInstanceConfig,
+        mcpAuth: AuthProvider?,
+        logger: Logger
+    ) -> RovoDatabaseSource? {
+        guard enabled else { return nil }
+        guard config.edition.isCloud else {
+            logger.error("rovo databases requested but instance is not Cloud; disabling")
+            return nil
+        }
+        guard let resolved = mcpAuth else {
+            logger.error("rovo databases requires a dedicated Rovo MCP token (read:confluence:agent-interface); disabling")
+            return nil
+        }
+        let mcp = MCPClient(endpoint: RovoDatabaseSource.defaultEndpoint, auth: resolved)
+        return RovoDatabaseSource(mcp: mcp, siteBaseURL: config.baseURL)
+    }
+
+    /// Credential the Rovo MCP endpoint should use for **whiteboards**, or `nil`
+    /// when neither credential can talk to it. Without a dedicated MCP token the
+    /// REST token only works if it is a scoped API token. Databases do not use
+    /// this fallback — they require a dedicated MCP token (see
+    /// `makeRovoDatabaseSource`).
+    static func resolveMCPAuth(
+        config: ConfluenceInstanceConfig,
+        auth: AuthProvider,
+        mcpAuth: AuthProvider?
+    ) -> AuthProvider? {
+        if let mcpAuth { return mcpAuth }
+        guard config.scopedToken, auth is APITokenAuth else { return nil }
+        return auth
     }
 
     static func configURL() -> URL {

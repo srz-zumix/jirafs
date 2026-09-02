@@ -69,4 +69,17 @@ final class ConfluencePathResolverTests: XCTestCase {
         XCTAssertNil(ConfluencePathResolver.staticChild(name: "SomePage",
                                                        of: .whiteboardDir(spaceKey: "DOC", whiteboardId: "w1")))
     }
+
+    func testDatabaseDirIsDirectoryWithMetadata() {
+        XCTAssertTrue(ConfluenceNodeKind.databaseDir(spaceKey: "D", databaseId: "d1").isDirectory)
+        XCTAssertFalse(ConfluenceNodeKind.databaseMeta(spaceKey: "D", databaseId: "d1").isDirectory)
+        let children = ConfluencePathResolver.childKinds(of: .databaseDir(spaceKey: "DOC", databaseId: "d1"))
+        XCTAssertEqual(children.map(\.name), [".metadata.json"])
+        XCTAssertEqual(ConfluencePathResolver.staticChild(name: ".metadata.json",
+                                                         of: .databaseDir(spaceKey: "DOC", databaseId: "d1")),
+                       .databaseMeta(spaceKey: "DOC", databaseId: "d1"))
+        // Child pages / nested databases are dynamic → not resolvable statically.
+        XCTAssertNil(ConfluencePathResolver.staticChild(name: "SomePage",
+                                                       of: .databaseDir(spaceKey: "DOC", databaseId: "d1")))
+    }
 }

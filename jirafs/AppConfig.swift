@@ -96,7 +96,8 @@ enum AppConfig {
             }
             let auth = ConfluenceConfiguration.AuthEntry(
                 method: confluenceMethod(server.auth.method),
-                email: server.auth.method.usesEmail ? server.auth.email : nil
+                email: server.auth.method.usesEmail ? server.auth.email : nil,
+                mcpEmail: server.auth.mcpEmail
             )
             return ConfluenceConfiguration.InstanceEntry(
                 mountID: mount.id,
@@ -113,6 +114,7 @@ enum AppConfig {
                 includeRestricted: mount.includeRestricted,
                 renderMacros: mount.renderMacros,
                 rovoWhiteboards: mount.rovoWhiteboards,
+                rovoDatabases: mount.rovoDatabases,
                 autoMount: mount.autoMount
             )
         }

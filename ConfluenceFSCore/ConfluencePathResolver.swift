@@ -51,12 +51,28 @@ public enum ConfluenceNodeKind: Hashable, Sendable {
     /// `whiteboard.svg` inside a whiteboard directory — the canvas drawn from its
     /// stored geometry. Only present when the mount opts into Rovo.
     case whiteboardSVG(spaceKey: String, whiteboardId: String)
+    /// A Confluence database — exposed as a directory holding the database's
+    /// metadata and its own children (pages, folders, whiteboards, nested
+    /// databases). Cloud only; the database rows are not exposed by the REST API.
+    case databaseDir(spaceKey: String, databaseId: String)  // .../{Title}/
+    /// `.metadata.json` inside a database directory.
+    case databaseMeta(spaceKey: String, databaseId: String)
+    /// `database.md` inside a database directory — the rows rendered as Markdown
+    /// tables from the Rovo MCP CSV. Only present when the mount opts into Rovo.
+    case databaseBody(spaceKey: String, databaseId: String)
+    /// `database.csv` inside a database directory — the CSV exactly as Rovo MCP
+    /// returns it. Only present when the mount opts into Rovo.
+    case databaseCSV(spaceKey: String, databaseId: String)
+    /// `database.json` inside a database directory — the unmodified Rovo MCP
+    /// response. Only present when the mount opts into Rovo.
+    case databaseRaw(spaceKey: String, databaseId: String)
 
     public var isDirectory: Bool {
         switch self {
         case .root, .configDir, .spacesDir, .space, .pagesDir, .pageDir,
              .commentsDir, .attachmentsDir,
-             .archivedRootPagesDir, .archivedChildPagesDir, .folderDir, .whiteboardDir:
+             .archivedRootPagesDir, .archivedChildPagesDir, .folderDir, .whiteboardDir,
+             .databaseDir:
             return true
         default:
             return false
@@ -107,6 +123,16 @@ extension ConfluenceNodeKind: CustomStringConvertible {
             return "whiteboardRaw(\(spaceKey),\(whiteboardId))"
         case .whiteboardSVG(let spaceKey, let whiteboardId):
             return "whiteboardSVG(\(spaceKey),\(whiteboardId))"
+        case .databaseDir(let spaceKey, let databaseId):
+            return "databaseDir(\(spaceKey),\(databaseId))"
+        case .databaseMeta(let spaceKey, let databaseId):
+            return "databaseMeta(\(spaceKey),\(databaseId))"
+        case .databaseBody(let spaceKey, let databaseId):
+            return "databaseBody(\(spaceKey),\(databaseId))"
+        case .databaseCSV(let spaceKey, let databaseId):
+            return "databaseCSV(\(spaceKey),\(databaseId))"
+        case .databaseRaw(let spaceKey, let databaseId):
+            return "databaseRaw(\(spaceKey),\(databaseId))"
         }
     }
 }
@@ -127,6 +153,16 @@ public enum ConfluencePathResolver {
         case body = "whiteboard.md"
         case raw = "whiteboard.json"
         case svg = "whiteboard.svg"
+        case metadata = ".metadata.json"
+    }
+
+    /// Files exposed inside a database directory. `body`, `csv` and `raw` are
+    /// opt-in (Rovo MCP) and are therefore appended by the volume rather than by
+    /// `childKinds`.
+    public enum DatabaseFile: String, CaseIterable, Sendable {
+        case body = "database.md"
+        case csv = "database.csv"
+        case raw = "database.json"
         case metadata = ".metadata.json"
     }
 
@@ -178,6 +214,9 @@ public enum ConfluencePathResolver {
         case .whiteboardDir(let spaceKey, let whiteboardId):
             return [(PageFile.metadata.rawValue,
                      .whiteboardMeta(spaceKey: spaceKey, whiteboardId: whiteboardId))]
+        case .databaseDir(let spaceKey, let databaseId):
+            return [(PageFile.metadata.rawValue,
+                     .databaseMeta(spaceKey: spaceKey, databaseId: databaseId))]
         default:
             return []
         }

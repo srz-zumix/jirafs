@@ -38,7 +38,13 @@ Pages are nested: child pages live inside their parent page's directory.
         │   ├── whiteboard.md     # Canvas text via Rovo MCP (only when enabled for the mount)
         │   ├── whiteboard.json   # Raw Rovo MCP response (only when enabled for the mount)
         │   ├── whiteboard.svg    # Canvas drawn as SVG (only when enabled for the mount)
-        │   └── ...               # Pages/folders/whiteboards nested under the board
+        │   └── ...               # Pages/folders/whiteboards/databases nested under the board
+        ├── {Database Title}/   # Confluence database (Cloud only)
+        │   ├── .metadata.json    # Database metadata (JSON), including version, ownerId and webURL
+        │   ├── database.md       # Rows as Markdown tables via Rovo MCP (only when enabled for the mount)
+        │   ├── database.csv      # Rows as the CSV Rovo MCP returns (only when enabled for the mount)
+        │   ├── database.json     # Raw Rovo MCP response (only when enabled for the mount)
+        │   └── ...               # Pages/folders/whiteboards/databases nested under the database
         ├── {Child Page Title}.html  # Child page HTML (HTML mode only)
         └── {Child Page Title}/      # Child page directory (recursive)
 ```
@@ -58,6 +64,10 @@ Pages are nested: child pages live inside their parent page's directory.
 | `{Whiteboard Title}/whiteboard.md` | Markdown | Canvas rendered to Markdown from the Atlassian Rovo MCP server (beta): node texts in canvas reading order. Present only when the mount enables it |
 | `{Whiteboard Title}/whiteboard.json` | JSON | The Rovo MCP response verbatim, including node geometry, colours and edges. Present only when the mount enables it |
 | `{Whiteboard Title}/whiteboard.svg` | SVG | Approximate drawing of the canvas: sticky notes, freehand strokes and connectors are redrawn; embedded images become dashed placeholders labelled with their mimeType, native size and `fileId` prefix. Present only when the mount enables it |
+| `{Database Title}/.metadata.json` | JSON | Database id, title, type, spaceId, parentId, version, authorId, ownerId, createdAt, webURL |
+| `{Database Title}/database.md` | Markdown | Rows, field definitions and saved views as Markdown tables, from the Rovo MCP CSV. Present only when the mount enables it |
+| `{Database Title}/database.csv` | CSV | The CSV verbatim: three blank-line-separated blocks (fields, views, entries), CRLF line endings. Present only when the mount enables it |
+| `{Database Title}/database.json` | JSON | The Rovo MCP response verbatim, including the database metadata envelope. Present only when the mount enables it |
 
 ## Notes for Agents
 
@@ -65,7 +75,8 @@ Pages are nested: child pages live inside their parent page's directory.
 - **Error semantics**: A missing space, page, or file returns `ENOENT`; authentication or permission failures return `EACCES`; rate-limited requests return `EAGAIN`; transient server, network, or decoding errors return `EIO`.
 - **Sanitized names**: Page titles and attachment filenames are sanitized (slashes, control characters, and leading dots become underscores). Duplicate names within a directory get a ` (N)` suffix. Page titles are unique within a space; the sanitized path is resolved internally to the stable Confluence page id.
 - **Restricted/archived filtering**: By default, view-restricted pages are hidden (`includeRestricted` defaults to off) and archived pages are excluded (`includeArchived` defaults to off). Both are controlled per mount in the host app. A page that exists in Confluence but is absent here may be intentionally filtered out, not missing.
-- **Whiteboards**: Cloud-only. A whiteboard directory always contains `.metadata.json` plus any pages/folders/whiteboards nested under it. The canvas itself is not available through the Confluence REST API; when the mount enables the experimental Rovo MCP integration it also contains `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` (all three share one fetch). Otherwise, open `webURL` in a browser to see the board. Folders and whiteboards without a parent (top level of a space) are not listed, because Confluence Cloud offers no API to enumerate them.
+- **Whiteboards**: Cloud-only. A whiteboard directory always contains `.metadata.json` plus any pages/folders/whiteboards/databases nested under it. The canvas itself is not available through the Confluence REST API; when the mount enables the experimental Rovo MCP integration it also contains `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` (all three share one fetch). Otherwise, open `webURL` in a browser to see the board. Folders, whiteboards and databases without a parent (top level of a space) are not listed, because Confluence Cloud offers no API to enumerate them.
+- **Databases**: Cloud-only. A database directory always contains `.metadata.json` plus any pages/folders/whiteboards/databases nested under it. The rows and fields are **not** exposed by any Confluence REST endpoint (the v2 Database API only offers create/get/delete on the container itself). When the mount enables the experimental Rovo MCP integration the directory also contains `database.md`, `database.csv` and `database.json` (all three share one fetch); that path needs a **separate** Rovo MCP API token carrying `read:confluence:agent-interface`, because Atlassian's token picker cannot combine the Confluence and Rovo MCP apps in one token. Otherwise, open `webURL` in a browser to see the data. Unlike whiteboards, databases carry a `version`, so `.metadata.json` gets a derived mtime that advances with each edit.
 - **Whiteboard images cannot be downloaded**: images on a board live in Atlassian Media Services and are not attachments. No Confluence API token reaches them — a token holding *every* Confluence read scope still gets 401 on every `/wiki/rest/api/media/*` path through the `api.atlassian.com` gateway (verified by watching an unrelated endpoint flip 401 → 200 when its scope was added), and on the site host `/wiki/rest/api/media/token` returns 404. Neither does Rovo MCP, on either endpoint. The decisive evidence: MCP v2's `getConfluenceContent` returns Atlassian's own whiteboard export, and its `svg` emits the same href-less `<image data-file-id=...>` placeholder jirafs does, while its server-rendered `png` draws every sticky, connector and ink stroke but bakes in **"Failed to load / Try again"** where the image belongs. Atlassian's own backend cannot re-fetch these images. Do not re-investigate from scratch — if you suspect Atlassian has fixed it, `Documentation/SPEC.md` has a one-call re-verification recipe (fetch the MCP v2 `png` export and look for `Failed to load`) plus the pitfalls that make naive probing misleading.
 - **File timestamps**:
   - `page.md`, `.metadata.json`, `{Title}.html` → birthtime = page `created`; mtime is derived from the page `version` (advances one second per version past creation), so it moves forward on each edit. It is **not** a true wall-clock "last edited" time — use the `version` field in `.metadata.json` for exact change tracking.

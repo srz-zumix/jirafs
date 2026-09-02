@@ -17,6 +17,7 @@ Built on Apple [FSKit](https://developer.apple.com/documentation/FSKit) (FSUnary
 - Credentials stored securely in macOS Keychain (shared Access Group)
 - **Anonymous access** — mount public JIRA/Confluence sites without credentials
 - **Whiteboard canvases (experimental)** — Confluence whiteboards can expose `whiteboard.md`, `whiteboard.json` and `whiteboard.svg` via the Atlassian Rovo MCP server (Confluence Cloud with an *API Token (scoped)* only; off by default)
+- **Database rows (experimental)** — Confluence databases can expose `database.md`, `database.csv` and `database.json` via the Atlassian Rovo MCP server (Confluence Cloud with a separate Rovo MCP token carrying the `read:confluence:agent-interface` scope; off by default)
 - TTL-based in-memory cache + optional AES-GCM encrypted disk cache
 - Background auto-refresh — newly created issues/pages appear while a folder stays open (configurable interval, can be turned off)
 - Optional `issue.html` / `{Title}.html` formatted view
@@ -35,6 +36,7 @@ When using *API Token (scoped)* authentication, grant only these scopes. The Con
 | --- | --- |
 | `read:attachment:confluence` | `.attachments/` listing and downloads |
 | `read:comment:confluence` | `.comments/` |
+| `read:database:confluence` | Database metadata and its children |
 | `read:folder:confluence` | Folders under a page |
 | `read:hierarchical-content:confluence` | Walking the page tree (`direct-children`) |
 | `read:label:confluence` | `.labels.txt` |
@@ -49,10 +51,12 @@ Add these only if the matching option is enabled:
 | `read:content-details:confluence`, `read:content.restriction:confluence` | Hiding view-restricted pages (the default `includeRestricted = off`, which reads restrictions through the v1 content API) |
 | `readonly:content.attachment:confluence` | Only if attachment downloads return 401; the legacy `/wiki/download/...` path is routed by this classic scope |
 
+The Rovo MCP integrations (`rovoWhiteboards`, `rovoDatabases`) need a **separate** API token: Atlassian's token picker cannot select the Confluence and Rovo MCP apps at the same time, so `read:confluence:agent-interface` (required by the database rows tool) cannot be added to the Confluence token. Create a second scoped token for the Rovo MCP app and enter it under **Rovo MCP → Separate token** in the server editor; jirafs stores it in the Keychain next to the REST credential and uses it only for `mcp.atlassian.com`.
+
 Notes:
 
 - Scoped tokens are supported for Confluence only. JIRA mounts require a regular API token or a PAT.
-- The experimental Rovo MCP whiteboard integration needs a scoped token, but access is governed by your organisation's "connect via API token" setting rather than by a Confluence scope.
+- The experimental Rovo MCP integrations need their own token (see above); access is additionally governed by your organisation's "connect via API token" setting.
 - Whiteboard **images** cannot be downloaded by any token. They live in Atlassian Media Services, which no Confluence OAuth scope covers, so they are drawn as labelled placeholders in `whiteboard.svg`.
 
 ## Filesystem Layout
@@ -93,6 +97,11 @@ Each Confluence instance is mounted at its own path (default `~/confluencefs/<na
                 │   ├── whiteboard.md   # Canvas text      ┐
                 │   ├── whiteboard.json # Raw MCP response │ experimental, off by default
                 │   └── whiteboard.svg  # Canvas drawing   ┘
+                ├── My Database/        # Database (Cloud only)
+                │   ├── .metadata.json  # Database metadata (includes version and webURL)
+                │   ├── database.md     # Rows as Markdown tables ┐
+                │   ├── database.csv    # Rows as CSV              │ experimental, off by default
+                │   └── database.json   # Raw MCP response         ┘
                 └── Child Page/         # Child pages nested recursively
                     └── page.md
 ```
