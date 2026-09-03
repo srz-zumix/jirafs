@@ -540,7 +540,10 @@ public actor PageDataSource {
         let allChildren = try await fetchAll { cursor in
             try await self.client.listFolderChildren(folderId: folderId, cursor: cursor, limit: self.limit)
         }
-        return makeChildrenResult(allChildren)
+        return try await makeFilteredChildrenResult(
+            allChildren,
+            restrictedIDsKey: "restrictedIDs/folder/\(space)/\(folderId)"
+        )
     }
 
     /// Combined children of a whiteboard: pages, folders and sub-whiteboards
@@ -558,7 +561,10 @@ public actor PageDataSource {
         let allChildren = try await fetchAll { cursor in
             try await self.client.listWhiteboardChildren(whiteboardId: whiteboardId, cursor: cursor, limit: self.limit)
         }
-        return makeChildrenResult(allChildren)
+        return try await makeFilteredChildrenResult(
+            allChildren,
+            restrictedIDsKey: "restrictedIDs/whiteboard/\(space)/\(whiteboardId)"
+        )
     }
 
     /// Whiteboard metadata (Cloud only). The canvas content itself is not exposed
@@ -584,7 +590,10 @@ public actor PageDataSource {
         let allChildren = try await fetchAll { cursor in
             try await self.client.listDatabaseChildren(databaseId: databaseId, cursor: cursor, limit: self.limit)
         }
-        return makeChildrenResult(allChildren)
+        return try await makeFilteredChildrenResult(
+            allChildren,
+            restrictedIDsKey: "restrictedIDs/database/\(space)/\(databaseId)"
+        )
     }
 
     /// Database metadata (Cloud only). The rows and fields themselves are not
@@ -683,33 +692,39 @@ public actor PageDataSource {
         return try await Self.joinShared(task)
     }
 
-    private nonisolated func makeChildrenResult(_ children: [ConfluenceFolderChild]) -> ConfluenceFolderChildrenResult {
-        // Page children of a folder/whiteboard cannot be restriction-filtered: a
-        // v2 container is not a v1 "content" object, so the directory-scoped
-        // restricted-ID API used for page children (`restrictedChildPageIDs`)
-        // does not apply to it, and the v2 `direct-children` payload carries no
-        // restriction data. When restricted pages must stay hidden
-        // (`includeRestricted == false`, the default) we cannot tell which of
-        // these children are restricted, so — preferring a false negative over a
-        // privacy leak — hide ALL page children here. Sub-folders, whiteboards and
-        // databases are still listed. (`includeRestricted` is part of the
-        // container cache key via `pageListVariant`, so toggling the flag re-reads.)
-        let rawPages: [ConfluencePage] = includeRestricted
-            ? children.compactMap { child -> ConfluencePage? in
-                guard child.contentType == .page else { return nil }
-                return ConfluencePage(
-                    id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
-                    version: child.version, authorId: child.authorId,
-                    createdAt: child.createdAt, webURL: child.webURL
-                )
-            }
-            : []
+    /// Builds a container listing with its page children restriction-filtered.
+    ///
+    /// A v2 container is not a v1 "content" object, so the parent-scoped
+    /// restricted-ID endpoints used for page children (`restrictedChildPageIDs`)
+    /// do not apply and the `direct-children` payload carries no restriction
+    /// data. Instead the child page IDs of this one listing are resolved in bulk
+    /// via `restrictedPageIDs(among:)`, which keeps the scan directory-scoped.
+    private func makeFilteredChildrenResult(
+        _ children: [ConfluenceFolderChild],
+        restrictedIDsKey: String
+    ) async throws -> ConfluenceFolderChildrenResult {
+        let rawPages = pages(in: children)
+        let ids = rawPages.map(\.id)
+        let filtered = try await filterRestricted(rawPages, restrictedIDsKey: restrictedIDsKey) {
+            try await self.client.restrictedPageIDs(among: ids, limiter: self.limiter)
+        }
         return ConfluenceFolderChildrenResult(
-            pages: makeEntries(rawPages),
+            pages: makeEntries(filtered),
             folders: makeFolderEntries(folders(in: children)),
             whiteboards: makeWhiteboardEntries(whiteboards(in: children)),
             databases: makeDatabaseEntries(databases(in: children))
         )
+    }
+
+    private nonisolated func pages(in children: [ConfluenceFolderChild]) -> [ConfluencePage] {
+        children.compactMap { child -> ConfluencePage? in
+            guard child.contentType == .page else { return nil }
+            return ConfluencePage(
+                id: child.id, title: child.title, spaceId: child.spaceId, parentId: child.parentId,
+                version: child.version, authorId: child.authorId,
+                createdAt: child.createdAt, webURL: child.webURL
+            )
+        }
     }
 
     private nonisolated func folders(in children: [ConfluenceFolderChild]) -> [ConfluenceFolder] {
@@ -856,7 +871,8 @@ public actor PageDataSource {
 
     /// Filters pages based on restriction status. For Cloud, calls a scoped v1
     /// API endpoint to fetch only the restricted IDs within the current listing
-    /// (root pages or direct children of one parent) — never the whole space.
+    /// (root pages, direct children of one parent, or the page children of one
+    /// container) — never the whole space.
     /// For DC, uses the inline `hasRestrictions` flag set via `expand`.
     /// Returns `pages` unchanged when `includeRestricted` is `true`.
     private func filterRestricted(

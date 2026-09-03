@@ -398,6 +398,59 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
     }
 
+    func testCloudRestrictedPageIDsAmongResolvesGivenIDsOnly() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            { "id": "10",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } },
+            { "id": "20",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 2}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } }
+          ],
+          "start": 0, "size": 2, "_links": {}
+        }
+        """
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedPageIDs(among: ["10", "20"], limiter: RateLimiter())
+        XCTAssertEqual(ids, ["20"])
+        XCTAssertEqual(stub.requests.count, 1, "50 or fewer IDs must fit in one batch")
+        let url = stub.requests.first?.url?.absoluteString ?? ""
+        XCTAssertTrue(url.contains("cql="), "Should scope the search by CQL: \(url)")
+        XCTAssertTrue(url.contains("id%20in%20(10,20)") || url.contains("id+in+(10,20)"),
+                      "CQL must list exactly the requested IDs: \(url)")
+    }
+
+    func testCloudRestrictedPageIDsAmongBatchesLargeListsAndHidesNonNumericIDs() async throws {
+        let stub = ConfluenceStubTransport()
+        let empty = "{ \"results\": [], \"start\": 0, \"size\": 0, \"_links\": {} }"
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(empty.utf8))
+        let client = cloudClient(stub)
+        let numeric = (0..<120).map(String.init)
+        let ids = try await client.restrictedPageIDs(among: numeric + ["not-a-number"], limiter: RateLimiter())
+        XCTAssertEqual(ids, ["not-a-number"], "IDs that cannot be embedded in CQL must be reported as restricted")
+        XCTAssertEqual(stub.requests.count, 3, "120 numeric IDs must be split into 50-sized batches")
+    }
+
+    func testCloudRestrictedPageIDsAmongSkipsAPICallForEmptyInput() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedPageIDs(among: [], limiter: RateLimiter())
+        XCTAssertTrue(ids.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty, "An empty listing must not trigger a request")
+    }
+
+    func testRestrictedPageIDsAmongReturnsEmptyForDC() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let ids = try await client.restrictedPageIDs(among: ["1", "2"], limiter: RateLimiter())
+        XCTAssertTrue(ids.isEmpty, "DC resolves restrictions inline via expand")
+        XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
+    }
+
     // MARK: - attachmentSize (unknown-size probe)
 
     func testAttachmentSizeUsesHeadAndParsesContentLength() async throws {
