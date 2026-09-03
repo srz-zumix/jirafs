@@ -398,6 +398,75 @@ final class ConfluenceRESTClientTests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
     }
 
+    func testCloudRestrictedPageIDsAmongResolvesGivenIDsOnly() async throws {
+        let stub = ConfluenceStubTransport()
+        let json = """
+        {
+          "results": [
+            { "id": "10",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } },
+            { "id": "20",
+              "restrictions": { "read":   { "restrictions": { "user": {"size": 2}, "group": {"size": 0} } },
+                                 "update": { "restrictions": { "user": {"size": 0}, "group": {"size": 0} } } } }
+          ],
+          "start": 0, "size": 2, "_links": {}
+        }
+        """
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(json.utf8))
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedPageIDs(among: ["10", "20"], limiter: RateLimiter())
+        XCTAssertEqual(ids, ["20"])
+        XCTAssertEqual(stub.requests.count, 1, "50 or fewer IDs must fit in one batch")
+        // Assert on the DECODED `cql` query item rather than an encoded substring:
+        // URLComponents percent-decodes values, so this is independent of how the
+        // Foundation version chose to encode spaces / parentheses.
+        let url = try XCTUnwrap(stub.requests.first?.url)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let cql = components.queryItems?.first { $0.name == "cql" }?.value
+        XCTAssertEqual(cql, "id in (10,20)", "CQL must list exactly the requested IDs")
+    }
+
+    func testCloudRestrictedPageIDsAmongHidesUnicodeNumericIDs() async throws {
+        let stub = ConfluenceStubTransport()
+        let empty = "{ \"results\": [], \"start\": 0, \"size\": 0, \"_links\": {} }"
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(empty.utf8))
+        let client = cloudClient(stub)
+        // `Character.isNumber` accepts these, but they are not valid Cloud IDs and
+        // must never be embedded into CQL: fullwidth digits, Arabic-Indic digits,
+        // a superscript, and an ASCII digit + keycap combining mark.
+        let sneaky = ["\u{FF11}\u{FF12}\u{FF13}", "\u{0660}\u{0661}\u{0662}", "\u{00B2}", "1\u{20E3}"]
+        let ids = try await client.restrictedPageIDs(among: ["10"] + sneaky, limiter: RateLimiter())
+        XCTAssertEqual(ids, Set(sneaky), "Non-ASCII numeric IDs must be reported restricted")
+    }
+
+    func testCloudRestrictedPageIDsAmongBatchesLargeListsAndHidesNonNumericIDs() async throws {
+        let stub = ConfluenceStubTransport()
+        let empty = "{ \"results\": [], \"start\": 0, \"size\": 0, \"_links\": {} }"
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(empty.utf8))
+        let client = cloudClient(stub)
+        let numeric = (0..<120).map(String.init)
+        let ids = try await client.restrictedPageIDs(among: numeric + ["not-a-number"], limiter: RateLimiter())
+        XCTAssertEqual(ids, ["not-a-number"], "IDs that cannot be embedded in CQL must be reported as restricted")
+        XCTAssertEqual(stub.requests.count, 3, "120 numeric IDs must be split into 50-sized batches")
+    }
+
+    func testCloudRestrictedPageIDsAmongSkipsAPICallForEmptyInput() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = cloudClient(stub)
+        let ids = try await client.restrictedPageIDs(among: [], limiter: RateLimiter())
+        XCTAssertTrue(ids.isEmpty)
+        XCTAssertTrue(stub.requests.isEmpty, "An empty listing must not trigger a request")
+    }
+
+    func testRestrictedPageIDsAmongReturnsEmptyForDC() async throws {
+        let stub = ConfluenceStubTransport()
+        let client = dcClient(stub)
+        let ids = try await client.restrictedPageIDs(among: ["1", "2"], limiter: RateLimiter())
+        XCTAssertTrue(ids.isEmpty, "DC resolves restrictions inline via expand")
+        XCTAssertTrue(stub.requests.isEmpty, "DC must not call any API")
+    }
+
     // MARK: - attachmentSize (unknown-size probe)
 
     func testAttachmentSizeUsesHeadAndParsesContentLength() async throws {

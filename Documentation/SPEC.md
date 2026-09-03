@@ -1088,5 +1088,6 @@ diskutil unmount force ~/confluencefs/myinstance
 - `includeRestricted: false` (デフォルト) の Cloud での動作:
   - ルートページ一覧表示時: スペースのルートページのみを対象に v1 API で制限情報を取得 (`/wiki/rest/api/space/{key}/content/page?depth=root&expand=restrictions...`)
   - 子ページ一覧表示時: その親ページの直接の子ページのみを対象に取得 (`/wiki/rest/api/content/{id}/child/page?expand=restrictions...`)
+  - フォルダ / ホワイトボード / データベース配下のページ一覧表示時: これらの v2 コンテナは v1 の content オブジェクトではなく親スコープの制限 API が使えないため、その一覧に含まれるページ ID のみを 50 件ずつ CQL でまとめて解決する (`/wiki/rest/api/content/search?cql=id in (...)&expand=restrictions...`)。スペース全体のスキャンは行わない
   - 取得結果はページ一覧と同じ TTL でキャッシュされるため、2 回目以降は API 呼び出しなし
   - Data Center は list API の `expand=restrictions...` でインラインに制限情報を取得するため追加 API 呼び出しなし

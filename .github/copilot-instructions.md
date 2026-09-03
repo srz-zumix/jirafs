@@ -39,7 +39,7 @@ Apple FSKit (FSUnaryFileSystem) を使用した App Extension として実装（
 - **フィルタ設定をキャッシュキーに反映**する (対象データごとに方針が異なる):
   - *フィルタ済み・ディレクトリ単位のフェッチ* (`restrictedRootPageIDs` / `restrictedChildPageIDs` など): `includeRestricted` / `includeArchived` などのフラグ値または allowedKeys のフィンガープリントをキャッシュキーに組み込む。これによりフラグ変更がマウント再読み込みで即反映される
   - *全スペース/プロジェクトのリスト*: 未フィルタでキャッシュし読み出し時にフィルタする。キャッシュキーにフラグを含めない (フィルタ変更でキャッシュを捨てない)
-- **Confluence 制限フィルタ** (`includeRestricted: false` がデフォルト): Cloud は `restrictedRootPageIDs(spaceKey:status:)` / `restrictedChildPageIDs(pageId:status:)` でディレクトリ単位に制限 ID を取得 (全スペーススキャン禁止)。DC は list expand で inline 取得。単一フライトで並列重複呼び出しを防ぐ (`pendingRestrictedIDsFetch`)
+- **Confluence 制限フィルタ** (`includeRestricted: false` がデフォルト): Cloud は `restrictedRootPageIDs(spaceKey:status:)` / `restrictedChildPageIDs(pageId:status:)` でディレクトリ単位に制限 ID を取得 (全スペーススキャン禁止)。フォルダ / ホワイトボード / データベース配下のページは親スコープ API が使えないため `restrictedPageIDs(among:)` (v1 CQL `id in (...)` を 50 件バッチ) で解決する。DC は list expand で inline 取得。単一フライトで並列重複呼び出しを防ぐ (`pendingRestrictedIDsFetch`)
 - **新しいオプションを Mount / ConfluenceConfiguration.InstanceEntry に追加する手順**: `Mount` struct → `ConfluenceConfiguration.InstanceEntry` → `AppConfig.deriveConfluence` → `ConfluenceFileSystem.lookupInstance` タプル → `PageDataSource` init の順でスタック全体を通す。`includeArchived` / `includeRestricted` の実装を参照すること
 
 ### File System Layout

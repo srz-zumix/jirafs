@@ -142,4 +142,19 @@ public protocol ConfluenceClient: Sendable {
     ///   - limiter: Wraps each page request so 429 / server-error retries and
     ///     backoff are applied per page during pagination.
     func restrictedChildPageIDs(pageId: String, status: String, limiter: RateLimiter) async throws -> Set<String>
+
+    /// Returns the subset of `pageIds` that have any user/group restriction.
+    ///
+    /// Used for the page children of v2 containers (folder / whiteboard /
+    /// database), which are not v1 "content" objects and therefore have no
+    /// parent-scoped restricted-ID endpoint. Cloud resolves the given IDs in
+    /// batches via the v1 CQL search endpoint, so the scan stays scoped to one
+    /// directory listing instead of the whole space. Data Center always returns
+    /// an empty set because restriction data is embedded inline via `expand`.
+    /// - Parameters:
+    ///   - pageIds: The page IDs to resolve. IDs that cannot be resolved safely
+    ///     are reported as restricted so a listing never leaks a page.
+    ///   - limiter: Wraps each batch request so 429 / server-error retries and
+    ///     backoff are applied per batch.
+    func restrictedPageIDs(among pageIds: [String], limiter: RateLimiter) async throws -> Set<String>
 }

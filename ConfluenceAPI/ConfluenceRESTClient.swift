@@ -30,6 +30,9 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         "restrictions.update.restrictions.group"
     ].joined(separator: ",")
 
+    /// Number of page IDs resolved per `content/search` CQL request.
+    private static let restrictedIDBatchSize = 50
+
     public init(
         config: ConfluenceInstanceConfig,
         auth: AuthProvider,
@@ -236,6 +239,48 @@ public actor ConfluenceRESTClient: ConfluenceClient {
         return try await v1PaginatedRestrictedIDs(path: "content/\(pageId)/child/page",
                                                   baseQuery: baseQuery,
                                                   limiter: limiter)
+    }
+
+    public func restrictedPageIDs(among pageIds: [String], limiter: RateLimiter) async throws -> Set<String> {
+        // Data Center: restriction data is embedded inline via `expand` in list responses.
+        guard config.edition.isCloud else { return [] }
+        // Cloud page IDs are always plain ASCII-decimal. Anything else cannot be
+        // embedded in CQL safely (injection / parse failure), so report it as
+        // restricted rather than risk exposing a page whose restrictions were
+        // never checked.
+        var restricted = Set(pageIds.filter { !Self.isNumericCloudID($0) })
+        let resolvable = pageIds.filter { !restricted.contains($0) }
+        for start in stride(from: 0, to: resolvable.count, by: Self.restrictedIDBatchSize) {
+            let batch = Array(resolvable[start..<min(start + Self.restrictedIDBatchSize, resolvable.count)])
+            let query: [URLQueryItem] = [
+                URLQueryItem(name: "cql", value: "id in (\(batch.joined(separator: ",")))"),
+                URLQueryItem(name: "expand", value: Self.restrictionsExpand),
+                URLQueryItem(name: "limit", value: String(batch.count))
+            ]
+            let url = try await cloudV1URL("content/search", query: query)
+            let page: V1ContentList = try await limiter.run {
+                try await self.sendDecoding(url: url)
+            }
+            for item in page.results where item.restrictions?.hasAny == true {
+                restricted.insert(item.id)
+            }
+        }
+        return restricted
+    }
+
+    /// Whether `id` is a plain ASCII-decimal Confluence Cloud ID that is safe to
+    /// embed unquoted in a CQL `id in (...)` clause. Rejects the empty string and
+    /// any non-`0`-`9` character — including Unicode "numbers" (superscripts,
+    /// fractions, fullwidth or other-script digits) and keycap/combining
+    /// graphemes that `Character.isNumber` accepts but that are not valid Cloud
+    /// IDs and could break or subvert the CQL. Uses `asciiValue`, which is `nil`
+    /// for multi-scalar graphemes, so a leading ASCII digit cannot smuggle
+    /// trailing combining marks through.
+    static func isNumericCloudID(_ id: String) -> Bool {
+        !id.isEmpty && id.allSatisfy { character in
+            guard let ascii = character.asciiValue else { return false }
+            return (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(ascii)
+        }
     }
 
     public func listPageDirectChildren(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
