@@ -418,10 +418,26 @@ final class ConfluenceRESTClientTests: XCTestCase {
         let ids = try await client.restrictedPageIDs(among: ["10", "20"], limiter: RateLimiter())
         XCTAssertEqual(ids, ["20"])
         XCTAssertEqual(stub.requests.count, 1, "50 or fewer IDs must fit in one batch")
-        let url = stub.requests.first?.url?.absoluteString ?? ""
-        XCTAssertTrue(url.contains("cql="), "Should scope the search by CQL: \(url)")
-        XCTAssertTrue(url.contains("id%20in%20(10,20)") || url.contains("id+in+(10,20)"),
-                      "CQL must list exactly the requested IDs: \(url)")
+        // Assert on the DECODED `cql` query item rather than an encoded substring:
+        // URLComponents percent-decodes values, so this is independent of how the
+        // Foundation version chose to encode spaces / parentheses.
+        let url = try XCTUnwrap(stub.requests.first?.url)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let cql = components.queryItems?.first { $0.name == "cql" }?.value
+        XCTAssertEqual(cql, "id in (10,20)", "CQL must list exactly the requested IDs")
+    }
+
+    func testCloudRestrictedPageIDsAmongHidesUnicodeNumericIDs() async throws {
+        let stub = ConfluenceStubTransport()
+        let empty = "{ \"results\": [], \"start\": 0, \"size\": 0, \"_links\": {} }"
+        stub.responses["/wiki/rest/api/content/search"] = (200, Data(empty.utf8))
+        let client = cloudClient(stub)
+        // `Character.isNumber` accepts these, but they are not valid Cloud IDs and
+        // must never be embedded into CQL: fullwidth digits, Arabic-Indic digits,
+        // a superscript, and an ASCII digit + keycap combining mark.
+        let sneaky = ["\u{FF11}\u{FF12}\u{FF13}", "\u{0660}\u{0661}\u{0662}", "\u{00B2}", "1\u{20E3}"]
+        let ids = try await client.restrictedPageIDs(among: ["10"] + sneaky, limiter: RateLimiter())
+        XCTAssertEqual(ids, Set(sneaky), "Non-ASCII numeric IDs must be reported restricted")
     }
 
     func testCloudRestrictedPageIDsAmongBatchesLargeListsAndHidesNonNumericIDs() async throws {

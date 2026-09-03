@@ -244,10 +244,11 @@ public actor ConfluenceRESTClient: ConfluenceClient {
     public func restrictedPageIDs(among pageIds: [String], limiter: RateLimiter) async throws -> Set<String> {
         // Data Center: restriction data is embedded inline via `expand` in list responses.
         guard config.edition.isCloud else { return [] }
-        // Cloud page IDs are always numeric. Anything else cannot be embedded in
-        // CQL safely (injection), so report it as restricted rather than risk
-        // exposing a page whose restrictions were never checked.
-        var restricted = Set(pageIds.filter { $0.isEmpty || !$0.allSatisfy(\.isNumber) })
+        // Cloud page IDs are always plain ASCII-decimal. Anything else cannot be
+        // embedded in CQL safely (injection / parse failure), so report it as
+        // restricted rather than risk exposing a page whose restrictions were
+        // never checked.
+        var restricted = Set(pageIds.filter { !Self.isNumericCloudID($0) })
         let resolvable = pageIds.filter { !restricted.contains($0) }
         for start in stride(from: 0, to: resolvable.count, by: Self.restrictedIDBatchSize) {
             let batch = Array(resolvable[start..<min(start + Self.restrictedIDBatchSize, resolvable.count)])
@@ -265,6 +266,21 @@ public actor ConfluenceRESTClient: ConfluenceClient {
             }
         }
         return restricted
+    }
+
+    /// Whether `id` is a plain ASCII-decimal Confluence Cloud ID that is safe to
+    /// embed unquoted in a CQL `id in (...)` clause. Rejects the empty string and
+    /// any non-`0`-`9` character — including Unicode "numbers" (superscripts,
+    /// fractions, fullwidth or other-script digits) and keycap/combining
+    /// graphemes that `Character.isNumber` accepts but that are not valid Cloud
+    /// IDs and could break or subvert the CQL. Uses `asciiValue`, which is `nil`
+    /// for multi-scalar graphemes, so a leading ASCII digit cannot smuggle
+    /// trailing combining marks through.
+    static func isNumericCloudID(_ id: String) -> Bool {
+        !id.isEmpty && id.allSatisfy { character in
+            guard let ascii = character.asciiValue else { return false }
+            return (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(ascii)
+        }
     }
 
     public func listPageDirectChildren(pageId: String, cursor: String?, limit: Int) async throws -> ConfluencePageList<ConfluenceFolderChild> {
