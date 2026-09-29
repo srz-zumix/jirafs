@@ -322,9 +322,16 @@ public enum PageFileBuilder {
             // repointed too or the image still loads from the server.
             result = replaceAllMatches(in: result, pattern: "srcset=\"([^\"]*)\"") { m, ns in
                 guard let value = group(m, 1, ns) else { return nil }
+                // Commas are valid inside an srcset candidate URL (browsers
+                // collect the URL as a run of non-whitespace chars), and
+                // `FileNameSanitizer` preserves commas, so the path/filename
+                // classes must allow `,` — otherwise a name like `image,1.png`
+                // is captured as `image` and never resolved. Candidate URLs are
+                // terminated by whitespace before the `2x`/`1x` descriptor
+                // (Confluence's serialization), so `?`/`/` still bound segments.
                 let rewritten = replaceAllMatches(
                     in: value,
-                    pattern: "[^\\s,]*/download/(?:attachments|thumbnails)/(?:[^\\s,/?]+/)*([^\\s,/?]+)(?:\\?[^\\s,]*)?"
+                    pattern: "[^\\s,]*/download/(?:attachments|thumbnails)/(?:[^\\s/?]+/)*([^\\s/?]+)(?:\\?[^\\s,]*)?"
                 ) { u, uns in
                     guard let file = group(u, 1, uns), let name = lookup[file.lowercased()] else { return nil }
                     // `,` separates srcset candidates, so it must not appear literally.

@@ -387,4 +387,17 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(html.contains(#"src="Page/.attachments/image-20230201-064346.png""#), html)
         XCTAssertFalse(html.contains("/download/"), html)
     }
+
+    func testCloudEmbeddedImageSrcsetCommaFilenameRewritten() {
+        let commaImage = #"<img src="https://example.atlassian.net/wiki/download/thumbnails/424706760/image,1.png?version=1&amp;width=320" srcset="https://example.atlassian.net/wiki/download/thumbnails/424706760/image,1.png?version=1&amp;width=640 2x, https://example.atlassian.net/wiki/download/thumbnails/424706760/image,1.png?version=1&amp;width=320 1x" alt="">"#
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image,1.png")]
+        let page = ConfluencePage(id: "424706760", title: "Page", body: body(commaImage, format: .view))
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertFalse(html.contains("/download/"), html)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/image,1.png""#), html)
+        // Commas inside the local srcset URL are escaped so they aren't parsed
+        // as candidate separators.
+        XCTAssertTrue(html.contains("Page/.attachments/image%2C1.png 2x"), html)
+        XCTAssertTrue(html.contains("Page/.attachments/image%2C1.png 1x"), html)
+    }
 }
