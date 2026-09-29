@@ -369,4 +369,22 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         XCTAssertTrue(md.contains("](.attachments/image.png)"), md)
         XCTAssertFalse(md.contains("/download/attachments/"))
     }
+
+    private let cloudEmbeddedImage = #"<p><span class="confluence-embedded-file-wrapper confluence-embedded-manual-size"><img class="confluence-embedded-image" draggable="false" width="320" loading="lazy" src="https://example.atlassian.net/wiki/download/thumbnails/424706760/image-20230201-064346.png?version=1&amp;modificationDate=1675233832364&amp;cacheVersion=1&amp;api=v2&amp;width=320&amp;height=538" srcset="https://example.atlassian.net/wiki/download/thumbnails/424706760/image-20230201-064346.png?version=1&amp;modificationDate=1675233832364&amp;cacheVersion=1&amp;api=v2&amp;width=640&amp;height=1076 2x, https://example.atlassian.net/wiki/download/thumbnails/424706760/image-20230201-064346.png?version=1&amp;modificationDate=1675233832364&amp;cacheVersion=1&amp;api=v2&amp;width=320&amp;height=538 1x" data-image-src="https://example.atlassian.net/wiki/download/attachments/424706760/image-20230201-064346.png?version=1&amp;modificationDate=1675233832364&amp;cacheVersion=1&amp;api=v2" data-linked-resource-id="424771603" data-linked-resource-type="attachment" data-linked-resource-default-alias="image-20230201-064346.png" data-linked-resource-container-id="424706760" alt=""></span></p>"#
+
+    func testCloudEmbeddedImageMarkdownRewritten() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image-20230201-064346.png")]
+        let page = ConfluencePage(id: "424706760", title: "Page", body: body(cloudEmbeddedImage, format: .view))
+        let md = String(decoding: PageFileBuilder.body(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(md.contains("](.attachments/image-20230201-064346.png)"), md)
+        XCTAssertFalse(md.contains("/download/"), md)
+    }
+
+    func testCloudEmbeddedImageHTMLRewritten() {
+        let attachments = [ConfluenceAttachment(id: "a1", title: "image-20230201-064346.png")]
+        let page = ConfluencePage(id: "424706760", title: "Page", body: body(cloudEmbeddedImage, format: .view))
+        let html = String(decoding: PageFileBuilder.html(page, attachments: attachments), as: UTF8.self)
+        XCTAssertTrue(html.contains(#"src="Page/.attachments/image-20230201-064346.png""#), html)
+        XCTAssertFalse(html.contains("/download/"), html)
+    }
 }

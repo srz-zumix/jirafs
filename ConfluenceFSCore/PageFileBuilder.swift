@@ -317,6 +317,22 @@ public enum PageFileBuilder {
                       let name = lookup[file.lowercased()] else { return nil }
                 return "\(attr)=\"\(relativeURL("\(folder)/.attachments/\(name)"))\""
             }
+
+            // Browsers prefer `srcset` over `src`, so its candidate URLs must be
+            // repointed too or the image still loads from the server.
+            result = replaceAllMatches(in: result, pattern: "srcset=\"([^\"]*)\"") { m, ns in
+                guard let value = group(m, 1, ns) else { return nil }
+                let rewritten = replaceAllMatches(
+                    in: value,
+                    pattern: "[^\\s,]*/download/(?:attachments|thumbnails)/(?:[^\\s,/?]+/)*([^\\s,/?]+)(?:\\?[^\\s,]*)?"
+                ) { u, uns in
+                    guard let file = group(u, 1, uns), let name = lookup[file.lowercased()] else { return nil }
+                    // `,` separates srcset candidates, so it must not appear literally.
+                    return relativeURL("\(folder)/.attachments/\(name)")
+                        .replacingOccurrences(of: ",", with: "%2C")
+                }
+                return rewritten == value ? nil : "srcset=\"\(rewritten)\""
+            }
         }
         return result
     }
