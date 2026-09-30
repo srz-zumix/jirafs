@@ -13,6 +13,19 @@ final class PageFileBuilderHTMLTests: XCTestCase {
         return "{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"mediaSingle\",\"content\":[{\"type\":\"media\",\"attrs\":{\"type\":\"file\",\"id\":\"m1\",\"alt\":\"\(escaped)\"}}]}]}"
     }
 
+    func testHTMLTablesUseConfluenceStyles() {
+        let table = "<table><tbody><tr><th>Header</th><td>Value</td></tr></tbody></table>"
+        for format in [ConfluenceBodyFormat.storage, .view] {
+            let page = ConfluencePage(id: "1", title: "Page", body: body(table, format: format))
+            let html = String(decoding: PageFileBuilder.html(page), as: UTF8.self)
+
+            XCTAssertTrue(html.contains("table { border-collapse: collapse; margin: 16px 0; }"), html)
+            XCTAssertTrue(html.contains("th, td { border: 1px solid #dfe1e6; padding: 7px 10px; text-align: left; vertical-align: top; }"), html)
+            XCTAssertTrue(html.contains("th { background-color: #f4f5f7; font-weight: 600; }"), html)
+            XCTAssertTrue(html.contains(table), html)
+        }
+    }
+
     func testStorageImageRewrittenToLocalPath() {
         let page = ConfluencePage(
             id: "1", title: "My Page",
