@@ -224,6 +224,11 @@ public enum PageFileBuilder {
         <head>
         <meta charset="utf-8">
         <title>\(title)</title>
+        <style>
+        table { border-collapse: collapse; margin: 16px 0; }
+        th, td { border: 1px solid #dfe1e6; padding: 7px 10px; text-align: left; vertical-align: top; }
+        th { background-color: #f4f5f7; font-weight: 600; }
+        </style>
         </head>
         <body>
         <h1>\(title)</h1>
