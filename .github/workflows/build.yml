@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: List changed source files
         id: filter
-        uses: srz-zumix/gh-pr-ls-files@74f884868217e7873798e7606dba5b3a426bf2de # v1.1.0
+        uses: srz-zumix/gh-pr-ls-files@93a1891eb0e9b285b5c1c378869e6397ac524540 # v1.2.0
         with:
           added: true
           modified: true
